@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>cc.coderm</groupId>
+        <artifactId>cascade-framework</artifactId>
+        <version>1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>cascade-autoconfigure</artifactId>
+    <name>Cascade Auto Configuration</name>
+    <description>Spring Boot auto configuration for Cascade framework</description>
+
+    <dependencies>
+        <!-- Core modules -->
+        <dependency>
+            <groupId>cc.coderm</groupId>
+            <artifactId>cascade-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>cc.coderm</groupId>
+            <artifactId>cascade-cache</artifactId>
+        </dependency>
+        
+        <!-- TODO: Optional feature modules (will be added when available)
+        <dependency>
+            <groupId>cc.coderm</groupId>
+            <artifactId>cascade-lock</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>cc.coderm</groupId>
+            <artifactId>cascade-bloom</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>cc.coderm</groupId>
+            <artifactId>cascade-limiter</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>cc.coderm</groupId>
+            <artifactId>cascade-queue</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>cc.coderm</groupId>
+            <artifactId>cascade-pubsub</artifactId>
+            <optional>true</optional>
+        </dependency>
+        -->
+        
+        <!-- Spring Boot Configuration Processor -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+        
+        <!-- Lombok -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+        
+        <!-- Test -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+</project>

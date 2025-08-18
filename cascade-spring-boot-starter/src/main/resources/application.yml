@@ -1,0 +1,75 @@
+# Cascade缓存配置示例
+cascade:
+  cache:
+    enabled: true
+    defaults:
+      enabled: true
+      record-stats: true
+      allow-null-values: true
+      default-expiration: PT1H  # 1小时
+      default-refresh: PT30M    # 30分钟
+      l1:
+        enabled: true
+        maximum-size: 10000
+        initial-capacity: 16
+        concurrency-level: 4
+        expire-after-write: PT2H   # 2小时
+        expire-after-access: PT1H  # 1小时
+        refresh-after-write: PT30M # 30分钟
+      l2:
+        enabled: true
+        key-prefix: "cascade:"
+        serializer: "json"
+        default-ttl: PT1H          # 1小时
+        timeout: PT5S              # 5秒
+        redis:
+          host: localhost
+          port: 6379
+          database: 0
+          timeout: PT5S            # 5秒
+          password: null
+        compression:
+          enabled: false
+          type: "gzip"
+          threshold: 1024
+    caches:
+      userCache:
+        enabled: true
+        default-expiration: PT30M  # 30分钟
+        l1:
+          maximum-size: 5000
+          expire-after-write: PT1H
+        l2:
+          key-prefix: "user:"
+          default-ttl: PT2H
+      productCache:
+        enabled: true
+        default-expiration: PT1H   # 1小时
+        l1:
+          maximum-size: 20000
+          expire-after-access: PT2H
+        l2:
+          key-prefix: "product:"
+          default-ttl: PT4H
+
+# Spring缓存配置
+spring:
+  cache:
+    type: simple  # 使用Cascade的CacheManager时会被覆盖
+  redis:
+    host: localhost
+    port: 6379
+    database: 0
+    timeout: 5000ms
+    lettuce:
+      pool:
+        max-active: 8
+        max-idle: 8
+        min-idle: 0
+        max-wait: -1ms
+
+# 日志配置
+logging:
+  level:
+    io.github.cascade: DEBUG
+    org.springframework.cache: DEBUG

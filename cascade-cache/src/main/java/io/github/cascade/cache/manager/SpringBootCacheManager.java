@@ -1,0 +1,414 @@
+package io.github.cascade.cache.manager;
+
+import io.github.cascade.api.HealthStatus;
+import io.github.cascade.cache.api.Cache;
+import io.github.cascade.cache.api.CacheManager;
+import io.github.cascade.cache.builder.CascadeCacheBuilder;
+import io.github.cascade.cache.config.unified.CascadeCacheConfiguration;
+import io.github.cascade.cache.util.TypeReference;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import lombok.Getter;
+import org.redisson.api.RedissonClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
+
+/**
+ * Spring Boot 集成缓存管理器
+ * 简化版本，专注于核心缓存管理功能
+ *
+ * @author cascade
+ */
+public class SpringBootCacheManager implements CacheManager {
+
+    private static final Logger logger = LoggerFactory.getLogger(SpringBootCacheManager.class);
+
+    private final CascadeCacheConfiguration defaultConfig;
+    /**
+     * -- GETTER --
+     * 获取RedissonClient
+     */
+    @Getter
+    private final RedissonClient redissonClient;
+    private final Map<String, Cache<?, ?>> caches = new ConcurrentHashMap<>();
+
+    // 简化的状态管理
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+
+    // CacheManager 字段
+    private Function<String, Cache<?, ?>> cacheFactory;
+
+    public SpringBootCacheManager(CascadeCacheConfiguration defaultConfig,
+                                  RedissonClient redissonClient) {
+        this.defaultConfig = defaultConfig;
+        this.redissonClient = redissonClient;
+    }
+
+    /**
+     * 默认构造器，用于Spring自动装配
+     */
+    public SpringBootCacheManager() {
+        this.defaultConfig = null;
+        this.redissonClient = null;
+    }
+
+    // ==================== Spring 生命周期管理 ====================
+
+    @PostConstruct
+    private void init() {
+        logger.info("SpringBootCacheManager initialized by Spring container");
+    }
+
+    @PreDestroy
+    private void cleanup() {
+        close();
+    }
+
+    // ==================== 核心缓存管理方法 ====================
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public <K, V> Cache<K, V> getCache(String cacheName) {
+        if (closed.get()) {
+            logger.warn("Attempted to get cache '{}' from closed manager", cacheName);
+            return null;
+        }
+        return (Cache<K, V>) caches.get(cacheName);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public <K, V> Cache<K, V> getOrCreateCache(String cacheName) {
+        return getOrCreateCache(cacheName, null, null);
+    }
+    
+    /**
+     * 获取或创建缓存，支持显式类型传递
+     * 
+     * @param cacheName 缓存名称
+     * @param keyType Key类型，可为null
+     * @param valueType Value类型，可为null
+     * @return 缓存实例
+     */
+    public <K, V> Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType) {
+        // 创建缓存的时候 要支持全部高级配置项，最终创建 EnhancedDistributedTieredCache
+        if (closed.get()) {
+            logger.warn("Attempted to get or create cache '{}' from closed manager", cacheName);
+            return null;
+        }
+
+        // 先尝试获取已存在的缓存
+        Cache<K, V> existingCache = getCache(cacheName);
+        if (existingCache != null) {
+            logger.debug("Found existing cache '{}'", cacheName);
+            return existingCache;
+        }
+
+        // 缓存不存在，创建新缓存
+        logger.info("Creating new cache '{}' with enhanced features", cacheName);
+
+        try {
+            // 复制默认配置并设置缓存名称
+            CascadeCacheConfiguration cacheConfig = copyConfigWithName(defaultConfig, cacheName);
+
+            // 使用CascadeCacheBuilder创建具备全部高级功能的缓存
+            CascadeCacheBuilder<K, V> builder = new CascadeCacheBuilder<>(cacheConfig, this);
+
+            // 设置类型信息（如果提供）
+            if (keyType != null && valueType != null) {
+                builder.types(keyType, valueType);
+                logger.debug("Set explicit types for cache '{}': K={}, V={}", cacheName, keyType.getName(), valueType.getName());
+            }
+
+            // 如果有RedissonClient，启用L2缓存
+            if (redissonClient != null) {
+                builder.withRedis(redissonClient);
+            }
+
+            // 构建缓存（使用buildFull方法以确保创建EnhancedDistributedTieredCache）
+            Cache<K, V> newCache = builder.buildWithoutRegister();
+
+            // 注册到管理器
+            if (registerCache(cacheName, newCache)) {
+                logger.info("Successfully created and registered enhanced cache '{}'", cacheName);
+                return newCache;
+            } else {
+                logger.warn("Failed to register cache '{}', returning existing cache", cacheName);
+                return getCache(cacheName);
+            }
+
+        } catch (Exception e) {
+            logger.error("Failed to create cache '{}': {}", cacheName, e.getMessage(), e);
+            return null;
+        }
+    }
+    
+    /**
+     * 使用TypeReference创建缓存，可以捕获复杂的泛型类型
+     * 
+     * @param cacheName 缓存名称
+     * @param typeReference 类型引用
+     * @return 缓存实例
+     */
+    @SuppressWarnings("unchecked")
+    public <K, V> Cache<K, V> getOrCreateCacheWithTypeRef(String cacheName, TypeReference<Cache<K, V>> typeReference) {
+        if (closed.get()) {
+            logger.warn("Attempted to get or create cache '{}' from closed manager", cacheName);
+            return null;
+        }
+
+        // 先尝试获取已存在的缓存
+        Cache<K, V> existingCache = getCache(cacheName);
+        if (existingCache != null) {
+            logger.debug("Found existing cache '{}'", cacheName);
+            return existingCache;
+        }
+
+        // 从TypeReference中提取K、V类型
+        Class<K> keyType = null;
+        Class<V> valueType = null;
+        
+        try {
+            if (typeReference.isParameterized()) {
+                Type[] typeArgs = typeReference.getTypeArguments();
+                if (typeArgs.length == 2) {
+                    // Cache<K, V>的第一个参数是K，第二个是V
+                    Type cacheType = typeReference.getType();
+                    if (cacheType instanceof ParameterizedType cacheParamType) {
+                        Type[] cacheTypeArgs = cacheParamType.getActualTypeArguments();
+                        if (cacheTypeArgs.length == 2) {
+                            if (cacheTypeArgs[0] instanceof Class) {
+                                keyType = (Class<K>) cacheTypeArgs[0];
+                            }
+                            if (cacheTypeArgs[1] instanceof Class) {
+                                valueType = (Class<V>) cacheTypeArgs[1];
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.debug("Failed to extract types from TypeReference: {}", e.getMessage());
+        }
+
+        // 调用带类型的创建方法
+        return getOrCreateCache(cacheName, keyType, valueType);
+    }
+
+    /**
+     * 复制默认配置并设置新的缓存名称
+     */
+    private CascadeCacheConfiguration copyConfigWithName(CascadeCacheConfiguration defaultConfig, String cacheName) {
+
+        if (defaultConfig == null) {
+            // 如果没有默认配置，创建一个基础配置
+            return new CascadeCacheConfiguration()
+                    .setName(cacheName)
+                    .setEnabled(true);
+        }
+
+        // 创建新配置并复制关键配置项
+        CascadeCacheConfiguration newConfig = new CascadeCacheConfiguration()
+                .setName(cacheName)
+                .setEnabled(true);
+
+        // 复制L1配置
+        newConfig.getL1()
+                .setEnabled(defaultConfig.getL1().isEnabled())
+                .setMaximumSize(defaultConfig.getL1().getMaximumSize())
+                .setExpireAfterWrite(defaultConfig.getL1().getExpireAfterWrite())
+                .setExpireAfterAccess(defaultConfig.getL1().getExpireAfterAccess())
+                .setRecordStats(defaultConfig.getL1().isRecordStats());
+
+        // 复制L2配置
+        newConfig.getL2()
+                .setEnabled(defaultConfig.getL2().isEnabled())
+                .setDefaultTtl(defaultConfig.getL2().getDefaultTtl())
+                .setKeyPrefix(defaultConfig.getL2().getKeyPrefix())
+                .setRedissonClient(redissonClient);
+
+        // 复制同步配置
+        newConfig.getSync()
+                .setEnabled(defaultConfig.getSync().isEnabled());
+
+        // 复制防护配置
+        newConfig.getProtection()
+                .setEnabled(defaultConfig.getProtection().isEnabled());
+
+        // 复制布隆过滤器配置
+        newConfig.getProtection().getBloomFilter()
+                .setEnabled(defaultConfig.getProtection().getBloomFilter().isEnabled())
+                .setExpectedElements(defaultConfig.getProtection().getBloomFilter().getExpectedElements())
+                .setFalsePositiveRate(defaultConfig.getProtection().getBloomFilter().getFalsePositiveRate());
+
+        // 复制随机TTL配置
+        newConfig.getProtection().getRandomTtl()
+                .setEnabled(defaultConfig.getProtection().getRandomTtl().isEnabled())
+                .setBaseTtl(defaultConfig.getProtection().getRandomTtl().getBaseTtl())
+                .setJitterRange(defaultConfig.getProtection().getRandomTtl().getJitterRange());
+
+        return newConfig;
+    }
+
+    @Override
+    public <K, V> boolean registerCache(String cacheName, Cache<K, V> cache) {
+        if (closed.get()) {
+            logger.warn("Attempted to register cache '{}' to closed manager", cacheName);
+            return false;
+        }
+
+        if (caches.containsKey(cacheName)) {
+            logger.warn("Cache '{}' already exists", cacheName);
+            return false;
+        }
+
+        caches.put(cacheName, cache);
+        logger.info("Cache '{}' registered successfully", cacheName);
+        return true;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public <K, V> Cache<K, V> forceRegisterCache(String cacheName, Cache<K, V> cache) {
+        if (closed.get()) {
+            logger.warn("Attempted to force register cache '{}' to closed manager", cacheName);
+            return null;
+        }
+
+        Cache<K, V> oldCache = (Cache<K, V>) caches.put(cacheName, cache);
+        logger.info("Cache '{}' force registered successfully", cacheName);
+        return oldCache;
+    }
+
+    @Override
+    public Cache<?, ?> removeCache(String cacheName) {
+        if (closed.get()) {
+            logger.warn("Attempted to remove cache '{}' from closed manager", cacheName);
+            return null;
+        }
+
+        Cache<?, ?> removedCache = caches.remove(cacheName);
+        if (removedCache != null) {
+            logger.info("Cache '{}' removed successfully", cacheName);
+        } else {
+            logger.warn("Cache '{}' not found for removal", cacheName);
+        }
+        return removedCache;
+    }
+
+    @Override
+    public Collection<String> getCacheNames() {
+        return caches.keySet();
+    }
+
+    @Override
+    public Map<String, Cache<?, ?>> getAllCaches() {
+        return new HashMap<>(caches);
+    }
+
+    @Override
+    public void clearAllCaches() {
+        if (closed.get()) {
+            logger.warn("Attempted to clear caches from closed manager");
+            return;
+        }
+
+        caches.values().forEach(cache -> {
+            try {
+                cache.clear();
+            } catch (Exception e) {
+                logger.warn("Error clearing cache: {}", e.getMessage());
+            }
+        });
+        logger.info("All caches cleared");
+    }
+
+    @Override
+    public boolean containsCache(String cacheName) {
+        return caches.containsKey(cacheName);
+    }
+
+    // ==================== 生命周期管理 ====================
+
+    @Override
+    public void close() {
+        if (closed.compareAndSet(false, true)) {
+            logger.info("Closing SpringBootCacheManager...");
+
+            // 清理所有缓存
+            caches.values().forEach(cache -> {
+                try {
+                    if (cache instanceof AutoCloseable) {
+                        ((AutoCloseable) cache).close();
+                    }
+                } catch (Exception e) {
+                    logger.warn("Error closing cache: {}", e.getMessage());
+                }
+            });
+
+            caches.clear();
+            logger.info("SpringBootCacheManager closed");
+        }
+    }
+
+    @Override
+    public boolean isClosed() {
+        return closed.get();
+    }
+
+    // ==================== 监控和统计 ====================
+
+    @Override
+    public HealthStatus getHealthStatus() {
+        if (closed.get()) {
+            return HealthStatus.down();
+        }
+        return HealthStatus.up();
+    }
+
+    @Override
+    public int getCacheCount() {
+        return caches.size();
+    }
+
+    @Override
+    public Map<String, Object> getStats() {
+        Map<String, Object> stats = new HashMap<>();
+        stats.put("cacheCount", getCacheCount());
+        stats.put("cacheNames", getCacheNames());
+        stats.put("closed", isClosed());
+        return stats;
+    }
+
+    // ==================== 工厂方法 ====================
+
+    @Override
+    public void setCacheFactory(Function<String, Cache<?, ?>> cacheFactory) {
+        this.cacheFactory = cacheFactory;
+    }
+
+    @Override
+    public Function<String, Cache<?, ?>> getCacheFactory() {
+        return cacheFactory;
+    }
+
+    // ==================== 工具方法 ====================
+
+    /**
+     * 获取默认的CascadeCacheConfiguration配置
+     * 供CascadeCacheBuilder使用
+     */
+    public CascadeCacheConfiguration getDefaultCascadeCacheConfig() {
+        return defaultConfig;
+    }
+
+}

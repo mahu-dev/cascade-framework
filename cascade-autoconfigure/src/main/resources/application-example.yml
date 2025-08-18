@@ -1,0 +1,147 @@
+# Cascade缓存框架配置示例
+cascade:
+  cache:
+    enabled: true
+    
+    # 默认缓存配置
+    defaults:
+      enabled: true
+      default-expiration: PT1H  # 1小时
+      record-stats: true
+      allow-null-values: false
+      
+      # L1本地缓存配置
+      l1:
+        enabled: true
+        maximum-size: 10000
+        expire-after-write: PT30M  # 30分钟
+        expire-after-access: PT1H   # 1小时
+        record-stats: true
+        
+      # L2远程缓存配置
+      l2:
+        enabled: true
+        key-prefix: "cascade:"
+        serializer: json
+        default-ttl: PT24H  # 24小时
+        timeout: PT5S       # 5秒
+        record-stats: true
+    
+    # 特定缓存配置
+    caches:
+      userCache:
+        enabled: true
+        l1:
+          enabled: true
+          maximum-size: 5000
+          expire-after-access: PT2H
+        l2:
+          enabled: true
+          key-prefix: "user:"
+          default-ttl: PT12H
+          
+      productCache:
+        enabled: true
+        l1:
+          enabled: true
+          maximum-size: 20000
+          expire-after-write: PT1H
+        l2:
+          enabled: true
+          key-prefix: "product:"
+          default-ttl: PT6H
+          
+      configCache:
+        enabled: true
+        l1:
+          enabled: true
+          maximum-size: 1000
+          expire-after-write: PT10M
+        l2:
+          enabled: false  # 仅使用L1缓存
+    
+    # 同步配置
+    sync:
+      enabled: true
+      topic: "cascade:cache:sync"
+      enable-parallel-sync: true
+      sync-batch-size: 50
+      sync-timeout: PT30S
+      sync-on-put: true
+      sync-on-evict: true
+      sync-on-clear: true
+    
+    # 防护配置
+    protection:
+      enabled: true
+      # 布隆过滤器防穿透
+      enable-bloom-filter: true
+      bloom-filter-expected-elements: 100000
+      bloom-filter-false-positive-rate: 0.01
+      strict-bloom-filter: false
+      # 随机TTL防雪崩
+      enable-random-ttl: true
+      random-ttl-jitter-ratio: 0.1
+      min-random-ttl: PT5M
+      max-random-ttl: PT2H
+      # 分布式锁防击穿
+      enable-distributed-lock: true
+      lock-timeout: PT30S
+      lock-lease-time: PT10S
+      lock-key-prefix: "cascade:lock:"
+      lock-retry-count: 3
+      lock-retry-delay: PT100MS
+    
+    # 预热配置
+    warmup:
+      enabled: false  # 生产环境谨慎开启
+      enable-on-startup: false
+      enable-parallel: true
+      startup-delay: PT10S
+      warmup-timeout: PT5M
+      max-concurrency: 4
+      fail-fast: false
+    
+    # 监控配置
+    monitoring:
+      enabled: true
+      enable-metrics: true
+      enable-health-check: true
+      metrics-report-interval: PT1M
+      health-check-interval: PT30S
+      enable-alerts: false
+      metrics-prefix: "cascade.cache"
+
+# Spring配置
+spring:
+  cache:
+    type: generic  # 使用自定义缓存管理器
+  
+  # Redis配置（如果使用L2缓存）
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: 
+      database: 0
+      timeout: 5s
+      jedis:
+        pool:
+          max-active: 20
+          max-idle: 8
+          min-idle: 0
+
+# 应用配置
+logging:
+  level:
+    io.github.cascade: DEBUG
+    org.redisson: INFO
+    
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,cache
+  endpoint:
+    health:
+      show-details: always

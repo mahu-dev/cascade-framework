@@ -1,0 +1,57 @@
+# Spring Boot配置
+spring:
+  application:
+    name: cascade-cache-demo
+
+  # Redis配置 - 使用Redisson
+  redis:
+    redisson:
+      config: |
+        singleServerConfig:
+          idleConnectionTimeout: 10000
+          connectTimeout: 10000
+          timeout: 3000
+          retryAttempts: 3
+          retryInterval: 1500
+          password: "56445218@"
+          subscriptionsPerConnection: 5
+          clientName: null
+          address: "redis://coderm.cc:6379"
+          subscriptionConnectionMinimumIdleSize: 1
+          subscriptionConnectionPoolSize: 50
+          connectionMinimumIdleSize: 24
+          connectionPoolSize: 64
+          database: 11
+          dnsMonitoringInterval: 5000
+        threads: 16
+        nettyThreads: 32
+        codec: !<org.redisson.codec.JsonJacksonCodec> {}
+        transportMode: "NIO"
+
+# Cascade框架配置
+cascade:
+  enabled: true
+  enable-redis: true
+  enable-protection: true
+  enable-sync: false
+  default-size: 10000
+  l1-expire-after-write-seconds: 3600
+  l2-expire-after-write-seconds: 7200
+  enable-random-ttl: true
+  random-ttl-range-seconds: 300
+
+  # Redis配置
+#  data:
+#    redis:
+#      host: coderm.cc # 地址
+#      port: 6379 # 端口
+#      database: 11 # 数据库索引
+#      password: 56445218@ # 密码，建议生产环境开启
+#      timeout: 5s
+
+# 日志配置
+logging:
+  level:
+    io.github.cascade: DEBUG
+    org.redisson: DEBUG
+    root: INFO
