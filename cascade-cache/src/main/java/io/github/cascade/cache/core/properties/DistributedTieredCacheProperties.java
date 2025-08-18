@@ -1,7 +1,6 @@
 package io.github.cascade.cache.core.properties;
 
 import lombok.Data;
-import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
 
@@ -11,7 +10,6 @@ import java.time.Duration;
  * @author cascade
  */
 @Data
-@ConfigurationProperties(prefix = "cascade.cache.distributed")
 public class DistributedTieredCacheProperties {
 
     /**

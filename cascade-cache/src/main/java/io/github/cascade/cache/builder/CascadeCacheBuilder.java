@@ -15,6 +15,7 @@ import io.github.cascade.cache.sync.CacheSyncManager;
 import io.github.cascade.cache.sync.RedissonCacheSyncManager;
 import io.github.cascade.cache.tier.RedissonRemoteTier;
 import io.github.cascade.cache.tier.SimpleCaffeineLocalTier;
+import lombok.Getter;
 import lombok.Setter;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
@@ -56,7 +57,7 @@ public class CascadeCacheBuilder<K, V> implements CacheBuilder<K, V> {
      * 缓存数据加载器
      */
     private CacheLoader<K, V> cacheLoader;
-    
+
     /**
      * 类型信息
      */
@@ -80,6 +81,7 @@ public class CascadeCacheBuilder<K, V> implements CacheBuilder<K, V> {
         this.cacheManager = cacheManager;
         this.config = config;
     }
+
 
     // ==================== 配置方法 ====================
 
@@ -272,7 +274,7 @@ public class CascadeCacheBuilder<K, V> implements CacheBuilder<K, V> {
         this.cacheLoader = loader;
         return this;
     }
-    
+
     /**
      * 设置Key类型
      */
@@ -280,7 +282,7 @@ public class CascadeCacheBuilder<K, V> implements CacheBuilder<K, V> {
         this.keyType = keyType;
         return this;
     }
-    
+
     /**
      * 设置Value类型
      */
@@ -288,7 +290,7 @@ public class CascadeCacheBuilder<K, V> implements CacheBuilder<K, V> {
         this.valueType = valueType;
         return this;
     }
-    
+
     /**
      * 同时设置Key和Value类型
      */
@@ -296,6 +298,384 @@ public class CascadeCacheBuilder<K, V> implements CacheBuilder<K, V> {
         this.keyType = keyType;
         this.valueType = valueType;
         return this;
+    }
+
+    // ==================== 静态工厂方法 - 整合TypedCacheBuilder功能 ====================
+
+    /**
+     * 创建类型化缓存构建器的静态入口
+     *
+     * @param cacheName    缓存名称
+     * @param cacheManager 缓存管理器
+     * @param keyType      Key类型
+     * @param valueType    Value类型
+     * @return 类型化的构建器
+     */
+    public static <K, V> CascadeCacheBuilder<K, V> create(String cacheName, CacheManager cacheManager,
+                                                          Class<K> keyType, Class<V> valueType) {
+        return new CascadeCacheBuilder<K, V>(cacheName, cacheManager)
+                .types(keyType, valueType);
+    }
+
+    public static <K, V> CascadeCacheBuilder<K, V> createBuilder(CascadeCacheConfiguration config, CacheManager cacheManager,
+                                                                 RedissonClient redissonClient, Class<K> keyType, Class<V> valueType) {
+        CascadeCacheBuilder<K, V> builder = new CascadeCacheBuilder<K, V>(config, cacheManager)
+                .types(keyType, valueType);
+        // 如果有RedissonClient，启用L2缓存
+        if (redissonClient != null) {
+            builder.withRedis(redissonClient);
+        }
+        return builder;
+    }
+
+    /**
+     * 创建String Key类型的缓存构建器
+     */
+    public static <V> CascadeCacheBuilder<String, V> stringKey(String cacheName, CacheManager cacheManager,
+                                                               Class<V> valueType) {
+        return create(cacheName, cacheManager, String.class, valueType);
+    }
+
+    public static <V> CascadeCacheBuilder<String, V> getStringKey(CascadeCacheConfiguration config,
+                                                                  CacheManager cacheManager,
+                                                                  RedissonClient redissonClient, Class<V> valueType) {
+        return createBuilder(config, cacheManager, redissonClient, String.class, valueType);
+    }
+
+    /**
+     * 创建Long Key类型的缓存构建器
+     */
+    public static <V> CascadeCacheBuilder<Long, V> longKey(String cacheName, CacheManager cacheManager,
+                                                           Class<V> valueType) {
+        return create(cacheName, cacheManager, Long.class, valueType);
+    }
+
+    /**
+     * 创建Integer Key类型的缓存构建器
+     */
+    public static <V> CascadeCacheBuilder<Integer, V> intKey(String cacheName, CacheManager cacheManager,
+                                                             Class<V> valueType) {
+        return create(cacheName, cacheManager, Integer.class, valueType);
+    }
+
+    /**
+     * 流式构建入口 - 替代TypedCacheBuilder.named()
+     */
+    public static CacheNameBuilder named(String cacheName) {
+        return new CacheNameBuilder(cacheName);
+    }
+
+    /**
+     * 快速创建简单的类型化缓存 - 使用默认配置
+     */
+    public static <K, V> Cache<K, V> quickCache(String cacheName, CacheManager cacheManager,
+                                                Class<K> keyType, Class<V> valueType) {
+        return create(cacheName, cacheManager, keyType, valueType).build();
+    }
+
+    /**
+     * 快速创建String Key的缓存
+     */
+    public static <V> Cache<String, V> quickStringCache(String cacheName, CacheManager cacheManager,
+                                                        Class<V> valueType) {
+        return stringKey(cacheName, cacheManager, valueType).build();
+    }
+
+    // ==================== 内嵌流式构建器 ====================
+
+    /**
+     * 缓存名称构建器 - 第一步指定名称
+     */
+    public static class CacheNameBuilder {
+        private final String cacheName;
+
+        private CacheNameBuilder(String cacheName) {
+            this.cacheName = cacheName;
+        }
+
+        /**
+         * 指定Key和Value类型
+         */
+        public <K, V> CacheTypeBuilder<K, V> withTypes(Class<K> keyType, Class<V> valueType) {
+            return new CacheTypeBuilder<>(cacheName, keyType, valueType);
+        }
+
+        /**
+         * String Key类型的快捷方法
+         */
+        public <V> CacheTypeBuilder<String, V> withStringKey(Class<V> valueType) {
+            return withTypes(String.class, valueType);
+        }
+
+        /**
+         * Long Key类型的快捷方法
+         */
+        public <V> CacheTypeBuilder<Long, V> withLongKey(Class<V> valueType) {
+            return withTypes(Long.class, valueType);
+        }
+
+        /**
+         * Integer Key类型的快捷方法
+         */
+        public <V> CacheTypeBuilder<Integer, V> withIntKey(Class<V> valueType) {
+            return withTypes(Integer.class, valueType);
+        }
+    }
+
+    /**
+     * 类型化构建器 - 第二步配置和构建
+     */
+    public static class CacheTypeBuilder<K, V> {
+        private final String cacheName;
+        private final Class<K> keyType;
+        private final Class<V> valueType;
+
+        private CacheTypeBuilder(String cacheName, Class<K> keyType, Class<V> valueType) {
+            this.cacheName = cacheName;
+            this.keyType = keyType;
+            this.valueType = valueType;
+        }
+
+        /**
+         * 快速构建 - 使用默认CacheManager和配置
+         */
+        public Cache<K, V> build() {
+            // 需要有默认的CacheManager
+            SpringBootCacheManager defaultManager = getDefaultCacheManager();
+            if (defaultManager == null) {
+                throw new IllegalStateException("No default CacheManager set. Use build(cacheManager) or setDefaultCacheManager()");
+            }
+            return build(defaultManager);
+        }
+
+        /**
+         * 使用指定CacheManager构建
+         */
+        public Cache<K, V> build(CacheManager cacheManager) {
+            return create(cacheName, cacheManager, keyType, valueType).build();
+        }
+
+        /**
+         * 转换为完整的构建器以进行详细配置
+         */
+        public CascadeCacheBuilder<K, V> configure() {
+            SpringBootCacheManager defaultManager = getDefaultCacheManager();
+            if (defaultManager == null) {
+                throw new IllegalStateException("No default CacheManager set. Use configure(cacheManager) or setDefaultCacheManager()");
+            }
+            return configure(defaultManager);
+        }
+
+        /**
+         * 转换为完整的构建器以进行详细配置
+         */
+        public CascadeCacheBuilder<K, V> configure(CacheManager cacheManager) {
+            return create(cacheName, cacheManager, keyType, valueType);
+        }
+    }
+
+    // ==================== 统一门面功能 ====================
+
+    /**
+     * -- SETTER --
+     * 设置默认的CacheManager，用于流式API
+     * -- GETTER --
+     * 获取默认的CacheManager
+     */
+    @Getter
+    @Setter
+    private static SpringBootCacheManager defaultCacheManager;
+
+    /**
+     * 获取已存在的缓存
+     */
+    @SuppressWarnings("unchecked")
+    public static <K, V> Cache<K, V> getCache(String cacheName) {
+        SpringBootCacheManager manager = getDefaultCacheManager();
+        if (manager == null) {
+            throw new IllegalStateException("No default CacheManager set. Use getCache(cacheName, cacheManager) or setDefaultCacheManager()");
+        }
+        return (Cache<K, V>) manager.getCache(cacheName);
+    }
+
+    /**
+     * 获取已存在的缓存 - 使用指定管理器
+     */
+    @SuppressWarnings("unchecked")
+    public static <K, V> Cache<K, V> getCache(String cacheName, CacheManager cacheManager) {
+        return (Cache<K, V>) cacheManager.getCache(cacheName);
+    }
+
+    /**
+     * 创建缓存构建器 - 使用默认配置（统一门面入口）
+     */
+    public static <K, V> CascadeCacheBuilder<K, V> cache(String cacheName) {
+        SpringBootCacheManager manager = getDefaultCacheManager();
+        if (manager == null) {
+            manager = new SpringBootCacheManager();
+            setDefaultCacheManager(manager);
+        }
+        return new CascadeCacheBuilder<>(cacheName, manager);
+    }
+
+    /**
+     * 创建缓存构建器 - 使用指定管理器
+     */
+    public static <K, V> CascadeCacheBuilder<K, V> cache(String cacheName, CacheManager cacheManager) {
+        return new CascadeCacheBuilder<>(cacheName, cacheManager);
+    }
+
+    /**
+     * 创建配置构建器
+     */
+    public static ConfigurationBuilder config(String cacheName) {
+        return new ConfigurationBuilder(cacheName);
+    }
+
+    // ==================== 整合的配置构建器 ====================
+
+    /**
+     * 配置构建器
+     * 提供流式API创建统一配置
+     */
+    public static class ConfigurationBuilder {
+        private final CascadeCacheConfiguration config;
+
+        public ConfigurationBuilder(String cacheName) {
+            this.config = new CascadeCacheConfiguration()
+                    .setName(cacheName)
+                    .setEnabled(true);
+        }
+
+        /**
+         * 启用L2缓存
+         */
+        public ConfigurationBuilder enableL2() {
+            config.getL2().setEnabled(true);
+            return this;
+        }
+
+        /**
+         * 配置L2缓存键前缀
+         */
+        public ConfigurationBuilder l2KeyPrefix(String prefix) {
+            config.getL2().setKeyPrefix(prefix);
+            return this;
+        }
+
+        /**
+         * 启用防护机制
+         */
+        public ConfigurationBuilder enableProtection() {
+            config.getProtection().setEnabled(true);
+            return this;
+        }
+
+        /**
+         * 启用同步
+         */
+        public ConfigurationBuilder enableSync() {
+            config.getSync().setEnabled(true);
+            return this;
+        }
+
+        /**
+         * 配置缓存大小
+         */
+        public ConfigurationBuilder size(long size) {
+            config.getCommon().setMaximumSize(size);
+            config.getL1().setMaximumSize(size);
+            return this;
+        }
+
+        /**
+         * 配置过期时间
+         */
+        public ConfigurationBuilder expireAfterWrite(Duration duration) {
+            config.getCommon().setExpireAfterWrite(duration);
+            return this;
+        }
+
+        /**
+         * 配置刷新时间
+         */
+        public ConfigurationBuilder refreshAfterWrite(Duration duration) {
+            config.getCommon().setRefreshAfterWrite(duration);
+            return this;
+        }
+
+        /**
+         * 启用统计
+         */
+        public ConfigurationBuilder recordStats() {
+            config.getCommon().setRecordStats(true);
+            return this;
+        }
+
+        /**
+         * 配置布隆过滤器
+         */
+        public ConfigurationBuilder bloomFilter(long expectedElements, double falsePositiveRate) {
+            config.getProtection().getBloomFilter()
+                    .setEnabled(true)
+                    .setExpectedElements(expectedElements)
+                    .setFalsePositiveRate(falsePositiveRate);
+            return this;
+        }
+
+        /**
+         * 构建配置
+         */
+        public CascadeCacheConfiguration build() {
+            return config;
+        }
+
+        /**
+         * 构建缓存构建器
+         */
+        public <K, V> CascadeCacheBuilder<K, V> buildCacheBuilder() {
+            SpringBootCacheManager manager = getDefaultCacheManager();
+            if (manager == null) {
+                manager = new SpringBootCacheManager();
+                setDefaultCacheManager(manager);
+            }
+            return new CascadeCacheBuilder<>(config, manager);
+        }
+
+        /**
+         * 构建缓存构建器 - 使用指定管理器
+         */
+        public <K, V> CascadeCacheBuilder<K, V> buildCacheBuilder(CacheManager cacheManager) {
+            return new CascadeCacheBuilder<>(config, cacheManager);
+        }
+    }
+
+    // ==================== 工具方法 ====================
+
+    /**
+     * 创建配置的副本
+     */
+    public static CascadeCacheConfiguration copyConfig(CascadeCacheConfiguration source) {
+        // 简单复制实现
+        CascadeCacheConfiguration copy = new CascadeCacheConfiguration()
+                .setName(source.getName())
+                .setEnabled(source.isEnabled());
+
+        // 复制各个配置项
+        copy.getCommon()
+                .setMaximumSize(source.getCommon().getMaximumSize())
+                .setExpireAfterWrite(source.getCommon().getExpireAfterWrite())
+                .setExpireAfterAccess(source.getCommon().getExpireAfterAccess());
+
+        copy.getL1()
+                .setEnabled(source.getL1().isEnabled())
+                .setMaximumSize(source.getL1().getMaximumSize());
+
+        copy.getL2()
+                .setEnabled(source.getL2().isEnabled())
+                .setKeyPrefix(source.getL2().getKeyPrefix());
+
+        return copy;
     }
 
     // ==================== 构建方法 ====================
@@ -344,7 +724,8 @@ public class CascadeCacheBuilder<K, V> implements CacheBuilder<K, V> {
             }
         }
 
-        registerCache(cache);
+        // cacheManager 负责管理缓存
+//        registerCache(cache);
         return cache;
     }
 
@@ -377,7 +758,7 @@ public class CascadeCacheBuilder<K, V> implements CacheBuilder<K, V> {
 
         // 创建多级缓存 - 传递类型信息
         EnhancedDistributedTieredCache<K, V> cache = new EnhancedDistributedTieredCache<>(
-                config.getName(), l1Cache, l2Cache, properties, loadingManagerFactory, syncManager, 
+                config.getName(), l1Cache, l2Cache, properties, loadingManagerFactory, syncManager,
                 applicationContext, keyType, valueType
         );
 

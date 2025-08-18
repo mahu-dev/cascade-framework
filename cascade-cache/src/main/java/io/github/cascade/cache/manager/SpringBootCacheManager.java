@@ -5,6 +5,7 @@ import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheManager;
 import io.github.cascade.cache.builder.CascadeCacheBuilder;
 import io.github.cascade.cache.config.unified.CascadeCacheConfiguration;
+import io.github.cascade.cache.util.TypeInference;
 import io.github.cascade.cache.util.TypeReference;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -90,12 +91,62 @@ public class SpringBootCacheManager implements CacheManager {
     public <K, V> Cache<K, V> getOrCreateCache(String cacheName) {
         return getOrCreateCache(cacheName, null, null);
     }
-    
+
     /**
      * 获取或创建缓存，支持显式类型传递
-     * 
+     *
      * @param cacheName 缓存名称
-     * @param keyType Key类型，可为null
+     * @param valueType Value类型，可为null
+     * @return 缓存实例
+     */
+    public <V> Cache<String, V> getOrCreateCache(String cacheName, Class<V> valueType) {
+        // 创建缓存的时候 要支持全部高级配置项，最终创建 EnhancedDistributedTieredCache
+        if (closed.get()) {
+            logger.warn("Attempted to get or create cache '{}' from closed manager", cacheName);
+            return null;
+        }
+
+        // 先尝试获取已存在的缓存
+        Cache<String, V> existingCache = getCache(cacheName);
+        if (existingCache != null) {
+            logger.debug("Found existing cache '{}'", cacheName);
+            return existingCache;
+        }
+
+        // 缓存不存在，创建新缓存
+        logger.info("Creating new cache '{}' with enhanced features", cacheName);
+
+        try {
+            // 复制默认配置并设置缓存名称
+            CascadeCacheConfiguration cacheConfig = copyConfigWithName(defaultConfig, cacheName);
+
+            // 使用CascadeCacheBuilder创建具备全部高级功能的缓存
+            CascadeCacheBuilder<String, V> builder = CascadeCacheBuilder.getStringKey(cacheConfig, this,
+                    redissonClient, valueType);
+
+            // 构建缓存（使用buildFull方法以确保创建EnhancedDistributedTieredCache）
+            Cache<String, V> newCache = builder.buildWithoutRegister();
+
+            // 注册到管理器
+            if (registerCache(cacheName, newCache)) {
+                logger.info("Successfully created and registered enhanced cache '{}'", cacheName);
+                return newCache;
+            } else {
+                logger.warn("Failed to register cache '{}', returning existing cache", cacheName);
+                return getCache(cacheName);
+            }
+
+        } catch (Exception e) {
+            logger.error("Failed to create cache '{}': {}", cacheName, e.getMessage(), e);
+            return null;
+        }
+    }
+
+    /**
+     * 获取或创建缓存，支持显式类型传递
+     *
+     * @param cacheName 缓存名称
+     * @param keyType   Key类型，可为null
      * @param valueType Value类型，可为null
      * @return 缓存实例
      */
@@ -121,18 +172,8 @@ public class SpringBootCacheManager implements CacheManager {
             CascadeCacheConfiguration cacheConfig = copyConfigWithName(defaultConfig, cacheName);
 
             // 使用CascadeCacheBuilder创建具备全部高级功能的缓存
-            CascadeCacheBuilder<K, V> builder = new CascadeCacheBuilder<>(cacheConfig, this);
-
-            // 设置类型信息（如果提供）
-            if (keyType != null && valueType != null) {
-                builder.types(keyType, valueType);
-                logger.debug("Set explicit types for cache '{}': K={}, V={}", cacheName, keyType.getName(), valueType.getName());
-            }
-
-            // 如果有RedissonClient，启用L2缓存
-            if (redissonClient != null) {
-                builder.withRedis(redissonClient);
-            }
+            CascadeCacheBuilder<K, V> builder = CascadeCacheBuilder.createBuilder(cacheConfig, this,
+                    redissonClient, keyType, valueType);
 
             // 构建缓存（使用buildFull方法以确保创建EnhancedDistributedTieredCache）
             Cache<K, V> newCache = builder.buildWithoutRegister();
@@ -151,15 +192,16 @@ public class SpringBootCacheManager implements CacheManager {
             return null;
         }
     }
-    
+
     /**
      * 使用TypeReference创建缓存，可以捕获复杂的泛型类型
-     * 
-     * @param cacheName 缓存名称
+     *
+     * @param cacheName     缓存名称
      * @param typeReference 类型引用
      * @return 缓存实例
      */
     @SuppressWarnings("unchecked")
+    @Deprecated
     public <K, V> Cache<K, V> getOrCreateCacheWithTypeRef(String cacheName, TypeReference<Cache<K, V>> typeReference) {
         if (closed.get()) {
             logger.warn("Attempted to get or create cache '{}' from closed manager", cacheName);
@@ -176,7 +218,7 @@ public class SpringBootCacheManager implements CacheManager {
         // 从TypeReference中提取K、V类型
         Class<K> keyType = null;
         Class<V> valueType = null;
-        
+
         try {
             if (typeReference.isParameterized()) {
                 Type[] typeArgs = typeReference.getTypeArguments();
@@ -399,6 +441,69 @@ public class SpringBootCacheManager implements CacheManager {
     @Override
     public Function<String, Cache<?, ?>> getCacheFactory() {
         return cacheFactory;
+    }
+
+    // ==================== 优雅的类型化缓存获取方法 ====================
+
+    /**
+     * 优雅地创建类型化缓存 - 无需TypeReference匿名类
+     *
+     * @param cacheName 缓存名称
+     * @param keyType   Key类型
+     * @param valueType Value类型
+     * @return 类型化缓存
+     */
+    public <K, V> Cache<K, V> cache(String cacheName, Class<K> keyType, Class<V> valueType) {
+        return getOrCreateCache(cacheName, keyType, valueType);
+    }
+
+    /**
+     * 创建String类型Key的缓存 - 最常用场景
+     */
+    public <V> Cache<String, V> stringCache(String cacheName, Class<V> valueType) {
+        return getOrCreateCache(cacheName, String.class, valueType);
+    }
+
+    /**
+     * 创建Long类型Key的缓存 - ID场景
+     */
+    public <V> Cache<Long, V> longCache(String cacheName, Class<V> valueType) {
+        return getOrCreateCache(cacheName, Long.class, valueType);
+    }
+
+    /**
+     * 创建Integer类型Key的缓存
+     */
+    public <V> Cache<Integer, V> intCache(String cacheName, Class<V> valueType) {
+        return getOrCreateCache(cacheName, Integer.class, valueType);
+    }
+
+    /**
+     * 智能推断类型的缓存创建 - 实验性功能
+     * 尝试从调用上下文和缓存名称推断类型
+     */
+    @SuppressWarnings("unchecked")
+    public <K, V> Cache<K, V> smartCache(String cacheName) {
+        // 尝试从调用栈推断类型
+        Class<?>[] inferredTypes = TypeInference.inferCacheTypes();
+
+        if (inferredTypes != null && inferredTypes.length == 2) {
+            logger.debug("Inferred types from call stack: K={}, V={}", inferredTypes[0], inferredTypes[1]);
+            return getOrCreateCache(cacheName,
+                    (Class<K>) inferredTypes[0], (Class<V>) inferredTypes[1]);
+        }
+
+        // 尝试从缓存名称推断类型
+        inferredTypes = TypeInference.inferFromVariableName(cacheName);
+        if (inferredTypes != null && inferredTypes.length == 2) {
+            logger.debug("Inferred types from cache name '{}': K={}, V={}", cacheName, inferredTypes[0], inferredTypes[1]);
+            return getOrCreateCache(cacheName,
+                    (Class<K>) inferredTypes[0], (Class<V>) inferredTypes[1]);
+        }
+
+        // 推断失败，使用默认行为
+        logger.debug("Type inference failed for cache '{}', using default behavior", cacheName);
+        return getOrCreateCache(cacheName);
     }
 
     // ==================== 工具方法 ====================

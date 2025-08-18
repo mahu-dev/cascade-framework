@@ -5,7 +5,6 @@ import cc.coderm.demo.service.UserService;
 import io.github.cascade.autoconfigure.CascadeAutoConfiguration.CascadeBuilderFactory;
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.manager.SpringBootCacheManager;
-import io.github.cascade.cache.util.TypeReference;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
@@ -56,12 +55,12 @@ public class UserController {
 
 //        Cache<Object, Object> test = springBootCacheManager.getOrCreateCache("test");
         // 使用TypeReference捕获类型信息
-        Cache<String, User> cache = springBootCacheManager.getOrCreateCacheWithTypeRef("userCache",
-                new TypeReference<>() {
-                });
+//        Cache<String, User> cache = springBootCacheManager.getOrCreateCacheWithTypeRef("userCache", new TypeReference<>() {
+//        });
+        Cache<String, User> test = springBootCacheManager.getOrCreateCache("test", User.class);
 
 
-        System.out.println(cache.get("test"));
+        System.out.println(test.get("test"));
 
     }
 
