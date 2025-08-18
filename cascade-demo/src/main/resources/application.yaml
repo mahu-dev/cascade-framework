@@ -53,5 +53,5 @@ cascade:
 logging:
   level:
     io.github.cascade: DEBUG
-    org.redisson: DEBUG
+    org.redisson: INFO
     root: INFO

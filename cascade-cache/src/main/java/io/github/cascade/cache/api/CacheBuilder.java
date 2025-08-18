@@ -42,6 +42,12 @@ public interface CacheBuilder<K, V> {
      */
     CacheBuilder<K, V> expireAfterAccess(Duration duration);
     
+    /**
+     * 设置自动刷新时间间隔
+     * 与expireAfterWrite不同，refreshAfterWrite不会删除过期数据，而是在后台异步刷新
+     */
+    CacheBuilder<K, V> refreshAfterWrite(Duration duration);
+    
     // ==================== L1缓存配置 ====================
     
     /**

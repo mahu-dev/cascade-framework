@@ -126,6 +126,12 @@ public class CascadeCacheBuilder<K, V> implements CacheBuilder<K, V> {
     }
 
     @Override
+    public CascadeCacheBuilder<K, V> refreshAfterWrite(Duration duration) {
+        config.getCommon().setRefreshAfterWrite(duration);
+        return this;
+    }
+
+    @Override
     public CascadeCacheBuilder<K, V> enableL1Cache(boolean enabled) {
         config.getL1().setEnabled(enabled);
         return this;
