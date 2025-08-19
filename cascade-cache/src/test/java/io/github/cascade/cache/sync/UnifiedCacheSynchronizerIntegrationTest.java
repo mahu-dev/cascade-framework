@@ -2,7 +2,7 @@ package io.github.cascade.cache.sync;
 
 import io.github.cascade.cache.core.unified.UnifiedCache;
 import io.github.cascade.cache.core.unified.UnifiedCacheBuilder;
-import io.github.cascade.cache.sync.unified.UnifiedCacheSynchronizer;
+import io.github.cascade.cache.sync.UnifiedCacheSynchronizer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.redisson.Redisson;

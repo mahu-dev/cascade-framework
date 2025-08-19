@@ -1,20 +1,22 @@
 package io.github.cascade.cache.event;
 
+import io.github.cascade.cache.event.UnifiedCacheEvent;
+
 /**
  * 缓存事件监听器接口
+ * 使用 UnifiedCacheEvent 统一事件模型
  * 
- * @param <E> 事件类型
  * @author cascade
  */
 @FunctionalInterface
-public interface CacheEventListener<E extends CacheEvent> {
+public interface CacheEventListener {
     
     /**
      * 处理缓存事件
      * 
-     * @param event 缓存事件
+     * @param event 统一缓存事件
      */
-    void onEvent(E event);
+    void onEvent(UnifiedCacheEvent event);
     
     /**
      * 获取监听器名称
@@ -28,10 +30,10 @@ public interface CacheEventListener<E extends CacheEvent> {
     /**
      * 判断是否应该处理该事件
      * 
-     * @param event 缓存事件
+     * @param event 统一缓存事件
      * @return 是否处理
      */
-    default boolean shouldHandle(E event) {
+    default boolean shouldHandle(UnifiedCacheEvent event) {
         return true;
     }
     

@@ -1,19 +1,14 @@
 package io.github.cascade.cache.metrics;
 
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CopyOnWriteArraySet;
-import java.util.function.ToDoubleFunction;
-import java.util.function.Function;
-import java.time.Duration;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 /**
- * Micrometer指标导出器
+ * Micrometer指标导出器 预留功能
  * 将缓存指标导出到Micrometer监控系统
  *
  * @author Cascade Framework
@@ -48,13 +43,13 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
         this.enableDetailedMetrics = builder.enableDetailedMetrics;
         this.enableTimeWindowMetrics = builder.enableTimeWindowMetrics;
         this.enableTierMetrics = builder.enableTierMetrics;
-        
+
         // 启动定期更新任务
         scheduler.scheduleAtFixedRate(
-            this::updateMetrics,
-            updateInterval.toMillis(),
-            updateInterval.toMillis(),
-            TimeUnit.MILLISECONDS
+                this::updateMetrics,
+                updateInterval.toMillis(),
+                updateInterval.toMillis(),
+                TimeUnit.MILLISECONDS
         );
     }
 
@@ -67,7 +62,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
         String cacheName = collector.getStats().getCacheName();
         collectors.put(cacheName, collector);
         collector.addListener(this);
-        
+
         // 创建指标集合
         MeterSet meterSet = createMeterSet(cacheName, collector);
         meterSets.put(cacheName, meterSet);
@@ -83,7 +78,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
         if (collector != null) {
             collector.removeListener(this);
         }
-        
+
         MeterSet meterSet = meterSets.remove(cacheName);
         if (meterSet != null) {
             meterSet.close();
@@ -103,7 +98,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
             scheduler.shutdownNow();
             Thread.currentThread().interrupt();
         }
-        
+
         meterSets.values().forEach(MeterSet::close);
         meterSets.clear();
         collectors.clear();
@@ -122,7 +117,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
             String cacheName = entry.getKey();
             CacheMetricsCollector collector = entry.getValue();
             MeterSet meterSet = meterSets.get(cacheName);
-            
+
             if (meterSet != null) {
                 DetailedCacheMetrics stats = collector.getStats();
                 meterSet.update(stats);
@@ -134,8 +129,8 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
      * 创建指标集合
      */
     private MeterSet createMeterSet(String cacheName, CacheMetricsCollector collector) {
-        return new MeterSet(cacheName, meterRegistry, tags, 
-            enableDetailedMetrics, enableTimeWindowMetrics, enableTierMetrics);
+        return new MeterSet(cacheName, meterRegistry, tags,
+                enableDetailedMetrics, enableTimeWindowMetrics, enableTierMetrics);
     }
 
     /**
@@ -148,7 +143,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
         private final boolean enableDetailedMetrics;
         private final boolean enableTimeWindowMetrics;
         private final boolean enableTierMetrics;
-        
+
         // 基础指标
         private final AtomicReference<Double> hitRate;
         private final AtomicReference<Double> missRate;
@@ -159,7 +154,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
         private final AtomicReference<Double> averageLoadTime;
         private final AtomicReference<Long> evictionCount;
         private final AtomicReference<Long> currentSize;
-        
+
         // 详细指标
         private final AtomicReference<Long> putCount;
         private final AtomicReference<Long> removeCount;
@@ -171,15 +166,15 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
         private final AtomicReference<Double> evictionRate;
 
         public MeterSet(String cacheName, MeterRegistry registry, Set<String> globalTags,
-                       boolean enableDetailedMetrics, boolean enableTimeWindowMetrics, 
-                       boolean enableTierMetrics) {
+                        boolean enableDetailedMetrics, boolean enableTimeWindowMetrics,
+                        boolean enableTierMetrics) {
             this.cacheName = cacheName;
             this.registry = registry;
             this.tags = globalTags;
             this.enableDetailedMetrics = enableDetailedMetrics;
             this.enableTimeWindowMetrics = enableTimeWindowMetrics;
             this.enableTierMetrics = enableTierMetrics;
-            
+
             // 初始化基础指标
             this.hitRate = new AtomicReference<>(0.0);
             this.missRate = new AtomicReference<>(0.0);
@@ -190,7 +185,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
             this.averageLoadTime = new AtomicReference<>(0.0);
             this.evictionCount = new AtomicReference<>(0L);
             this.currentSize = new AtomicReference<>(0L);
-            
+
             // 初始化详细指标
             this.putCount = new AtomicReference<>(0L);
             this.removeCount = new AtomicReference<>(0L);
@@ -200,7 +195,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
             this.throughput = new AtomicReference<>(0.0);
             this.loadThroughput = new AtomicReference<>(0.0);
             this.evictionRate = new AtomicReference<>(0.0);
-            
+
             registerMeters();
         }
 
@@ -209,7 +204,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
          */
         private void registerMeters() {
             String[] tagArray = createTagArray();
-            
+
             // 基础指标
             createGauge("cache.hit.rate", "Cache hit rate", () -> hitRate.get(), tagArray);
             createGauge("cache.miss.rate", "Cache miss rate", () -> missRate.get(), tagArray);
@@ -220,7 +215,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
             createGauge("cache.load.time.average", "Average cache load time", () -> averageLoadTime.get(), tagArray);
             createGauge("cache.evictions", "Cache eviction count", () -> evictionCount.get().doubleValue(), tagArray);
             createGauge("cache.size", "Current cache size", () -> currentSize.get().doubleValue(), tagArray);
-            
+
             if (enableDetailedMetrics) {
                 createGauge("cache.puts", "Cache put count", () -> putCount.get().doubleValue(), tagArray);
                 createGauge("cache.removals", "Cache removal count", () -> removeCount.get().doubleValue(), tagArray);
@@ -239,9 +234,9 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
         private String[] createTagArray(String... additionalTags) {
             String[] baseTagArray = {"cache", cacheName};
             String[] allTags = new String[baseTagArray.length + tags.size() * 2 + additionalTags.length];
-            
+
             System.arraycopy(baseTagArray, 0, allTags, 0, baseTagArray.length);
-            
+
             int index = baseTagArray.length;
             for (String tag : tags) {
                 String[] parts = tag.split("=", 2);
@@ -250,30 +245,30 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
                     allTags[index++] = parts[1];
                 }
             }
-            
+
             System.arraycopy(additionalTags, 0, allTags, index, additionalTags.length);
-            
+
             return allTags;
         }
 
         /**
          * 创建仪表指标
          */
-        private void createGauge(String name, String description, java.util.function.Supplier<Double> valueFunction, String[] tags, String... additionalTags) {
+        private void createGauge(String name, String description, Supplier<Double> valueFunction, String[] tags, String... additionalTags) {
             String[] allTags = new String[tags.length + additionalTags.length];
             System.arraycopy(tags, 0, allTags, 0, tags.length);
             System.arraycopy(additionalTags, 0, allTags, tags.length, additionalTags.length);
-            
+
             // 使用反射创建Gauge，避免直接依赖Micrometer
             try {
                 Class<?> gaugeClass = Class.forName("io.micrometer.core.instrument.Gauge");
                 Class<?> builderClass = Class.forName("io.micrometer.core.instrument.Gauge$Builder");
-                
+
                 Object builder = gaugeClass.getMethod("builder", String.class).invoke(null, name);
                 builder = builderClass.getMethod("description", String.class).invoke(builder, description);
                 builder = builderClass.getMethod("tags", String[].class).invoke(builder, (Object) allTags);
                 builderClass.getMethod("register", Class.forName("io.micrometer.core.instrument.MeterRegistry"))
-                    .invoke(builder, registry);
+                        .invoke(builder, registry);
             } catch (Exception e) {
                 // 如果Micrometer不可用，忽略错误
             }
@@ -293,7 +288,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
             averageLoadTime.set(stats.getAverageLoadTimeMillis());
             evictionCount.set(stats.getEvictionCount());
             currentSize.set(stats.getCurrentSize());
-            
+
             if (enableDetailedMetrics) {
                 putCount.set(stats.getPutCount());
                 removeCount.set(stats.getRemoveCount());
@@ -304,12 +299,12 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
                 loadThroughput.set(stats.getLoadThroughput());
                 evictionRate.set(stats.getEvictionRate());
             }
-            
+
             // 更新时间窗口指标
             if (enableTimeWindowMetrics) {
                 updateTimeWindowMetrics(stats);
             }
-            
+
             // 更新分层指标
             if (enableTierMetrics) {
                 updateTierMetrics(stats);
@@ -324,7 +319,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
             for (Map.Entry<String, CacheMetricsCollector.WindowStats> entry : windowMetrics.entrySet()) {
                 String window = entry.getKey();
                 CacheMetricsCollector.WindowStats windowStats = entry.getValue();
-                
+
                 String[] tags = createTagArray("window", window);
                 // 这里可以创建时间窗口相关的指标
             }
@@ -338,7 +333,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
             for (Map.Entry<String, CacheMetricsCollector.TierMetrics> entry : tierMetrics.entrySet()) {
                 String tier = entry.getKey();
                 CacheMetricsCollector.TierMetrics tierStats = entry.getValue();
-                
+
                 String[] tags = createTagArray("tier", tier);
                 // 这里可以创建分层相关的指标
             }

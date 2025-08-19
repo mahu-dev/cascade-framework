@@ -1,9 +1,7 @@
-package io.github.cascade.cache.monitoring;
+package io.github.cascade.cache.metrics;
 
-import io.github.cascade.cache.event.unified.UnifiedCacheEvent;
-import io.github.cascade.cache.event.unified.UnifiedEventProcessor;
-import io.github.cascade.cache.metrics.CacheMetricsCollector;
-import io.github.cascade.cache.metrics.DetailedCacheMetrics;
+import io.github.cascade.cache.event.UnifiedCacheEvent;
+import io.github.cascade.cache.event.UnifiedEventProcessor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -56,17 +54,17 @@ public class UnifiedMonitoringManager {
     public void start() {
         if (running.compareAndSet(false, true)) {
             eventProcessor.start();
-            
+
             // 启动定期监控任务
             if (config.enablePeriodicMonitoring) {
                 scheduler.scheduleAtFixedRate(
-                    this::performPeriodicMonitoring,
-                    config.monitoringInterval.toMillis(),
-                    config.monitoringInterval.toMillis(),
-                    TimeUnit.MILLISECONDS
+                        this::performPeriodicMonitoring,
+                        config.monitoringInterval.toMillis(),
+                        config.monitoringInterval.toMillis(),
+                        TimeUnit.MILLISECONDS
                 );
             }
-            
+
             log.info("Unified monitoring manager started");
         }
     }
@@ -78,7 +76,7 @@ public class UnifiedMonitoringManager {
         if (running.compareAndSet(true, false)) {
             eventProcessor.stop();
             scheduler.shutdown();
-            
+
             try {
                 if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
                     scheduler.shutdownNow();
@@ -87,7 +85,7 @@ public class UnifiedMonitoringManager {
                 scheduler.shutdownNow();
                 Thread.currentThread().interrupt();
             }
-            
+
             log.info("Unified monitoring manager stopped");
         }
     }
@@ -99,10 +97,10 @@ public class UnifiedMonitoringManager {
         if (!cacheMonitors.containsKey(cacheId)) {
             CacheMetricsCollector metricsCollector = new CacheMetricsCollector(cacheId);
             CacheMonitor monitor = new CacheMonitor(cacheId, metricsCollector, this);
-            
+
             metricsCollectors.put(cacheId, metricsCollector);
             cacheMonitors.put(cacheId, monitor);
-            
+
             log.info("Registered monitoring for cache: {}", cacheId);
         }
     }
@@ -115,12 +113,12 @@ public class UnifiedMonitoringManager {
         if (monitor != null) {
             monitor.close();
         }
-        
+
         CacheMetricsCollector collector = metricsCollectors.remove(cacheId);
         if (collector != null) {
             // 清理资源
         }
-        
+
         log.info("Unregistered monitoring for cache: {}", cacheId);
     }
 
@@ -144,8 +142,8 @@ public class UnifiedMonitoringManager {
      */
     public Map<String, DetailedCacheMetrics> getAllCacheMetrics() {
         Map<String, DetailedCacheMetrics> result = new ConcurrentHashMap<>();
-        metricsCollectors.forEach((cacheId, collector) -> 
-            result.put(cacheId, collector.getStats()));
+        metricsCollectors.forEach((cacheId, collector) ->
+                result.put(cacheId, collector.getStats()));
         return result;
     }
 
@@ -157,10 +155,10 @@ public class UnifiedMonitoringManager {
         if (config.enableEventLogging) {
             eventProcessor.registerHandler(new UnifiedEventProcessor.LoggingEventHandler());
         }
-        
+
         // 注册指标收集处理器
         eventProcessor.registerHandler(new MetricsCollectionHandler());
-        
+
         // 注册同步处理器
         if (config.enableSyncEventHandling) {
             eventProcessor.registerHandler(new UnifiedEventProcessor.SyncEventHandler());
@@ -184,12 +182,12 @@ public class UnifiedMonitoringManager {
      * 指标收集事件处理器
      */
     private class MetricsCollectionHandler implements UnifiedEventProcessor.EventHandler {
-        
+
         @Override
         public boolean canHandle(UnifiedCacheEvent event) {
             return event.isMonitoringEvent() || event.isOperationEvent();
         }
-        
+
         @Override
         public void handleEvent(UnifiedCacheEvent event) {
             CacheMetricsCollector collector = metricsCollectors.get(event.getCacheId());
@@ -231,76 +229,82 @@ public class UnifiedMonitoringManager {
         private final String cacheId;
         private final CacheMetricsCollector metricsCollector;
         private final UnifiedMonitoringManager monitoringManager;
-        
-        public CacheMonitor(String cacheId, CacheMetricsCollector metricsCollector, 
-                           UnifiedMonitoringManager monitoringManager) {
+
+        public CacheMonitor(String cacheId, CacheMetricsCollector metricsCollector,
+                            UnifiedMonitoringManager monitoringManager) {
             this.cacheId = cacheId;
             this.metricsCollector = metricsCollector;
             this.monitoringManager = monitoringManager;
         }
-        
+
         /**
          * 执行健康检查
          */
         public void performHealthCheck() {
             DetailedCacheMetrics metrics = metricsCollector.getStats();
-            
+
             // 检查命中率
             if (metrics.getHitRate() < 0.5 && metrics.getRequestCount() > 100) {
                 monitoringManager.publishEvent(
-                    UnifiedCacheEvent.builder(cacheId, UnifiedCacheEvent.Type.ERROR)
-                        .metadata("issue", "low_hit_rate")
-                        .metadata("hit_rate", metrics.getHitRate())
-                        .build()
+                        UnifiedCacheEvent.builder(cacheId, UnifiedCacheEvent.Type.ERROR)
+                                .metadata("issue", "low_hit_rate")
+                                .metadata("hit_rate", metrics.getHitRate())
+                                .build()
                 );
             }
-            
+
             // 检查错误率
             if (metrics.getLoadExceptionRate() > 0.1 && metrics.getLoadCount() > 10) {
                 monitoringManager.publishEvent(
-                    UnifiedCacheEvent.builder(cacheId, UnifiedCacheEvent.Type.ERROR)
-                        .metadata("issue", "high_error_rate")
-                        .metadata("error_rate", metrics.getLoadExceptionRate())
-                        .build()
+                        UnifiedCacheEvent.builder(cacheId, UnifiedCacheEvent.Type.ERROR)
+                                .metadata("issue", "high_error_rate")
+                                .metadata("error_rate", metrics.getLoadExceptionRate())
+                                .build()
                 );
             }
         }
-        
+
         public void close() {
             // 清理监控资源
         }
     }
 
     /**
-     * 监控配置
+     * 监控配置，用于管理事件处理和监控的相关配置选项
+     * <p>
+     * enableAsyncEventProcessing: 是否启用异步事件处理，默认为true
+     * enableEventLogging: 是否启用事件日志记录，默认为true
+     * enableSyncEventHandling: 是否启用同步事件处理，默认为true
+     * enablePeriodicMonitoring: 是否启用周期性监控，默认为true
+     * monitoringInterval: 监控间隔时间，默认为1分钟
      */
     public static class MonitoringConfiguration {
-        public boolean enableAsyncEventProcessing = true;
-        public boolean enableEventLogging = true;
-        public boolean enableSyncEventHandling = true;
-        public boolean enablePeriodicMonitoring = true;
-        public Duration monitoringInterval = Duration.ofMinutes(1);
-        
+        private boolean enableAsyncEventProcessing = true;
+        private boolean enableEventLogging = true;
+        private boolean enableSyncEventHandling = true;
+        private boolean enablePeriodicMonitoring = true;
+        private Duration monitoringInterval = Duration.ofMinutes(1);
+
         public MonitoringConfiguration enableAsyncEventProcessing(boolean enable) {
             this.enableAsyncEventProcessing = enable;
             return this;
         }
-        
+
         public MonitoringConfiguration enableEventLogging(boolean enable) {
             this.enableEventLogging = enable;
             return this;
         }
-        
+
         public MonitoringConfiguration enableSyncEventHandling(boolean enable) {
             this.enableSyncEventHandling = enable;
             return this;
         }
-        
+
         public MonitoringConfiguration enablePeriodicMonitoring(boolean enable) {
             this.enablePeriodicMonitoring = enable;
             return this;
         }
-        
+
         public MonitoringConfiguration monitoringInterval(Duration interval) {
             this.monitoringInterval = interval;
             return this;

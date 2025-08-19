@@ -1,7 +1,7 @@
 package io.github.cascade.autoconfigure;
 
 import io.github.cascade.cache.config.CachePropertiesProvider;
-import io.github.cascade.cache.config.unified.CascadeCacheConfiguration;
+import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 

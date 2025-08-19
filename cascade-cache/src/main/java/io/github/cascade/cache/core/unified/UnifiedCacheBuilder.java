@@ -3,14 +3,15 @@ package io.github.cascade.cache.core.unified;
 import io.github.cascade.cache.annotation.AutoConfigureLoader;
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheLoader;
-import io.github.cascade.cache.config.unified.CascadeCacheConfiguration;
-import io.github.cascade.cache.core.loader.CacheLoaderResolver;
+import io.github.cascade.cache.config.CascadeCacheConfiguration;
+import io.github.cascade.cache.core.CacheLoaderResolver;
 import io.github.cascade.cache.core.unified.CaffeineEngine.CaffeineConfig;
 import io.github.cascade.cache.core.unified.RedisEngine.RedisConfig;
 import io.github.cascade.cache.protection.*;
 import io.github.cascade.cache.sync.RedissonCacheSyncManager;
-import io.github.cascade.cache.sync.unified.UnifiedCacheSynchronizer;
-import io.github.cascade.cache.event.unified.UnifiedEventProcessor;
+import io.github.cascade.cache.sync.UnifiedCacheSynchronizer;
+import io.github.cascade.cache.event.UnifiedEventProcessor;
+import io.github.cascade.cache.refresh.CacheRefreshScheduler;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RedissonClient;
 import org.springframework.context.ApplicationContext;
@@ -59,6 +60,11 @@ public class UnifiedCacheBuilder<K, V> {
     private String syncTopic = "cascade:cache:sync";
     private Duration syncTimeout = Duration.ofSeconds(5);
     private boolean asyncSync = true;
+
+    // 刷新配置
+    private boolean enableAutoRefresh = false;
+    private Duration refreshInterval = Duration.ofMinutes(10);
+    private boolean refreshOnAccess = false;
 
     // Spring上下文（用于自动发现）
     private static ApplicationContext applicationContext;
@@ -365,6 +371,50 @@ public class UnifiedCacheBuilder<K, V> {
                 .asyncSync(true);
     }
 
+    // ==================== 刷新配置 ====================
+
+    /**
+     * 启用自动刷新
+     */
+    public UnifiedCacheBuilder<K, V> enableAutoRefresh(boolean enabled) {
+        this.enableAutoRefresh = enabled;
+        return this;
+    }
+
+    /**
+     * 设置刷新间隔
+     */
+    public UnifiedCacheBuilder<K, V> refreshInterval(Duration interval) {
+        this.refreshInterval = interval;
+        return this;
+    }
+
+    /**
+     * 设置访问时是否触发刷新检查
+     */
+    public UnifiedCacheBuilder<K, V> refreshOnAccess(boolean enabled) {
+        this.refreshOnAccess = enabled;
+        return this;
+    }
+
+    /**
+     * 一键配置自动刷新
+     */
+    public UnifiedCacheBuilder<K, V> withAutoRefresh() {
+        return enableAutoRefresh(true)
+                .refreshInterval(Duration.ofMinutes(10))
+                .refreshOnAccess(false);
+    }
+
+    /**
+     * 一键配置自动刷新（自定义间隔）
+     */
+    public UnifiedCacheBuilder<K, V> withAutoRefresh(Duration interval) {
+        return enableAutoRefresh(true)
+                .refreshInterval(interval)
+                .refreshOnAccess(false);
+    }
+
     // ==================== 构建方法 ====================
 
     /**
@@ -455,8 +505,30 @@ public class UnifiedCacheBuilder<K, V> {
             }
         }
 
-        log.info("Built unified cache: {}, L1={}, L2={}, protection={}, sync={}",
-                cacheName, enableL1, enableL2, enableProtection, enableSync);
+        // 设置刷新调度器
+        if (enableAutoRefresh && cacheLoader != null) {
+            try {
+                // 创建刷新回调
+                CacheRefreshScheduler.RefreshCallback<K, V> refreshCallback = (key, newValue) -> {
+                    cache.put(key, newValue);
+                    log.debug("Auto refreshed cache key: {} with new value", key);
+                };
+                
+                // 创建刷新调度器
+                CacheRefreshScheduler<K, V> refreshScheduler = new CacheRefreshScheduler<>(
+                    refreshCallback, cacheLoader, refreshInterval);
+                
+                // 设置到缓存中
+                cache.setRefreshScheduler(refreshScheduler);
+                
+                log.info("Configured auto refresh for cache: {}, interval: {}", cacheName, refreshInterval);
+            } catch (Exception e) {
+                log.warn("Failed to configure auto refresh for cache: {}, error: {}", cacheName, e.getMessage());
+            }
+        }
+
+        log.info("Built unified cache: {}, L1={}, L2={}, protection={}, sync={}, autoRefresh={}",
+                cacheName, enableL1, enableL2, enableProtection, enableSync, enableAutoRefresh);
 
         return cache;
     }

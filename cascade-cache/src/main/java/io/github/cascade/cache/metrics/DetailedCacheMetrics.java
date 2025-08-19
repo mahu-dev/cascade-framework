@@ -1,48 +1,135 @@
 package io.github.cascade.cache.metrics;
 
+import lombok.Getter;
+
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 详细缓存指标信息 
+ * 详细缓存指标信息
  * 包含缓存的各种性能指标和统计数据，用于Micrometer导出
  *
  * @author Cascade Framework
  */
 public class DetailedCacheMetrics {
 
+    /**
+     * -- GETTER --
+     * 获取缓存名称
+     */
+    @Getter
     private final String cacheName;
+    /**
+     * -- GETTER --
+     * 获取命中次数
+     */
+    @Getter
     private final long hitCount;
+    /**
+     * -- GETTER --
+     * 获取未命中次数
+     */
+    @Getter
     private final long missCount;
+    /**
+     * -- GETTER --
+     * 获取加载次数
+     */
+    @Getter
     private final long loadCount;
+    /**
+     * -- GETTER --
+     * 获取加载成功次数
+     */
+    @Getter
     private final long loadSuccessCount;
+    /**
+     * -- GETTER --
+     * 获取加载异常次数
+     */
+    @Getter
     private final long loadExceptionCount;
+    /**
+     * -- GETTER --
+     * 获取驱逐次数
+     */
+    @Getter
     private final long evictionCount;
+    /**
+     * -- GETTER --
+     * 获取放入次数
+     */
+    @Getter
     private final long putCount;
+    /**
+     * -- GETTER --
+     * 获取移除次数
+     */
+    @Getter
     private final long removeCount;
-    
+
+    /**
+     * -- GETTER --
+     * 获取总加载时间（纳秒）
+     */
+    @Getter
     private final long totalLoadTime;
+    /**
+     * -- GETTER --
+     * 获取最大加载时间（纳秒）
+     */
+    @Getter
     private final long maxLoadTime;
+    /**
+     * -- GETTER --
+     * 获取最小加载时间（纳秒）
+     */
+    @Getter
     private final long minLoadTime;
-    
+
+    /**
+     * -- GETTER --
+     * 获取当前大小
+     */
+    @Getter
     private final long currentSize;
+    /**
+     * -- GETTER --
+     * 获取最大大小
+     */
+    @Getter
     private final long maxSize;
-    
+
+    /**
+     * -- GETTER --
+     * 获取运行时间
+     */
+    @Getter
     private final Duration uptime;
-    
+
+    /**
+     * 存储各层缓存的指标收集器映射表
+     * key为层名称，value为对应层的指标收集器
+     */
     private final Map<String, CacheMetricsCollector.TierMetrics> tierMetrics;
+
+    /**
+     * 存储时间窗口统计信息的映射表
+     * key为窗口标识，value为对应时间窗口的统计信息
+     */
     private final Map<String, CacheMetricsCollector.WindowStats> timeWindowMetrics;
 
+
     public DetailedCacheMetrics(String cacheName,
-                     long hitCount, long missCount, long loadCount,
-                     long loadSuccessCount, long loadExceptionCount,
-                     long evictionCount, long putCount, long removeCount,
-                     long totalLoadTime, long maxLoadTime, long minLoadTime,
-                     long currentSize, long maxSize,
-                     Duration uptime,
-                     Map<String, CacheMetricsCollector.TierMetrics> tierMetrics,
-                     Map<String, CacheMetricsCollector.WindowStats> timeWindowMetrics) {
+                                long hitCount, long missCount, long loadCount,
+                                long loadSuccessCount, long loadExceptionCount,
+                                long evictionCount, long putCount, long removeCount,
+                                long totalLoadTime, long maxLoadTime, long minLoadTime,
+                                long currentSize, long maxSize,
+                                Duration uptime,
+                                Map<String, CacheMetricsCollector.TierMetrics> tierMetrics,
+                                Map<String, CacheMetricsCollector.WindowStats> timeWindowMetrics) {
         this.cacheName = cacheName;
         this.hitCount = hitCount;
         this.missCount = missCount;
@@ -60,27 +147,6 @@ public class DetailedCacheMetrics {
         this.uptime = uptime;
         this.tierMetrics = new ConcurrentHashMap<>(tierMetrics);
         this.timeWindowMetrics = new ConcurrentHashMap<>(timeWindowMetrics);
-    }
-
-    /**
-     * 获取缓存名称
-     */
-    public String getCacheName() {
-        return cacheName;
-    }
-
-    /**
-     * 获取命中次数
-     */
-    public long getHitCount() {
-        return hitCount;
-    }
-
-    /**
-     * 获取未命中次数
-     */
-    public long getMissCount() {
-        return missCount;
     }
 
     /**
@@ -106,27 +172,6 @@ public class DetailedCacheMetrics {
     }
 
     /**
-     * 获取加载次数
-     */
-    public long getLoadCount() {
-        return loadCount;
-    }
-
-    /**
-     * 获取加载成功次数
-     */
-    public long getLoadSuccessCount() {
-        return loadSuccessCount;
-    }
-
-    /**
-     * 获取加载异常次数
-     */
-    public long getLoadExceptionCount() {
-        return loadExceptionCount;
-    }
-
-    /**
      * 获取加载成功率
      */
     public double getLoadSuccessRate() {
@@ -138,34 +183,6 @@ public class DetailedCacheMetrics {
      */
     public double getLoadExceptionRate() {
         return loadCount > 0 ? (double) loadExceptionCount / loadCount : 0.0;
-    }
-
-    /**
-     * 获取驱逐次数
-     */
-    public long getEvictionCount() {
-        return evictionCount;
-    }
-
-    /**
-     * 获取放入次数
-     */
-    public long getPutCount() {
-        return putCount;
-    }
-
-    /**
-     * 获取移除次数
-     */
-    public long getRemoveCount() {
-        return removeCount;
-    }
-
-    /**
-     * 获取总加载时间（纳秒）
-     */
-    public long getTotalLoadTime() {
-        return totalLoadTime;
     }
 
     /**
@@ -183,13 +200,6 @@ public class DetailedCacheMetrics {
     }
 
     /**
-     * 获取最大加载时间（纳秒）
-     */
-    public long getMaxLoadTime() {
-        return maxLoadTime;
-    }
-
-    /**
      * 获取最大加载时间（毫秒）
      */
     public double getMaxLoadTimeMillis() {
@@ -197,38 +207,10 @@ public class DetailedCacheMetrics {
     }
 
     /**
-     * 获取最小加载时间（纳秒）
-     */
-    public long getMinLoadTime() {
-        return minLoadTime;
-    }
-
-    /**
      * 获取最小加载时间（毫秒）
      */
     public double getMinLoadTimeMillis() {
         return minLoadTime / 1_000_000.0;
-    }
-
-    /**
-     * 获取当前大小
-     */
-    public long getCurrentSize() {
-        return currentSize;
-    }
-
-    /**
-     * 获取最大大小
-     */
-    public long getMaxSize() {
-        return maxSize;
-    }
-
-    /**
-     * 获取运行时间
-     */
-    public Duration getUptime() {
-        return uptime;
     }
 
     /**
@@ -289,12 +271,12 @@ public class DetailedCacheMetrics {
     @Override
     public String toString() {
         return String.format(
-            "CacheStats{cacheName='%s', hitCount=%d, missCount=%d, hitRate=%.2f%%, " +
-            "loadCount=%d, loadSuccessRate=%.2f%%, avgLoadTime=%.2fms, " +
-            "currentSize=%d, maxSize=%d, uptime=%s}",
-            cacheName, hitCount, missCount, getHitRate() * 100,
-            loadCount, getLoadSuccessRate() * 100, getAverageLoadTimeMillis(),
-            currentSize, maxSize, uptime
+                "CacheStats{cacheName='%s', hitCount=%d, missCount=%d, hitRate=%.2f%%, " +
+                        "loadCount=%d, loadSuccessRate=%.2f%%, avgLoadTime=%.2fms, " +
+                        "currentSize=%d, maxSize=%d, uptime=%s}",
+                cacheName, hitCount, missCount, getHitRate() * 100,
+                loadCount, getLoadSuccessRate() * 100, getAverageLoadTimeMillis(),
+                currentSize, maxSize, uptime
         );
     }
 
@@ -413,12 +395,12 @@ public class DetailedCacheMetrics {
 
         public DetailedCacheMetrics build() {
             return new DetailedCacheMetrics(
-                cacheName, hitCount, missCount, loadCount,
-                loadSuccessCount, loadExceptionCount,
-                evictionCount, putCount, removeCount,
-                totalLoadTime, maxLoadTime, minLoadTime,
-                currentSize, maxSize, uptime,
-                tierMetrics, timeWindowMetrics
+                    cacheName, hitCount, missCount, loadCount,
+                    loadSuccessCount, loadExceptionCount,
+                    evictionCount, putCount, removeCount,
+                    totalLoadTime, maxLoadTime, minLoadTime,
+                    currentSize, maxSize, uptime,
+                    tierMetrics, timeWindowMetrics
             );
         }
     }

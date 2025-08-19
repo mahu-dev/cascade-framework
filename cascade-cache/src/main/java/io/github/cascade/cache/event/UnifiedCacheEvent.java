@@ -1,4 +1,6 @@
-package io.github.cascade.cache.event.unified;
+package io.github.cascade.cache.event;
+
+import lombok.Getter;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -37,21 +39,33 @@ public class UnifiedCacheEvent {
         TRACE, DEBUG, INFO, WARN, ERROR
     }
 
+    // Getters
+    @Getter
     private final String cacheId;
+    @Getter
     private final Type type;
+    @Getter
     private final Level level;
+    @Getter
     private final Instant timestamp;
+    @Getter
     private final String sourceNodeId;
+    @Getter
     private final Duration duration;
-    
+
     // 数据字段
+    @Getter
     private final Object key;
+    @Getter
     private final Object value;
+    @Getter
     private final Set<Object> keys;
     private final Map<String, Object> metadata;
-    
+
     // 状态字段
+    @Getter
     private final boolean success;
+    @Getter
     private final Throwable exception;
 
     private UnifiedCacheEvent(Builder builder) {
@@ -69,19 +83,9 @@ public class UnifiedCacheEvent {
         this.exception = builder.exception;
     }
 
-    // Getters
-    public String getCacheId() { return cacheId; }
-    public Type getType() { return type; }
-    public Level getLevel() { return level; }
-    public Instant getTimestamp() { return timestamp; }
-    public String getSourceNodeId() { return sourceNodeId; }
-    public Duration getDuration() { return duration; }
-    public Object getKey() { return key; }
-    public Object getValue() { return value; }
-    public Set<Object> getKeys() { return keys; }
-    public Map<String, Object> getMetadata() { return new HashMap<>(metadata); }
-    public boolean isSuccess() { return success; }
-    public Throwable getException() { return exception; }
+    public Map<String, Object> getMetadata() {
+        return new HashMap<>(metadata);
+    }
 
     /**
      * 获取元数据值
@@ -102,16 +106,16 @@ public class UnifiedCacheEvent {
      * 是否为同步事件
      */
     public boolean isSyncEvent() {
-        return type == Type.SYNC_PUT || type == Type.SYNC_EVICT || 
-               type == Type.SYNC_CLEAR || type == Type.SYNC_REFRESH;
+        return type == Type.SYNC_PUT || type == Type.SYNC_EVICT ||
+                type == Type.SYNC_CLEAR || type == Type.SYNC_REFRESH;
     }
 
     /**
      * 是否为操作事件
      */
     public boolean isOperationEvent() {
-        return type == Type.GET || type == Type.PUT || type == Type.EVICT || 
-               type == Type.CLEAR || type == Type.REFRESH;
+        return type == Type.GET || type == Type.PUT || type == Type.EVICT ||
+                type == Type.CLEAR || type == Type.REFRESH;
     }
 
     /**
@@ -124,8 +128,8 @@ public class UnifiedCacheEvent {
     @Override
     public String toString() {
         return String.format(
-            "UnifiedCacheEvent{cacheId='%s', type=%s, level=%s, timestamp=%s, duration=%s, success=%s}",
-            cacheId, type, level, timestamp, getDurationMillis() + "ms", success
+                "UnifiedCacheEvent{cacheId='%s', type=%s, level=%s, timestamp=%s, duration=%s, success=%s}",
+                cacheId, type, level, timestamp, getDurationMillis() + "ms", success
         );
     }
 

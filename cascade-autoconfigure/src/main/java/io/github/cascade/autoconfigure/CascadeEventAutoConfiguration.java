@@ -1,21 +1,23 @@
-package io.github.cascade.cache.event;
+package io.github.cascade.autoconfigure;
 
-import io.github.cascade.cache.event.unified.UnifiedEventProcessor;
-import io.github.cascade.cache.monitoring.UnifiedMonitoringManager;
+import io.github.cascade.cache.event.UnifiedEventProcessor;
+import io.github.cascade.cache.metrics.UnifiedMonitoringManager;
+import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 
 /**
- * 缓存事件配置类
- * 提供统一的缓存事件处理配置
+ * Cascade缓存事件自动配置类
+ * 提供统一的缓存事件处理和监控配置
  *
  * @author cascade
  */
-@Configuration
-@ConditionalOnProperty(prefix = "cascade.cache.events", name = "enabled", havingValue = "true", matchIfMissing = false)
-public class CacheEventConfiguration {
+@AutoConfiguration
+@ConditionalOnClass({UnifiedEventProcessor.class, UnifiedMonitoringManager.class})
+@ConditionalOnProperty(prefix = "cascade.cache.events", name = "enabled", havingValue = "true", matchIfMissing = true)
+public class CascadeEventAutoConfiguration {
 
     /**
      * 统一事件处理器

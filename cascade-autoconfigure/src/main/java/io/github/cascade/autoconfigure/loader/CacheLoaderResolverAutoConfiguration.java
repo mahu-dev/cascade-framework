@@ -1,6 +1,6 @@
 package io.github.cascade.autoconfigure.loader;
 
-import io.github.cascade.cache.core.loader.CacheLoaderResolver;
+import io.github.cascade.cache.core.CacheLoaderResolver;
 import io.github.cascade.cache.core.unified.UnifiedCacheBuilder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;

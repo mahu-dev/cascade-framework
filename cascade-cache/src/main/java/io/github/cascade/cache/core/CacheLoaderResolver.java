@@ -1,4 +1,4 @@
-package io.github.cascade.cache.core.loader;
+package io.github.cascade.cache.core;
 
 import io.github.cascade.cache.api.CacheLoader;
 import org.slf4j.Logger;

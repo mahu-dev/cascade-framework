@@ -4,9 +4,8 @@ import io.github.cascade.api.HealthStatus;
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheManager;
 import io.github.cascade.cache.config.CachePropertiesProvider;
-import io.github.cascade.cache.config.unified.CascadeCacheConfiguration;
+import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import io.github.cascade.cache.core.unified.UnifiedCacheBuilder;
-import io.github.cascade.cache.util.TypeInference;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.Getter;
@@ -97,7 +96,6 @@ public class SpringBootCacheManager implements CacheManager {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public <K, V> Cache<K, V> getOrCreateCache(String cacheName) {
         return getOrCreateCache(cacheName, null, null);
     }
@@ -515,34 +513,6 @@ public class SpringBootCacheManager implements CacheManager {
      */
     public <V> Cache<Integer, V> intCache(String cacheName, Class<V> valueType) {
         return getOrCreateCache(cacheName, Integer.class, valueType);
-    }
-
-    /**
-     * 智能推断类型的缓存创建 - 实验性功能
-     * 尝试从调用上下文和缓存名称推断类型
-     */
-    @SuppressWarnings("unchecked")
-    public <K, V> Cache<K, V> smartCache(String cacheName) {
-        // 尝试从调用栈推断类型
-        Class<?>[] inferredTypes = TypeInference.inferCacheTypes();
-
-        if (inferredTypes != null && inferredTypes.length == 2) {
-            logger.debug("Inferred types from call stack: K={}, V={}", inferredTypes[0], inferredTypes[1]);
-            return getOrCreateCache(cacheName,
-                    (Class<K>) inferredTypes[0], (Class<V>) inferredTypes[1]);
-        }
-
-        // 尝试从缓存名称推断类型
-        inferredTypes = TypeInference.inferFromVariableName(cacheName);
-        if (inferredTypes != null && inferredTypes.length == 2) {
-            logger.debug("Inferred types from cache name '{}': K={}, V={}", cacheName, inferredTypes[0], inferredTypes[1]);
-            return getOrCreateCache(cacheName,
-                    (Class<K>) inferredTypes[0], (Class<V>) inferredTypes[1]);
-        }
-
-        // 推断失败，使用默认行为
-        logger.debug("Type inference failed for cache '{}', using default behavior", cacheName);
-        return getOrCreateCache(cacheName);
     }
 
     // ==================== 工具方法 ====================

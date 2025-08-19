@@ -2,7 +2,7 @@ package io.github.cascade.autoconfigure.annotation;
 
 import io.github.cascade.cache.annotation.CascadeCacheAspect;
 import io.github.cascade.cache.api.CacheManager;
-import io.github.cascade.cache.event.unified.UnifiedEventProcessor;
+import io.github.cascade.cache.event.UnifiedEventProcessor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;

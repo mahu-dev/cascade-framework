@@ -1,4 +1,4 @@
-package io.github.cascade.cache.config.unified;
+package io.github.cascade.cache.config;
 
 import io.github.cascade.cache.protection.CascadeBloomFilter;
 import lombok.Data;

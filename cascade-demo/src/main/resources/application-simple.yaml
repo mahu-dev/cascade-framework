@@ -1,0 +1,32 @@
+# 简化配置 - 不依赖外部Redis
+spring:
+  application:
+    name: cascade-cache-demo
+  profiles:
+    active: simple
+
+# Cascade框架配置 - 仅使用L1缓存
+cascade:
+  enabled: true
+  common:
+    maximumSize: 1000
+    expireAfterWrite: 10m
+    recordStats: true
+  l1:
+    enabled: true
+    maximumSize: 500
+    expireAfterWrite: 5m
+    recordStats: true
+  l2:
+    enabled: false  # 禁用L2以避免Redis依赖
+  sync:
+    enabled: false  # 禁用同步以避免Redis依赖
+  protection:
+    enabled: false  # 禁用保护以避免Redis依赖
+
+# 日志配置
+logging:
+  level:
+    io.github.cascade: DEBUG
+    cc.coderm: DEBUG
+    root: INFO

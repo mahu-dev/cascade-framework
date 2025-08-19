@@ -2,7 +2,10 @@ package io.github.cascade.cache.core.unified;
 
 import io.github.cascade.cache.api.*;
 import io.github.cascade.cache.protection.SimplifiedCacheProtectionManager;
-import io.github.cascade.cache.sync.unified.UnifiedCacheSynchronizer;
+import io.github.cascade.cache.sync.UnifiedCacheSynchronizer;
+import io.github.cascade.cache.refresh.CacheRefreshScheduler;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
@@ -28,13 +31,34 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
     private final String name;
     private final CacheEngine<K, V> l1Engine;
     private final CacheEngine<K, V> l2Engine;
+    /**
+     * -- GETTER --
+     * 检查是否为多级缓存
+     */
+    @Getter
     private final boolean isMultiTier;
     private final Executor executor;
 
     // 功能组件
     private CacheLoader<K, V> cacheLoader;
+    /**
+     * -- SETTER --
+     * 设置防护管理器
+     */
+    @Setter
     private SimplifiedCacheProtectionManager protectionManager;
+    /**
+     * -- GETTER --
+     * 获取同步器
+     */
+    @Getter
     private UnifiedCacheSynchronizer<K, V> synchronizer;
+    /**
+     * -- GETTER --
+     * 获取刷新调度器
+     */
+    @Getter
+    private CacheRefreshScheduler<K, V> refreshScheduler;
 
     /**
      * 单级缓存构造器
@@ -702,13 +726,6 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
     }
 
     /**
-     * 设置防护管理器
-     */
-    public void setProtectionManager(SimplifiedCacheProtectionManager manager) {
-        this.protectionManager = manager;
-    }
-
-    /**
      * 设置同步器
      */
     public void setSynchronizer(UnifiedCacheSynchronizer<K, V> synchronizer) {
@@ -722,10 +739,64 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
     }
 
     /**
-     * 获取同步器
+     * 设置刷新调度器
      */
-    public UnifiedCacheSynchronizer<K, V> getSynchronizer() {
-        return synchronizer;
+    public void setRefreshScheduler(CacheRefreshScheduler<K, V> refreshScheduler) {
+        // 关闭旧的调度器
+        if (this.refreshScheduler != null) {
+            this.refreshScheduler.shutdown();
+        }
+        
+        this.refreshScheduler = refreshScheduler;
+        log.info("Cache refresh scheduler configured for cache: {}", name);
+    }
+
+    /**
+     * 启用键的定时刷新
+     */
+    public void enableAutoRefresh(K key) {
+        if (refreshScheduler == null) {
+            log.warn("Cannot enable auto refresh for key {}: no refresh scheduler configured", key);
+            return;
+        }
+        
+        if (cacheLoader == null) {
+            log.warn("Cannot enable auto refresh for key {}: no CacheLoader configured", key);
+            return;
+        }
+        
+        refreshScheduler.scheduleRefresh(key);
+        log.debug("Auto refresh enabled for key: {}", key);
+    }
+
+    /**
+     * 批量启用键的定时刷新
+     */
+    public void enableAutoRefreshAll(Set<K> keys) {
+        if (keys == null || keys.isEmpty()) return;
+        
+        keys.forEach(this::enableAutoRefresh);
+        log.info("Auto refresh enabled for {} keys in cache: {}", keys.size(), name);
+    }
+
+    /**
+     * 禁用键的定时刷新
+     */
+    public void disableAutoRefresh(K key) {
+        if (refreshScheduler == null) return;
+        
+        refreshScheduler.cancelRefresh(key);
+        log.debug("Auto refresh disabled for key: {}", key);
+    }
+
+    /**
+     * 获取刷新统计信息
+     */
+    public CacheRefreshScheduler.RefreshStats getRefreshStats() {
+        if (refreshScheduler == null) {
+            return new CacheRefreshScheduler.RefreshStats(0, 0, Duration.ZERO);
+        }
+        return refreshScheduler.getStats();
     }
 
     // ==================== 私有方法 ====================
@@ -801,11 +872,25 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
      * 关闭缓存
      */
     public void close() {
+        // 关闭刷新调度器
+        if (refreshScheduler != null) {
+            refreshScheduler.shutdown();
+            log.debug("Cache refresh scheduler stopped for: {}", name);
+        }
+        
+        // 关闭同步器
+        if (synchronizer != null) {
+            synchronizer.stop();
+            log.debug("Cache synchronizer stopped for: {}", name);
+        }
+        
+        // 关闭缓存引擎
         l1Engine.close();
         if (isMultiTier) {
             l2Engine.close();
         }
-        log.debug("Cache closed: {}", name);
+        
+        log.info("Cache closed: {}", name);
     }
 
     /**
@@ -822,13 +907,6 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
     @Override
     public String getName() {
         return name;
-    }
-
-    /**
-     * 检查是否为多级缓存
-     */
-    public boolean isMultiTier() {
-        return isMultiTier;
     }
 
     /**

@@ -1,17 +1,11 @@
-package io.github.cascade.cache.sync.unified;
+package io.github.cascade.cache.sync;
 
 import io.github.cascade.cache.api.Cache;
-import io.github.cascade.cache.event.unified.UnifiedCacheEvent;
-import io.github.cascade.cache.event.unified.UnifiedEventProcessor;
-import io.github.cascade.cache.sync.CacheSyncManager;
-import io.github.cascade.cache.sync.CacheSyncEvent;
-import io.github.cascade.cache.sync.CacheSyncListener;
-import io.github.cascade.cache.sync.CacheSynchronizer;
+import io.github.cascade.cache.event.UnifiedCacheEvent;
+import io.github.cascade.cache.event.UnifiedEventProcessor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Duration;
-import java.time.Instant;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -34,11 +28,11 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
     private final UnifiedEventProcessor eventProcessor;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final SyncStatsImpl stats = new SyncStatsImpl();
-    
+
     private Cache<K, V> cache;
 
-    public UnifiedCacheSynchronizer(String cacheId, CacheSyncManager syncManager, 
-                                   UnifiedEventProcessor eventProcessor) {
+    public UnifiedCacheSynchronizer(String cacheId, CacheSyncManager syncManager,
+                                    UnifiedEventProcessor eventProcessor) {
         this.cacheId = cacheId;
         this.syncManager = syncManager;
         this.eventProcessor = eventProcessor;
@@ -84,9 +78,9 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
     @Override
     public void notifyPut(K key, V value) {
         if (!running.get()) return;
-        
+
         publishSyncEvent(key, value, UnifiedCacheEvent.Type.SYNC_PUT);
-        
+
         CacheSyncEvent syncEvent = new CacheSyncEvent(cacheId, key, value, syncManager.getCurrentNodeId());
         publishToSyncManager(syncEvent);
     }
@@ -94,9 +88,9 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
     @Override
     public void notifyEvict(K key) {
         if (!running.get()) return;
-        
+
         publishSyncEvent(key, null, UnifiedCacheEvent.Type.SYNC_EVICT);
-        
+
         CacheSyncEvent syncEvent = new CacheSyncEvent(cacheId, CacheSyncEvent.Operation.EVICT, key, syncManager.getCurrentNodeId());
         publishToSyncManager(syncEvent);
     }
@@ -104,9 +98,9 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
     @Override
     public void notifyClear() {
         if (!running.get()) return;
-        
+
         publishSyncEvent(null, null, UnifiedCacheEvent.Type.SYNC_CLEAR);
-        
+
         CacheSyncEvent syncEvent = new CacheSyncEvent(cacheId, syncManager.getCurrentNodeId());
         publishToSyncManager(syncEvent);
     }
@@ -114,9 +108,9 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
     @Override
     public void notifyRefresh(K key) {
         if (!running.get()) return;
-        
+
         publishSyncEvent(key, null, UnifiedCacheEvent.Type.SYNC_REFRESH);
-        
+
         CacheSyncEvent syncEvent = new CacheSyncEvent(cacheId, CacheSyncEvent.Operation.REFRESH, key, syncManager.getCurrentNodeId());
         publishToSyncManager(syncEvent);
     }
@@ -124,7 +118,7 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
     @Override
     public void notifyPutAll(Set<K> keys) {
         if (!running.get() || keys.isEmpty()) return;
-        
+
         // 对于批量操作，我们可以选择单独处理每个键或者批量处理
         keys.forEach(key -> {
             V value = cache.get(key);
@@ -137,7 +131,7 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
     @Override
     public void notifyEvictAll(Set<K> keys) {
         if (!running.get() || keys.isEmpty()) return;
-        
+
         keys.forEach(this::notifyEvict);
     }
 
@@ -168,18 +162,18 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
     @Override
     public void onSyncEvent(CacheSyncEvent event) {
         if (!shouldHandle(event)) return;
-        
+
         stats.recordReceived();
-        
+
         try {
             handleSyncEvent(event);
-            
+
             // 发布统一事件
             UnifiedCacheEvent unifiedEvent = convertToUnifiedEvent(event);
             if (unifiedEvent != null) {
                 eventProcessor.publishEvent(unifiedEvent);
             }
-            
+
         } catch (Exception e) {
             log.error("Error handling sync event: {}", event, e);
             stats.recordError();
@@ -238,7 +232,7 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
             default:
                 return null;
         }
-        
+
         return UnifiedCacheEvent.builder(cacheId, type)
                 .sourceNodeId(syncEvent.getSourceNodeId())
                 .key(syncEvent.getKey())
@@ -259,7 +253,7 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
                 .value(value)
                 .level(UnifiedCacheEvent.Level.DEBUG)
                 .build();
-        
+
         eventProcessor.publishEvent(event);
     }
 
@@ -344,9 +338,9 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
 
         @Override
         public String toString() {
-            return String.format("SyncStats{sent=%d, received=%d, errors=%d, avgSendTime=%.2fms}", 
-                getSentMessageCount(), getReceivedMessageCount(), getFailedMessageCount(), 
-                getAverageSendTime() / 1_000_000.0);
+            return String.format("SyncStats{sent=%d, received=%d, errors=%d, avgSendTime=%.2fms}",
+                    getSentMessageCount(), getReceivedMessageCount(), getFailedMessageCount(),
+                    getAverageSendTime() / 1_000_000.0);
         }
     }
 }
