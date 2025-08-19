@@ -2,6 +2,7 @@ package io.github.cascade.cache.core.unified;
 
 import io.github.cascade.cache.api.*;
 import io.github.cascade.cache.protection.SimplifiedCacheProtectionManager;
+import io.github.cascade.cache.sync.unified.UnifiedCacheSynchronizer;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
@@ -33,6 +34,7 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
     // 功能组件
     private CacheLoader<K, V> cacheLoader;
     private SimplifiedCacheProtectionManager protectionManager;
+    private UnifiedCacheSynchronizer<K, V> synchronizer;
 
     /**
      * 单级缓存构造器
@@ -135,6 +137,11 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
             // 简化防护逻辑，暂时跳过
         }
 
+        // 触发分布式同步
+        if (synchronizer != null) {
+            synchronizer.notifyPut(key, value);
+        }
+
         log.debug("Cache put: key={}, tiers={}", key, isMultiTier ? "L1+L2" : "L1");
     }
 
@@ -145,6 +152,11 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
         l1Engine.putAll(map);
         if (isMultiTier) {
             l2Engine.putAll(map);
+        }
+
+        // 触发分布式同步
+        if (synchronizer != null) {
+            synchronizer.notifyPutAll(map.keySet());
         }
 
         log.debug("Cache putAll: size={}, tiers={}", map.size(), isMultiTier ? "L1+L2" : "L1");
@@ -171,6 +183,11 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
             l2Engine.evict(key);
         }
 
+        // 触发分布式同步
+        if (synchronizer != null) {
+            synchronizer.notifyEvict(key);
+        }
+
         log.debug("Cache evict: key={}, tiers={}", key, isMultiTier ? "L1+L2" : "L1");
     }
 
@@ -183,6 +200,11 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
             l2Engine.evictAll(keys);
         }
 
+        // 触发分布式同步
+        if (synchronizer != null) {
+            synchronizer.notifyEvictAll(keys);
+        }
+
         log.debug("Cache evictAll: size={}, tiers={}", keys.size(), isMultiTier ? "L1+L2" : "L1");
     }
 
@@ -191,6 +213,11 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
         l1Engine.clear();
         if (isMultiTier) {
             l2Engine.clear();
+        }
+
+        // 触发分布式同步
+        if (synchronizer != null) {
+            synchronizer.notifyClear();
         }
 
         log.debug("Cache cleared: {}, tiers={}", name, isMultiTier ? "L1+L2" : "L1");
@@ -327,6 +354,11 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
         }, executor).thenAccept(value -> {
             if (value != null) {
                 put(key, value);
+                // 触发分布式同步 (put方法已经包含同步逻辑)
+                // 但对于refresh操作，我们需要特别通知
+                if (synchronizer != null) {
+                    synchronizer.notifyRefresh(key);
+                }
             }
         });
     }
@@ -351,6 +383,11 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
         }, executor).thenAccept(value -> {
             if (value != null) {
                 put(key, value);
+                // 触发分布式同步 (put方法已经包含同步逻辑)
+                // 但对于refresh操作，我们需要特别通知
+                if (synchronizer != null) {
+                    synchronizer.notifyRefresh(key);
+                }
             }
         });
     }
@@ -669,6 +706,26 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
      */
     public void setProtectionManager(SimplifiedCacheProtectionManager manager) {
         this.protectionManager = manager;
+    }
+
+    /**
+     * 设置同步器
+     */
+    public void setSynchronizer(UnifiedCacheSynchronizer<K, V> synchronizer) {
+        this.synchronizer = synchronizer;
+        if (synchronizer != null) {
+            synchronizer.initialize(this);
+            if (!synchronizer.isRunning()) {
+                synchronizer.start();
+            }
+        }
+    }
+
+    /**
+     * 获取同步器
+     */
+    public UnifiedCacheSynchronizer<K, V> getSynchronizer() {
+        return synchronizer;
     }
 
     // ==================== 私有方法 ====================

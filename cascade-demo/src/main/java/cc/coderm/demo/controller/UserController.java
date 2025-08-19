@@ -2,7 +2,6 @@ package cc.coderm.demo.controller;
 
 import cc.coderm.demo.model.User;
 import cc.coderm.demo.service.UserService;
-import io.github.cascade.autoconfigure.CascadeAutoConfiguration.CascadeBuilderFactory;
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.manager.SpringBootCacheManager;
 import org.slf4j.Logger;
@@ -31,12 +30,10 @@ public class UserController {
     @Autowired
     private UserService userService;
 
-    @Autowired
-    private CascadeBuilderFactory builderFactory;
 
     @Autowired
     private SpringBootCacheManager springBootCacheManager;
-    
+
     // 注入自动发现的缓存
     @Autowired
     @Qualifier("userCache")
@@ -141,78 +138,42 @@ public class UserController {
         return "缓存已清除";
     }
 
-    /**
-     * 直接使用CascadeBuilderFactory - 演示新的统一缓存创建方式
-     */
-    @RequestMapping("/cache/direct")
-    public String directCacheOperation() {
-        // 使用新的统一API创建缓存 - Builder模式
-        Cache<String, String> cache = builderFactory.<String, String>createBuilder("test")
-                .maximumSize(1000)
-                .expireAfterWrite(java.time.Duration.ofMinutes(30))
-                .build();
 
-
-        // 设置缓存
-        cache.put("direct-key", "direct-value-" + System.currentTimeMillis());
-
-        // 获取缓存
-        String value = cache.get("direct-key");
-
-        return "直接缓存操作结果: " + value;
-    }
-
-    /**
-     * 获取缓存统计信息
-     */
-    @GetMapping("/cache/stats")
-    public String getCacheStats() {
-        StringBuilder stats = new StringBuilder();
-
-        // 通过builderFactory获取cacheManager来获取缓存统计
-        for (String cacheName : builderFactory.getCacheManager().getCacheNames()) {
-            stats.append("缓存: ").append(cacheName).append("\n");
-            // 这里可以添加具体的统计信息获取逻辑
-        }
-
-        return stats.toString();
-    }
-    
     /**
      * 测试自动CacheLoader功能
      */
     @GetMapping("/cache/auto-load/{userId}")
     public User testAutoLoad(@PathVariable String userId) {
         log.info("Testing auto CacheLoader for user: {}", userId);
-        
+
         // 使用自动发现CacheLoader的缓存
         long start = System.currentTimeMillis();
         User user = userCache.get(userId); // 这里会自动从UserCacheLoader加载如果缓存未命中
         long end = System.currentTimeMillis();
-        
+
         log.info("Cache get operation took: {}ms", end - start);
         log.info("Cache stats: {}", userCache.getStats());
-        
+
         return user;
     }
-    
+
     /**
      * 测试批量自动加载
      */
     @GetMapping("/cache/auto-load-batch")
     public List<User> testBatchAutoLoad(@RequestParam("ids") List<String> userIds) {
         log.info("Testing batch auto CacheLoader for users: {}", userIds);
-        
+
         long start = System.currentTimeMillis();
         var usersMap = userCache.getAll(java.util.Set.copyOf(userIds));
         long end = System.currentTimeMillis();
-        
+
         log.info("Batch cache get operation took: {}ms", end - start);
         log.info("Loaded {} users from cache", usersMap.size());
-        
+
         return usersMap.values().stream().toList();
     }
-    
+
     /**
      * 检查自动发现状态
      */
@@ -220,7 +181,7 @@ public class UserController {
     public String checkDiscoveryStatus() {
         StringBuilder status = new StringBuilder();
         status.append("=== CacheLoader Auto-Discovery Status ===\n");
-        
+
         try {
             // 检查userCache是否有CacheLoader
             status.append("UserCache CacheLoader: ");
@@ -234,13 +195,13 @@ public class UserController {
             } else {
                 status.append("⚠️ Not UnifiedCache instance\n");
             }
-            
+
             status.append("Cache Stats: ").append(userCache.getStats()).append("\n");
-            
+
         } catch (Exception e) {
             status.append("❌ Error: ").append(e.getMessage()).append("\n");
         }
-        
+
         return status.toString();
     }
 }

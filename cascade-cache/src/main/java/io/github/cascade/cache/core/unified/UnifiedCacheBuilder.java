@@ -3,10 +3,14 @@ package io.github.cascade.cache.core.unified;
 import io.github.cascade.cache.annotation.AutoConfigureLoader;
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheLoader;
+import io.github.cascade.cache.config.unified.CascadeCacheConfiguration;
 import io.github.cascade.cache.core.loader.CacheLoaderResolver;
 import io.github.cascade.cache.core.unified.CaffeineEngine.CaffeineConfig;
 import io.github.cascade.cache.core.unified.RedisEngine.RedisConfig;
 import io.github.cascade.cache.protection.*;
+import io.github.cascade.cache.sync.RedissonCacheSyncManager;
+import io.github.cascade.cache.sync.unified.UnifiedCacheSynchronizer;
+import io.github.cascade.cache.event.unified.UnifiedEventProcessor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RedissonClient;
 import org.springframework.context.ApplicationContext;
@@ -50,6 +54,12 @@ public class UnifiedCacheBuilder<K, V> {
     private RandomTtlProtection randomTtl;
     private RedissonLockProtection distributedLock;
 
+    // 同步配置
+    private boolean enableSync = false;
+    private String syncTopic = "cascade:cache:sync";
+    private Duration syncTimeout = Duration.ofSeconds(5);
+    private boolean asyncSync = true;
+
     // Spring上下文（用于自动发现）
     private static ApplicationContext applicationContext;
     private static CacheLoaderResolver cacheLoaderResolver;
@@ -62,6 +72,14 @@ public class UnifiedCacheBuilder<K, V> {
      */
     public UnifiedCacheBuilder(String cacheName) {
         this.cacheName = cacheName;
+    }
+
+    /**
+     * 从配置创建构建器
+     */
+    public UnifiedCacheBuilder(CascadeCacheConfiguration config) {
+        this.cacheName = config.getName();
+        applyConfiguration(config);
     }
 
 
@@ -303,6 +321,50 @@ public class UnifiedCacheBuilder<K, V> {
                 .distributedLock(Duration.ofSeconds(5));
     }
 
+    // ==================== 同步配置 ====================
+
+    /**
+     * 启用分布式同步
+     */
+    public UnifiedCacheBuilder<K, V> enableSync(boolean enabled) {
+        this.enableSync = enabled;
+        return this;
+    }
+
+    /**
+     * 设置同步主题
+     */
+    public UnifiedCacheBuilder<K, V> syncTopic(String topic) {
+        this.syncTopic = topic;
+        return this;
+    }
+
+    /**
+     * 设置同步超时时间
+     */
+    public UnifiedCacheBuilder<K, V> syncTimeout(Duration timeout) {
+        this.syncTimeout = timeout;
+        return this;
+    }
+
+    /**
+     * 设置是否异步同步
+     */
+    public UnifiedCacheBuilder<K, V> asyncSync(boolean async) {
+        this.asyncSync = async;
+        return this;
+    }
+
+    /**
+     * 一键配置分布式同步
+     */
+    public UnifiedCacheBuilder<K, V> withSync() {
+        return enableSync(true)
+                .syncTopic("cascade:cache:sync:" + cacheName)
+                .syncTimeout(Duration.ofSeconds(5))
+                .asyncSync(true);
+    }
+
     // ==================== 构建方法 ====================
 
     /**
@@ -371,8 +433,30 @@ public class UnifiedCacheBuilder<K, V> {
             log.debug("Configured protection for cache: {}", cacheName);
         }
 
-        log.info("Built unified cache: {}, L1={}, L2={}, protection={}",
-                cacheName, enableL1, enableL2, enableProtection);
+        // 设置同步器
+        if (enableSync && redissonClient != null) {
+            try {
+                // 创建同步管理器
+                RedissonCacheSyncManager syncManager = new RedissonCacheSyncManager(redissonClient, syncTopic);
+                
+                // 创建事件处理器
+                UnifiedEventProcessor eventProcessor = new UnifiedEventProcessor(asyncSync);
+                
+                // 创建统一同步器
+                UnifiedCacheSynchronizer<K, V> synchronizer = new UnifiedCacheSynchronizer<>(
+                    cacheName, syncManager, eventProcessor);
+                
+                // 设置到缓存中
+                cache.setSynchronizer(synchronizer);
+                
+                log.info("Configured distributed sync for cache: {}, topic: {}", cacheName, syncTopic);
+            } catch (Exception e) {
+                log.warn("Failed to configure distributed sync for cache: {}, error: {}", cacheName, e.getMessage());
+            }
+        }
+
+        log.info("Built unified cache: {}, L1={}, L2={}, protection={}, sync={}",
+                cacheName, enableL1, enableL2, enableProtection, enableSync);
 
         return cache;
     }
@@ -460,5 +544,98 @@ public class UnifiedCacheBuilder<K, V> {
     public UnifiedCacheBuilder<K, V> autoDiscoverLoader(boolean enabled) {
         this.autoDiscoverLoader = enabled;
         return this;
+    }
+
+    /**
+     * 从CascadeCacheConfiguration应用配置
+     */
+    private void applyConfiguration(CascadeCacheConfiguration config) {
+        // 基础配置
+        if (config.getCommon() != null) {
+            var common = config.getCommon();
+            maximumSize(common.getMaximumSize());
+            recordStats(common.isRecordStats());
+            if (common.getExpireAfterWrite() != null) {
+                expireAfterWrite(common.getExpireAfterWrite());
+            }
+            if (common.getExpireAfterAccess() != null) {
+                expireAfterAccess(common.getExpireAfterAccess());
+            }
+            if (common.getRefreshAfterWrite() != null) {
+                refreshAfterWrite(common.getRefreshAfterWrite());
+            }
+            if (common.getExecutor() != null) {
+                executor(common.getExecutor());
+            }
+        }
+
+        // L1配置
+        if (config.getL1() != null && config.getL1().isEnabled()) {
+            var l1 = config.getL1();
+            enableL1(true);
+            maximumSize(l1.getMaximumSize());
+            if (l1.getExpireAfterWrite() != null) {
+                expireAfterWrite(l1.getExpireAfterWrite());
+            }
+            if (l1.getExpireAfterAccess() != null) {
+                expireAfterAccess(l1.getExpireAfterAccess());
+            }
+            recordStats(l1.isRecordStats());
+            // 其他L1特定配置...
+        }
+
+        // L2配置
+        if (config.getL2() != null && config.getL2().isEnabled()) {
+            var l2 = config.getL2();
+            enableL2(true);
+            keyPrefix(l2.getKeyPrefix());
+            if (l2.getDefaultTtl() != null) {
+                defaultTtl(l2.getDefaultTtl());
+            }
+            // L2序列化器和客户端配置
+            if (l2.getRedissonClient() != null) {
+                withRedis(l2.getRedissonClient());
+            }
+            // 其他L2特定配置...
+        }
+
+        // 同步配置
+        if (config.getSync() != null && config.getSync().isEnabled()) {
+            var sync = config.getSync();
+            enableSync(true);
+            syncTopic(sync.getTopic());
+            if (sync.getTimeout() != null) {
+                syncTimeout(sync.getTimeout());
+            }
+            asyncSync(sync.isAsync());
+        }
+
+        // 防护配置
+        if (config.getProtection() != null && config.getProtection().isEnabled()) {
+            var protection = config.getProtection();
+            enableProtection(true);
+            
+            // 布隆过滤器配置
+            var bloomFilterConfig = protection.getBloomFilter();
+            if (bloomFilterConfig != null && bloomFilterConfig.isEnabled()) {
+                bloomFilter(bloomFilterConfig.getExpectedElements(), bloomFilterConfig.getFalsePositiveRate());
+            }
+            
+            // 随机TTL配置
+            var randomTtlConfig = protection.getRandomTtl();
+            if (randomTtlConfig != null && randomTtlConfig.isEnabled()) {
+                Duration baseTtl = randomTtlConfig.getBaseTtl() != null ? 
+                    randomTtlConfig.getBaseTtl() : Duration.ofMinutes(30);
+                randomTtl(baseTtl, randomTtlConfig.getJitterRatio());
+            }
+            
+            // 分布式锁配置
+            var distributedLockConfig = protection.getDistributedLock();
+            if (distributedLockConfig != null && distributedLockConfig.isEnabled()) {
+                Duration lockTimeout = distributedLockConfig.getLockTimeout() != null ?
+                    distributedLockConfig.getLockTimeout() : Duration.ofSeconds(30);
+                distributedLock(lockTimeout);
+            }
+        }
     }
 }

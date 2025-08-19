@@ -1,0 +1,83 @@
+# Cascade 分层配置示例
+# 现在支持 CascadeCacheConfiguration 的所有属性
+
+cascade:
+  # 基础配置
+  enabled: true
+  defaultCacheName: "myApp"
+  
+  # 通用配置
+  common:
+    maximumSize: 5000
+    expireAfterWriteSeconds: 1800  # 30分钟
+    expireAfterAccessSeconds: 900  # 15分钟 
+    refreshAfterWriteSeconds: 600  # 10分钟
+    recordStats: true
+  
+  # L1缓存配置（本地缓存）
+  l1:
+    enabled: true
+    maximumSize: 1000
+    expireAfterWriteSeconds: 600   # 10分钟
+    expireAfterAccessSeconds: 300  # 5分钟
+    recordStats: true
+    initialCapacity: 32
+    concurrencyLevel: 8
+    weakKeys: false
+    weakValues: false
+    softValues: true               # 使用软引用，内存不足时自动回收
+  
+  # L2缓存配置（Redis缓存）
+  l2:
+    enabled: true
+    keyPrefix: "myapp:cache:"
+    defaultTtlSeconds: 3600        # 1小时
+    refreshAfterWriteSeconds: 1800 # 30分钟
+    enableBatch: true
+    batchSize: 50
+    serializer: "json"
+    timeoutSeconds: 10
+    redis:
+      host: "localhost"
+      port: 6379
+      password: "your_redis_password"
+      database: 2
+      timeoutSeconds: 5
+      maxTotal: 20
+      maxIdle: 10
+      minIdle: 2
+  
+  # 同步配置（多实例缓存同步）
+  sync:
+    enabled: true
+    topic: "myapp:cache:sync"
+    timeoutSeconds: 3
+    async: true
+  
+  # 防护配置（防缓存穿透、击穿、雪崩）
+  protection:
+    enabled: true
+    bloomFilter:
+      enabled: true
+      expectedElements: 500000
+      falsePositiveRate: 0.001    # 0.1% 误判率
+    randomTtl:
+      enabled: true
+      baseTtlSeconds: 1800        # 30分钟基础TTL
+      jitterRangeSeconds: 600     # ±10分钟抖动
+      jitterRatio: 0.2            # 20%抖动比例
+    distributedLock:
+      enabled: true
+      lockTimeoutSeconds: 60
+      waitTimeoutSeconds: 15
+      maxRetries: 5
+      retryDelayMillis: 200
+      keyPrefix: "myapp:lock:"
+  
+  # 监控配置
+  monitoring:
+    enabled: true
+    enableMetrics: true
+    enableTracing: true           # 启用链路追踪
+    metricsIntervalSeconds: 30    # 30秒指标收集间隔
+    eventListenerClass: "com.myapp.cache.CustomCacheEventListener"

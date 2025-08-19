@@ -6,7 +6,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
-import org.springframework.core.ResolvableType;
 import org.springframework.stereotype.Component;
 
 import java.lang.reflect.ParameterizedType;
@@ -32,7 +31,7 @@ public class CacheLoaderResolver implements ApplicationContextAware {
     public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
         this.applicationContext = applicationContext;
         log.info("CacheLoaderResolver initialized with ApplicationContext");
-        
+
         // 打印所有可用的CacheLoader
         if (log.isDebugEnabled()) {
             Map<String, CacheLoader> loaderBeans = applicationContext.getBeansOfType(CacheLoader.class);
@@ -55,7 +54,7 @@ public class CacheLoaderResolver implements ApplicationContextAware {
         }
 
         String cacheKey = keyType.getName() + ":" + valueType.getName();
-        
+
         // 先检查缓存
         CacheLoader<?, ?> cachedLoader = loaderCache.get(cacheKey);
         if (cachedLoader != null) {
@@ -64,23 +63,23 @@ public class CacheLoaderResolver implements ApplicationContextAware {
 
         // 从Spring容器中查找所有CacheLoader实现
         Map<String, CacheLoader> loaderBeans = applicationContext.getBeansOfType(CacheLoader.class);
-        
+
         for (Map.Entry<String, CacheLoader> entry : loaderBeans.entrySet()) {
             String beanName = entry.getKey();
             CacheLoader<?, ?> loader = entry.getValue();
-            
+
             if (isLoaderCompatible(loader, keyType, valueType)) {
-                log.info("Found compatible CacheLoader: {} for types <{}, {}>", 
-                    beanName, keyType.getSimpleName(), valueType.getSimpleName());
-                
+                log.info("Found compatible CacheLoader: {} for types <{}, {}>",
+                        beanName, keyType.getSimpleName(), valueType.getSimpleName());
+
                 // 缓存结果
                 loaderCache.put(cacheKey, loader);
                 return (CacheLoader<K, V>) loader;
             }
         }
 
-        log.debug("No compatible CacheLoader found for types <{}, {}>", 
-            keyType.getSimpleName(), valueType.getSimpleName());
+        log.debug("No compatible CacheLoader found for types <{}, {}>",
+                keyType.getSimpleName(), valueType.getSimpleName());
         return null;
     }
 
@@ -108,16 +107,16 @@ public class CacheLoaderResolver implements ApplicationContextAware {
      * 按命名约定查找CacheLoader
      * 支持的命名模式:
      * - {cacheName}Loader (如: userLoader)
-     * - {cacheName}CacheLoader (如: userCacheLoader) 
+     * - {cacheName}CacheLoader (如: userCacheLoader)
      * - {ValueType}Loader (如: UserLoader)
      */
     @SuppressWarnings("unchecked")
     private <K, V> CacheLoader<K, V> findLoaderByNamingConvention(String cacheName, Class<K> keyType, Class<V> valueType) {
         String[] possibleNames = {
-            cacheName + "Loader",
-            cacheName + "CacheLoader",
-            valueType.getSimpleName() + "Loader",
-            lowercaseFirst(valueType.getSimpleName()) + "Loader"
+                cacheName + "Loader",
+                cacheName + "CacheLoader",
+                valueType.getSimpleName() + "Loader",
+                lowercaseFirst(valueType.getSimpleName()) + "Loader"
         };
 
         for (String beanName : possibleNames) {
@@ -158,11 +157,11 @@ public class CacheLoaderResolver implements ApplicationContextAware {
             boolean keyCompatible = loaderKeyType == null || keyType.isAssignableFrom(loaderKeyType) || loaderKeyType.isAssignableFrom(keyType);
             boolean valueCompatible = loaderValueType == null || valueType.isAssignableFrom(loaderValueType) || loaderValueType.isAssignableFrom(valueType);
 
-            log.debug("Type compatibility check: CacheLoader<{}, {}> vs <{}, {}> -> key:{}, value:{}", 
-                loaderKeyType != null ? loaderKeyType.getSimpleName() : "?",
-                loaderValueType != null ? loaderValueType.getSimpleName() : "?",
-                keyType.getSimpleName(), valueType.getSimpleName(),
-                keyCompatible, valueCompatible);
+            log.debug("Type compatibility check: CacheLoader<{}, {}> vs <{}, {}> -> key:{}, value:{}",
+                    loaderKeyType != null ? loaderKeyType.getSimpleName() : "?",
+                    loaderValueType != null ? loaderValueType.getSimpleName() : "?",
+                    keyType.getSimpleName(), valueType.getSimpleName(),
+                    keyCompatible, valueCompatible);
 
             return keyCompatible && valueCompatible;
         } catch (Exception e) {
@@ -176,7 +175,7 @@ public class CacheLoaderResolver implements ApplicationContextAware {
      */
     private Type[] getGenericTypes(CacheLoader<?, ?> loader) {
         Class<?> loaderClass = loader.getClass();
-        
+
         // 查找实现的CacheLoader接口
         Type[] genericInterfaces = loaderClass.getGenericInterfaces();
         for (Type interfaceType : genericInterfaces) {

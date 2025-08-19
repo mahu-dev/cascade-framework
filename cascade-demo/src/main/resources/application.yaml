@@ -31,16 +31,12 @@ spring:
 # Cascade框架配置
 cascade:
   enabled: true
-  enable-redis: true
-  enable-protection: true
-  enable-sync: false
-  default-size: 10000
-  l1-expire-after-write-seconds: 3600
-  l2-expire-after-write-seconds: 7200
-  enable-random-ttl: true
-  random-ttl-range-seconds: 300
-
+  l1:
+    enabled: true
+  l2:
+    enabled: true
   # Redis配置
+
 #  data:
 #    redis:
 #      host: coderm.cc # 地址

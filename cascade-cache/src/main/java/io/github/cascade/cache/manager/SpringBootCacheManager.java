@@ -47,20 +47,6 @@ public class SpringBootCacheManager implements CacheManager {
     // CacheManager 字段
     private Function<String, Cache<?, ?>> cacheFactory;
 
-    public SpringBootCacheManager(CascadeCacheConfiguration defaultConfig,
-                                  RedissonClient redissonClient) {
-        this.defaultConfig = defaultConfig;
-        this.redissonClient = redissonClient;
-        this.cachePropertiesProvider = null;
-    }
-
-    public SpringBootCacheManager(CascadeCacheConfiguration defaultConfig,
-                                  RedissonClient redissonClient,
-                                  CachePropertiesProvider cachePropertiesProvider) {
-        this.defaultConfig = defaultConfig;
-        this.redissonClient = redissonClient;
-        this.cachePropertiesProvider = cachePropertiesProvider;
-    }
 
     /**
      * 默认构造器，用于Spring自动装配
@@ -70,6 +56,21 @@ public class SpringBootCacheManager implements CacheManager {
         this.redissonClient = null;
         this.cachePropertiesProvider = null;
     }
+
+    public SpringBootCacheManager(CascadeCacheConfiguration defaultConfig,
+                                  RedissonClient redissonClient) {
+        this.defaultConfig = defaultConfig;
+        this.redissonClient = redissonClient;
+        this.cachePropertiesProvider = null;
+    }
+
+    public SpringBootCacheManager(RedissonClient redissonClient,
+                                  CachePropertiesProvider cachePropertiesProvider) {
+        this.defaultConfig = null;
+        this.redissonClient = redissonClient;
+        this.cachePropertiesProvider = cachePropertiesProvider;
+    }
+
 
     // ==================== Spring 生命周期管理 ====================
 
