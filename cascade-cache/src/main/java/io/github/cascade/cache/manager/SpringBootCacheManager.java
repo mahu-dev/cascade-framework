@@ -3,10 +3,10 @@ package io.github.cascade.cache.manager;
 import io.github.cascade.api.HealthStatus;
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheManager;
-import io.github.cascade.cache.builder.CascadeCacheBuilder;
+import io.github.cascade.cache.config.CachePropertiesProvider;
 import io.github.cascade.cache.config.unified.CascadeCacheConfiguration;
+import io.github.cascade.cache.core.unified.UnifiedCacheBuilder;
 import io.github.cascade.cache.util.TypeInference;
-import io.github.cascade.cache.util.TypeReference;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.Getter;
@@ -14,8 +14,6 @@ import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
@@ -34,6 +32,7 @@ public class SpringBootCacheManager implements CacheManager {
     private static final Logger logger = LoggerFactory.getLogger(SpringBootCacheManager.class);
 
     private final CascadeCacheConfiguration defaultConfig;
+    private final CachePropertiesProvider cachePropertiesProvider;
     /**
      * -- GETTER --
      * 获取RedissonClient
@@ -52,6 +51,15 @@ public class SpringBootCacheManager implements CacheManager {
                                   RedissonClient redissonClient) {
         this.defaultConfig = defaultConfig;
         this.redissonClient = redissonClient;
+        this.cachePropertiesProvider = null;
+    }
+
+    public SpringBootCacheManager(CascadeCacheConfiguration defaultConfig,
+                                  RedissonClient redissonClient,
+                                  CachePropertiesProvider cachePropertiesProvider) {
+        this.defaultConfig = defaultConfig;
+        this.redissonClient = redissonClient;
+        this.cachePropertiesProvider = cachePropertiesProvider;
     }
 
     /**
@@ -60,6 +68,7 @@ public class SpringBootCacheManager implements CacheManager {
     public SpringBootCacheManager() {
         this.defaultConfig = null;
         this.redissonClient = null;
+        this.cachePropertiesProvider = null;
     }
 
     // ==================== Spring 生命周期管理 ====================
@@ -120,12 +129,8 @@ public class SpringBootCacheManager implements CacheManager {
             // 复制默认配置并设置缓存名称
             CascadeCacheConfiguration cacheConfig = copyConfigWithName(defaultConfig, cacheName);
 
-            // 使用CascadeCacheBuilder创建具备全部高级功能的缓存
-            CascadeCacheBuilder<String, V> builder = CascadeCacheBuilder.getStringKey(cacheConfig, this,
-                    redissonClient, valueType);
-
-            // 构建缓存（使用buildFull方法以确保创建EnhancedDistributedTieredCache）
-            Cache<String, V> newCache = builder.buildWithoutRegister();
+            // 使用统一方法创建缓存
+            Cache<String, V> newCache = createCacheFromConfig(cacheName, cacheConfig, String.class, valueType);
 
             // 注册到管理器
             if (registerCache(cacheName, newCache)) {
@@ -171,12 +176,8 @@ public class SpringBootCacheManager implements CacheManager {
             // 复制默认配置并设置缓存名称
             CascadeCacheConfiguration cacheConfig = copyConfigWithName(defaultConfig, cacheName);
 
-            // 使用CascadeCacheBuilder创建具备全部高级功能的缓存
-            CascadeCacheBuilder<K, V> builder = CascadeCacheBuilder.createBuilder(cacheConfig, this,
-                    redissonClient, keyType, valueType);
-
-            // 构建缓存（使用buildFull方法以确保创建EnhancedDistributedTieredCache）
-            Cache<K, V> newCache = builder.buildWithoutRegister();
+            // 使用统一方法创建缓存
+            Cache<K, V> newCache = createCacheFromConfig(cacheName, cacheConfig, keyType, valueType);
 
             // 注册到管理器
             if (registerCache(cacheName, newCache)) {
@@ -194,61 +195,98 @@ public class SpringBootCacheManager implements CacheManager {
     }
 
     /**
-     * 使用TypeReference创建缓存，可以捕获复杂的泛型类型
-     *
-     * @param cacheName     缓存名称
-     * @param typeReference 类型引用
-     * @return 缓存实例
+     * 从配置创建缓存的统一方法
      */
     @SuppressWarnings("unchecked")
-    @Deprecated
-    public <K, V> Cache<K, V> getOrCreateCacheWithTypeRef(String cacheName, TypeReference<Cache<K, V>> typeReference) {
-        if (closed.get()) {
-            logger.warn("Attempted to get or create cache '{}' from closed manager", cacheName);
-            return null;
+    private <K, V> Cache<K, V> createCacheFromConfig(String cacheName, CascadeCacheConfiguration cacheConfig,
+                                                     Class<K> keyType, Class<V> valueType) {
+        logger.info("Creating cache '{}' with key type: {}, value type: {}", cacheName, keyType, valueType);
+
+        // 如果没有传入配置，从Properties生成配置
+        if (cacheConfig == null && cachePropertiesProvider != null) {
+            cacheConfig = cachePropertiesProvider.toCascadeCacheConfiguration(cacheName);
+            logger.debug("Generated config from Properties for cache '{}'", cacheName);
         }
 
-        // 先尝试获取已存在的缓存
-        Cache<K, V> existingCache = getCache(cacheName);
-        if (existingCache != null) {
-            logger.debug("Found existing cache '{}'", cacheName);
-            return existingCache;
+        // 如果仍然没有配置，使用默认配置
+        if (cacheConfig == null) {
+            cacheConfig = createDefaultConfiguration(cacheName);
+            logger.debug("Using default configuration for cache '{}'", cacheName);
         }
 
-        // 从TypeReference中提取K、V类型
-        Class<K> keyType = null;
-        Class<V> valueType = null;
+        // 设置Redis客户端
+        if (redissonClient != null && cacheConfig.getL2().isEnabled()) {
+            cacheConfig.getL2().setRedissonClient(redissonClient);
+        }
 
-        try {
-            if (typeReference.isParameterized()) {
-                Type[] typeArgs = typeReference.getTypeArguments();
-                if (typeArgs.length == 2) {
-                    // Cache<K, V>的第一个参数是K，第二个是V
-                    Type cacheType = typeReference.getType();
-                    if (cacheType instanceof ParameterizedType cacheParamType) {
-                        Type[] cacheTypeArgs = cacheParamType.getActualTypeArguments();
-                        if (cacheTypeArgs.length == 2) {
-                            if (cacheTypeArgs[0] instanceof Class) {
-                                keyType = (Class<K>) cacheTypeArgs[0];
-                            }
-                            if (cacheTypeArgs[1] instanceof Class) {
-                                valueType = (Class<V>) cacheTypeArgs[1];
-                            }
-                        }
-                    }
-                }
+        // 使用UnifiedCacheBuilder创建统一架构缓存，应用配置
+        UnifiedCacheBuilder<K, V> builder = UnifiedCacheBuilder.newBuilder(cacheName, keyType, valueType);
+        // 应用L1配置
+        if (cacheConfig.getL1().isEnabled()) {
+            builder = builder.enableL1(true)
+                    .maximumSize(cacheConfig.getL1().getMaximumSize())
+                    .recordStats(cacheConfig.getL1().isRecordStats());
+
+            if (cacheConfig.getL1().getExpireAfterWrite() != null) {
+                builder = builder.expireAfterWrite(cacheConfig.getL1().getExpireAfterWrite());
             }
-        } catch (Exception e) {
-            logger.debug("Failed to extract types from TypeReference: {}", e.getMessage());
+            if (cacheConfig.getL1().getExpireAfterAccess() != null) {
+                builder = builder.expireAfterAccess(cacheConfig.getL1().getExpireAfterAccess());
+            }
         }
 
-        // 调用带类型的创建方法
-        return getOrCreateCache(cacheName, keyType, valueType);
+        // 应用L2配置
+        if (cacheConfig.getL2().isEnabled() && redissonClient != null) {
+            builder = builder.withRedis(redissonClient)
+                    .enableL2(true)
+                    .keyPrefix(cacheConfig.getL2().getKeyPrefix())
+                    .defaultTtl(cacheConfig.getL2().getDefaultTtl());
+        }
+
+        // 应用防护配置
+        if (cacheConfig.getProtection().isEnabled()) {
+            builder = builder.enableProtection(true);
+
+            if (cacheConfig.getProtection().getBloomFilter().isEnabled()) {
+                builder = builder.bloomFilter(
+                        cacheConfig.getProtection().getBloomFilter().getExpectedElements(),
+                        cacheConfig.getProtection().getBloomFilter().getFalsePositiveRate()
+                );
+            }
+
+            if (cacheConfig.getProtection().getRandomTtl().isEnabled()) {
+                builder = builder.randomTtl(
+                        cacheConfig.getL2().getDefaultTtl(),
+                        0.1 // 默认10%的抖动
+                );
+            }
+        }
+
+        return builder.build();
     }
 
     /**
-     * 复制默认配置并设置新的缓存名称
+     * 创建默认配置
      */
+    private CascadeCacheConfiguration createDefaultConfiguration(String cacheName) {
+        CascadeCacheConfiguration config = new CascadeCacheConfiguration();
+        config.setName(cacheName).setEnabled(true);
+
+        // 默认L1配置
+        config.getL1().setEnabled(true)
+                .setMaximumSize(10000)
+                .setExpireAfterWrite(java.time.Duration.ofMinutes(30))
+                .setRecordStats(true);
+
+        // 默认L2配置（如果有Redis）
+        if (redissonClient != null) {
+            config.getL2().setEnabled(true)
+                    .setDefaultTtl(java.time.Duration.ofHours(1));
+        }
+
+        return config;
+    }
+
     private CascadeCacheConfiguration copyConfigWithName(CascadeCacheConfiguration defaultConfig, String cacheName) {
 
         if (defaultConfig == null) {

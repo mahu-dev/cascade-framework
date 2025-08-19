@@ -2,10 +2,9 @@ package io.github.cascade.cache.annotation;
 
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheManager;
-import io.github.cascade.cache.core.impl.MultiLevelCascadeCache;
-import io.github.cascade.cache.core.impl.SimpleCascadeCache;
-import io.github.cascade.cache.core.impl.EnhancedDistributedTieredCache;
-import io.github.cascade.cache.event.CacheEventManager;
+import io.github.cascade.cache.core.unified.UnifiedCache;
+import io.github.cascade.cache.event.unified.UnifiedEventProcessor;
+import io.github.cascade.cache.event.unified.UnifiedCacheEvent;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
@@ -30,13 +29,13 @@ import java.time.Duration;
 public class CascadeCacheAspect {
 
     private final CacheManager cacheManager;
-    private final CacheEventManager eventManager;
+    private final UnifiedEventProcessor eventProcessor;
     private final ExpressionParser parser = new SpelExpressionParser();
 
     @Autowired
-    public CascadeCacheAspect(CacheManager cacheManager, CacheEventManager eventManager) {
+    public CascadeCacheAspect(CacheManager cacheManager, UnifiedEventProcessor eventProcessor) {
         this.cacheManager = cacheManager;
-        this.eventManager = eventManager;
+        this.eventProcessor = eventProcessor;
     }
 
     /**
@@ -71,7 +70,7 @@ public class CascadeCacheAspect {
 
         if (cachedValue != null) {
             // 发布缓存命中事件
-            eventManager.publishCacheHit(cacheNames[0], cacheKey, cachedValue, duration);
+            eventProcessor.publishEvent(UnifiedCacheEvent.hit(cacheNames[0], cacheKey, cachedValue, Duration.ofMillis(duration)));
 
             // 检查unless条件
             if (!evaluateCondition(cascadeCacheable.unless(), method, args, cachedValue)) {
@@ -79,7 +78,7 @@ public class CascadeCacheAspect {
             }
         } else {
             // 发布缓存未命中事件
-            eventManager.publishCacheMiss(cacheNames[0], cacheKey, duration);
+            eventProcessor.publishEvent(UnifiedCacheEvent.miss(cacheNames[0], cacheKey, Duration.ofMillis(duration)));
         }
 
         // 执行方法
@@ -108,10 +107,15 @@ public class CascadeCacheAspect {
                     cache.put(cacheKey, result);
                 }
                 long putDuration = System.currentTimeMillis() - putStartTime;
-                eventManager.publishCachePut(cacheNames[0], cacheKey, result, putDuration, true);
+                eventProcessor.publishEvent(UnifiedCacheEvent.builder(cacheNames[0], UnifiedCacheEvent.Type.PUT)
+                    .key(cacheKey)
+                    .value(result)
+                    .duration(Duration.ofMillis(putDuration))
+                    .success(true)
+                    .build());
             } catch (Exception e) {
                 long putDuration = System.currentTimeMillis() - putStartTime;
-                eventManager.publishCacheError(cacheNames[0], cacheKey, e, putDuration);
+                eventProcessor.publishEvent(UnifiedCacheEvent.error(cacheNames[0], e));
                 throw e;
             }
         }
@@ -199,10 +203,15 @@ public class CascadeCacheAspect {
                         cache.put(cacheKey, result);
                     }
                     long putDuration = System.currentTimeMillis() - putStartTime;
-                    eventManager.publishCachePut(cacheName, cacheKey, result, putDuration, true);
+                    eventProcessor.publishEvent(UnifiedCacheEvent.builder(cacheName, UnifiedCacheEvent.Type.PUT)
+                        .key(cacheKey)
+                        .value(result)
+                        .duration(Duration.ofMillis(putDuration))
+                        .success(true)
+                        .build());
                 } catch (Exception e) {
                     long putDuration = System.currentTimeMillis() - putStartTime;
-                    eventManager.publishCacheError(cacheName, cacheKey, e, putDuration);
+                    eventProcessor.publishEvent(UnifiedCacheEvent.error(cacheName, e));
                     throw e;
                 }
             }
@@ -223,10 +232,13 @@ public class CascadeCacheAspect {
                 try {
                     cache.clear();
                     long clearDuration = System.currentTimeMillis() - clearStartTime;
-                    eventManager.publishCacheClear(cacheName, clearDuration, true);
+                    eventProcessor.publishEvent(UnifiedCacheEvent.builder(cacheName, UnifiedCacheEvent.Type.CLEAR)
+                        .duration(Duration.ofMillis(clearDuration))
+                        .success(true)
+                        .build());
                 } catch (Exception e) {
                     long clearDuration = System.currentTimeMillis() - clearStartTime;
-                    eventManager.publishCacheError(cacheName, null, e, clearDuration);
+                    eventProcessor.publishEvent(UnifiedCacheEvent.error(cacheName, e));
                     throw e;
                 }
             } else {
@@ -235,10 +247,14 @@ public class CascadeCacheAspect {
                 try {
                     cache.evict(cacheKey);
                     long evictDuration = System.currentTimeMillis() - evictStartTime;
-                    eventManager.publishCacheEvict(cacheName, cacheKey, evictDuration, true);
+                    eventProcessor.publishEvent(UnifiedCacheEvent.builder(cacheName, UnifiedCacheEvent.Type.EVICT)
+                        .key(cacheKey)
+                        .duration(Duration.ofMillis(evictDuration))
+                        .success(true)
+                        .build());
                 } catch (Exception e) {
                     long evictDuration = System.currentTimeMillis() - evictStartTime;
-                    eventManager.publishCacheError(cacheName, cacheKey, e, evictDuration);
+                    eventProcessor.publishEvent(UnifiedCacheEvent.error(cacheName, e));
                     throw e;
                 }
             }
@@ -368,12 +384,8 @@ public class CascadeCacheAspect {
     @SuppressWarnings("unchecked")
     private void putWithTtl(Cache<String, Object> cache, String key, Object value, Duration ttl) {
         try {
-            if (cache instanceof MultiLevelCascadeCache) {
-                ((MultiLevelCascadeCache<String, Object>) cache).put(key, value, ttl);
-            } else if (cache instanceof EnhancedDistributedTieredCache) {
-                ((EnhancedDistributedTieredCache<String, Object>) cache).put(key, value, ttl);
-            } else if (cache instanceof SimpleCascadeCache) {
-                ((SimpleCascadeCache<String, Object>) cache).put(key, value, ttl);
+            if (cache instanceof UnifiedCache) {
+                ((UnifiedCache<String, Object>) cache).putWithTtl(key, value, ttl);
             } else {
                 // 如果缓存不支持TTL，则使用普通put方法
                 cache.put(key, value);

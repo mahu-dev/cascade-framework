@@ -124,7 +124,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
             MeterSet meterSet = meterSets.get(cacheName);
             
             if (meterSet != null) {
-                CacheStats stats = collector.getStats();
+                DetailedCacheMetrics stats = collector.getStats();
                 meterSet.update(stats);
             }
         }
@@ -282,7 +282,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
         /**
          * 更新指标
          */
-        public void update(CacheStats stats) {
+        public void update(DetailedCacheMetrics stats) {
             // 更新基础指标
             hitRate.set(stats.getHitRate());
             missRate.set(stats.getMissRate());
@@ -319,7 +319,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
         /**
          * 更新时间窗口指标
          */
-        private void updateTimeWindowMetrics(CacheStats stats) {
+        private void updateTimeWindowMetrics(DetailedCacheMetrics stats) {
             Map<String, CacheMetricsCollector.WindowStats> windowMetrics = stats.getTimeWindowMetrics();
             for (Map.Entry<String, CacheMetricsCollector.WindowStats> entry : windowMetrics.entrySet()) {
                 String window = entry.getKey();
@@ -333,7 +333,7 @@ public class MicrometerMetricsExporter implements CacheMetricsCollector.MetricsL
         /**
          * 更新分层指标
          */
-        private void updateTierMetrics(CacheStats stats) {
+        private void updateTierMetrics(DetailedCacheMetrics stats) {
             Map<String, CacheMetricsCollector.TierMetrics> tierMetrics = stats.getTierMetrics();
             for (Map.Entry<String, CacheMetricsCollector.TierMetrics> entry : tierMetrics.entrySet()) {
                 String tier = entry.getKey();

@@ -1,6 +1,5 @@
 package io.github.cascade.cache.api;
 
-import java.time.Duration;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -25,6 +24,8 @@ public interface Cache<K, V> {
      * @return 缓存值，如果不存在则返回null
      */
     V get(K key);
+
+    V getOrLoad(K key);
 
     /**
      * 获取缓存值，如果不存在则使用loader加载

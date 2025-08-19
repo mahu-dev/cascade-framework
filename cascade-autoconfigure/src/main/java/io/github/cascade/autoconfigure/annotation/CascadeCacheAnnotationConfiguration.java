@@ -2,7 +2,7 @@ package io.github.cascade.autoconfigure.annotation;
 
 import io.github.cascade.cache.annotation.CascadeCacheAspect;
 import io.github.cascade.cache.api.CacheManager;
-import io.github.cascade.cache.event.CacheEventManager;
+import io.github.cascade.cache.event.unified.UnifiedEventProcessor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -50,12 +50,12 @@ public class CascadeCacheAnnotationConfiguration implements CachingConfigurer {
     }
 
     /**
-     * 缓存事件管理器
+     * 统一事件处理器
      */
     @Bean
     @ConditionalOnMissingBean
-    public CacheEventManager cacheEventManager() {
-        return new CacheEventManager();
+    public UnifiedEventProcessor unifiedEventProcessor() {
+        return new UnifiedEventProcessor(true);
     }
 
     /**
@@ -64,8 +64,8 @@ public class CascadeCacheAnnotationConfiguration implements CachingConfigurer {
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnClass(CascadeCacheAspect.class)
-    public CascadeCacheAspect cascadeCacheAspect(CacheManager cacheManager, CacheEventManager eventManager) {
-        return new CascadeCacheAspect(cacheManager, eventManager);
+    public CascadeCacheAspect cascadeCacheAspect(CacheManager cacheManager, UnifiedEventProcessor eventProcessor) {
+        return new CascadeCacheAspect(cacheManager, eventProcessor);
     }
 
     /**

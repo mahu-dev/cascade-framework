@@ -1,8 +1,8 @@
 package io.github.cascade.autoconfigure;
 
 import io.github.cascade.cache.api.CacheManager;
-import io.github.cascade.cache.builder.CascadeCacheBuilder;
 import io.github.cascade.cache.config.unified.CascadeCacheConfiguration;
+import io.github.cascade.cache.core.unified.UnifiedCacheBuilder;
 import io.github.cascade.cache.manager.SpringBootCacheManager;
 import lombok.Getter;
 import org.redisson.api.RedissonClient;
@@ -24,7 +24,7 @@ import java.time.Duration;
  * @author cascade
  */
 @AutoConfiguration
-@ConditionalOnClass({CacheManager.class, CascadeCacheBuilder.class})
+@ConditionalOnClass({CacheManager.class, UnifiedCacheBuilder.class})
 @ConditionalOnProperty(prefix = "cascade", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(CascadeCacheProperties.class)
 public class CascadeAutoConfiguration {
@@ -37,9 +37,6 @@ public class CascadeAutoConfiguration {
     @ConditionalOnMissingBean
     public CacheManager cascadeCacheManager(CascadeCacheProperties properties,
                                             ApplicationContext applicationContext) {
-        // 设置Spring上下文到Builder中
-        CascadeCacheBuilder.setApplicationContext(applicationContext);
-
         // 从Spring Boot配置属性创建内部配置
         CascadeCacheConfiguration defaultConfig = createConfigurationFromProperties(properties);
 
@@ -82,7 +79,7 @@ public class CascadeAutoConfiguration {
         // 防护配置
         config.getProtection()
                 .setEnabled(properties.isEnableProtection());
-                
+
         // 布隆过滤器配置
         if (properties.isEnableBloomFilter()) {
             config.getProtection().getBloomFilter()
@@ -90,7 +87,7 @@ public class CascadeAutoConfiguration {
                     .setExpectedElements(properties.getBloomFilterExpectedInsertions())
                     .setFalsePositiveRate(properties.getBloomFilterFpp());
         }
-        
+
         // 随机TTL配置
         if (properties.isEnableRandomTtl()) {
             config.getProtection().getRandomTtl()
@@ -129,15 +126,15 @@ public class CascadeAutoConfiguration {
         /**
          * 创建缓存构建器
          */
-        public <K, V> CascadeCacheBuilder<K, V> createBuilder(String cacheName) {
-            return new CascadeCacheBuilder<>(cacheName, cacheManager);
+        public <K, V> UnifiedCacheBuilder<K, V> createBuilder(String cacheName) {
+            return new UnifiedCacheBuilder<>(cacheName);
         }
 
         /**
          * 创建缓存构建器（使用自定义配置）
          */
-        public <K, V> CascadeCacheBuilder<K, V> createBuilder(CascadeCacheConfiguration config) {
-            return new CascadeCacheBuilder<>(config, cacheManager);
+        public <K, V> UnifiedCacheBuilder<K, V> createBuilder(String cacheName, CascadeCacheConfiguration config) {
+            return new UnifiedCacheBuilder<>(cacheName);
         }
 
     }

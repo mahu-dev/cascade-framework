@@ -174,7 +174,7 @@ public class CacheMetricsCollector {
      *
      * @return 统计信息
      */
-    public CacheStats getStats() {
+    public DetailedCacheMetrics getStats() {
         lock.readLock().lock();
         try {
             long hits = hitCount.sum();
@@ -195,7 +195,7 @@ public class CacheMetricsCollector {
             
             Duration uptime = Duration.between(startTime, Instant.now());
             
-            return new CacheStats(
+            return new DetailedCacheMetrics(
                 cacheName,
                 hits, misses, loads, loadSuccesses, loadExceptions,
                 evictions, puts, removes,

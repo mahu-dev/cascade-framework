@@ -1,17 +1,21 @@
 package io.github.cascade.autoconfigure;
 
+import io.github.cascade.cache.config.CachePropertiesProvider;
+import io.github.cascade.cache.config.unified.CascadeCacheConfiguration;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.time.Duration;
+
 /**
  * Cascade缓存配置属性
- * 简化版本，用于Spring Boot自动配置
+ * 基于 CascadeCacheConfiguration 的扁平化版本，用于 application.yml/properties 配置
  *
  * @author cascade
  */
 @Data
 @ConfigurationProperties(prefix = "cascade")
-public class CascadeCacheProperties {
+public class CascadeCacheProperties implements CachePropertiesProvider {
 
     /**
      * 是否启用Cascade框架
@@ -77,4 +81,71 @@ public class CascadeCacheProperties {
      * 布隆过滤器误判率
      */
     private double bloomFilterFpp = 0.01;
+
+    /**
+     * 转换为运行时配置对象
+     * 统一配置转换逻辑，避免重复代码
+     */
+    @Override
+    public CascadeCacheConfiguration toCascadeCacheConfiguration(String cacheName) {
+        CascadeCacheConfiguration config = new CascadeCacheConfiguration();
+        
+        // 基础配置
+        config.setName(cacheName != null ? cacheName : defaultCacheName)
+              .setEnabled(enabled);
+        
+        // 通用配置
+        config.getCommon()
+              .setMaximumSize(defaultSize)
+              .setRecordStats(true);
+        
+        // L1配置
+        config.getL1()
+              .setEnabled(true)
+              .setMaximumSize(defaultSize)
+              .setExpireAfterWrite(Duration.ofSeconds(l1ExpireAfterWriteSeconds))
+              .setRecordStats(true);
+        
+        // L2配置
+        if (enableRedis) {
+            config.getL2()
+                  .setEnabled(true)
+                  .setDefaultTtl(Duration.ofSeconds(l2ExpireAfterWriteSeconds));
+        }
+        
+        // 同步配置
+        if (enableSync) {
+            config.getSync().setEnabled(true);
+        }
+        
+        // 防护配置
+        if (enableProtection) {
+            config.getProtection().setEnabled(true);
+            
+            // 布隆过滤器
+            if (enableBloomFilter) {
+                config.getProtection().getBloomFilter()
+                      .setEnabled(true)
+                      .setExpectedElements(bloomFilterExpectedInsertions)
+                      .setFalsePositiveRate(bloomFilterFpp);
+            }
+            
+            // 随机TTL
+            if (enableRandomTtl) {
+                config.getProtection().getRandomTtl()
+                      .setEnabled(true)
+                      .setJitterRange(Duration.ofSeconds(randomTtlRangeSeconds));
+            }
+        }
+        
+        return config;
+    }
+
+    /**
+     * 检查是否启用
+     */
+    @Override
+    public boolean isEnabled() {
+        return this.enabled;
+    }
 }

@@ -1,5 +1,7 @@
 package io.github.cascade.cache.event;
 
+import io.github.cascade.cache.event.unified.UnifiedEventProcessor;
+import io.github.cascade.cache.monitoring.UnifiedMonitoringManager;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -7,7 +9,7 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * 缓存事件配置类
- * 提供默认的缓存事件监听器配置
+ * 提供统一的缓存事件处理配置
  *
  * @author cascade
  */
@@ -16,24 +18,27 @@ import org.springframework.context.annotation.Configuration;
 public class CacheEventConfiguration {
 
     /**
-     * 缓存统计监听器
+     * 统一事件处理器
      */
     @Bean
     @ConditionalOnMissingBean
-    @ConditionalOnProperty(prefix = "cascade.cache.events.statistics", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public CacheStatisticsListener cacheStatisticsListener() {
-        return new CacheStatisticsListener();
+    public UnifiedEventProcessor unifiedEventProcessor() {
+        return new UnifiedEventProcessor(true);
     }
 
     /**
-     * 缓存日志监听器
+     * 统一监控管理器
      */
     @Bean
     @ConditionalOnMissingBean
-    @ConditionalOnProperty(prefix = "cascade.cache.events.logging", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public CacheLoggingListener cacheLoggingListener() {
-        CacheLoggingListener listener = new CacheLoggingListener();
-        // 可以通过配置属性设置日志级别和详细程度
-        return listener;
+    @ConditionalOnProperty(prefix = "cascade.cache.monitoring", name = "enabled", havingValue = "true", matchIfMissing = true)
+    public UnifiedMonitoringManager unifiedMonitoringManager() {
+        UnifiedMonitoringManager.MonitoringConfiguration config = 
+            new UnifiedMonitoringManager.MonitoringConfiguration()
+                .enableAsyncEventProcessing(true)
+                .enableEventLogging(true)
+                .enablePeriodicMonitoring(true);
+        
+        return new UnifiedMonitoringManager(config);
     }
 }
