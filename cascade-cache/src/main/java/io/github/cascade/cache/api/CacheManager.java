@@ -28,7 +28,9 @@ public interface CacheManager {
      */
     <K, V> Cache<K, V> getCache(String cacheName);
 
-    <K, V> Cache<K, V> getOrCreateCache(String cacheName);
+    <V> Cache<String, V> getOrCreateCache(String cacheName, Class<V> valueType);
+
+    <K, V> Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType);
 
     /**
      * 注册缓存

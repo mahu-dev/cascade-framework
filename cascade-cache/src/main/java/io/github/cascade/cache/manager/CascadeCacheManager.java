@@ -21,14 +21,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 /**
- * Spring Boot 集成缓存管理器
- * 简化版本，专注于核心缓存管理功能
+ * Cascade 缓存管理器
+ * 整合Spring Boot自动配置和统一缓存架构，提供完整的缓存管理功能
  *
  * @author cascade
  */
-public class SpringBootCacheManager implements CacheManager {
+public class CascadeCacheManager implements CacheManager {
 
-    private static final Logger logger = LoggerFactory.getLogger(SpringBootCacheManager.class);
+    private static final Logger logger = LoggerFactory.getLogger(CascadeCacheManager.class);
 
     private final CascadeCacheConfiguration defaultConfig;
     private final CachePropertiesProvider cachePropertiesProvider;
@@ -50,21 +50,20 @@ public class SpringBootCacheManager implements CacheManager {
     /**
      * 默认构造器，用于Spring自动装配
      */
-    public SpringBootCacheManager() {
-        this.defaultConfig = null;
-        this.redissonClient = null;
-        this.cachePropertiesProvider = null;
-    }
-
-    public SpringBootCacheManager(CascadeCacheConfiguration defaultConfig,
-                                  RedissonClient redissonClient) {
+//    public CascadeCacheManager() {
+//        this.defaultConfig = null;
+//        this.redissonClient = null;
+//        this.cachePropertiesProvider = null;
+//    }
+    public CascadeCacheManager(CascadeCacheConfiguration defaultConfig,
+                               RedissonClient redissonClient) {
         this.defaultConfig = defaultConfig;
         this.redissonClient = redissonClient;
         this.cachePropertiesProvider = null;
     }
 
-    public SpringBootCacheManager(RedissonClient redissonClient,
-                                  CachePropertiesProvider cachePropertiesProvider) {
+    public CascadeCacheManager(RedissonClient redissonClient,
+                               CachePropertiesProvider cachePropertiesProvider) {
         this.defaultConfig = null;
         this.redissonClient = redissonClient;
         this.cachePropertiesProvider = cachePropertiesProvider;
@@ -75,7 +74,7 @@ public class SpringBootCacheManager implements CacheManager {
 
     @PostConstruct
     private void init() {
-        logger.info("SpringBootCacheManager initialized by Spring container");
+        logger.info("CascadeCacheManager initialized by Spring container");
     }
 
     @PreDestroy
@@ -86,7 +85,6 @@ public class SpringBootCacheManager implements CacheManager {
     // ==================== 核心缓存管理方法 ====================
 
     @Override
-    @SuppressWarnings("unchecked")
     public <K, V> Cache<K, V> getCache(String cacheName) {
         if (closed.get()) {
             logger.warn("Attempted to get cache '{}' from closed manager", cacheName);
@@ -95,10 +93,6 @@ public class SpringBootCacheManager implements CacheManager {
         return (Cache<K, V>) caches.get(cacheName);
     }
 
-    @Override
-    public <K, V> Cache<K, V> getOrCreateCache(String cacheName) {
-        return getOrCreateCache(cacheName, null, null);
-    }
 
     /**
      * 获取或创建缓存，支持显式类型传递
@@ -107,6 +101,7 @@ public class SpringBootCacheManager implements CacheManager {
      * @param valueType Value类型，可为null
      * @return 缓存实例
      */
+    @Override
     public <V> Cache<String, V> getOrCreateCache(String cacheName, Class<V> valueType) {
         // 创建缓存的时候 要支持全部高级配置项，最终创建 EnhancedDistributedTieredCache
         if (closed.get()) {
@@ -126,7 +121,12 @@ public class SpringBootCacheManager implements CacheManager {
 
         try {
             // 复制默认配置并设置缓存名称
-            CascadeCacheConfiguration cacheConfig = copyConfigWithName(defaultConfig, cacheName);
+            CascadeCacheConfiguration cacheConfig = null;
+            if (cachePropertiesProvider != null) {
+                cacheConfig = cachePropertiesProvider.toCascadeCacheConfiguration(cacheName);
+            } else {
+                cacheConfig = createDefaultConfiguration(cacheName);
+            }
 
             // 使用统一方法创建缓存
             Cache<String, V> newCache = createCacheFromConfig(cacheName, cacheConfig, String.class, valueType);
@@ -160,20 +160,23 @@ public class SpringBootCacheManager implements CacheManager {
             logger.warn("Attempted to get or create cache '{}' from closed manager", cacheName);
             return null;
         }
-
         // 先尝试获取已存在的缓存
         Cache<K, V> existingCache = getCache(cacheName);
         if (existingCache != null) {
             logger.debug("Found existing cache '{}'", cacheName);
             return existingCache;
         }
-
         // 缓存不存在，创建新缓存
         logger.info("Creating new cache '{}' with enhanced features", cacheName);
 
         try {
             // 复制默认配置并设置缓存名称
-            CascadeCacheConfiguration cacheConfig = copyConfigWithName(defaultConfig, cacheName);
+            CascadeCacheConfiguration cacheConfig = null;
+            if (cachePropertiesProvider != null) {
+                cacheConfig = cachePropertiesProvider.toCascadeCacheConfiguration(cacheName);
+            } else {
+                cacheConfig = createDefaultConfiguration(cacheName);
+            }
 
             // 使用统一方法创建缓存
             Cache<K, V> newCache = createCacheFromConfig(cacheName, cacheConfig, keyType, valueType);
@@ -196,18 +199,11 @@ public class SpringBootCacheManager implements CacheManager {
     /**
      * 从配置创建缓存的统一方法
      */
-    @SuppressWarnings("unchecked")
     private <K, V> Cache<K, V> createCacheFromConfig(String cacheName, CascadeCacheConfiguration cacheConfig,
                                                      Class<K> keyType, Class<V> valueType) {
         logger.info("Creating cache '{}' with key type: {}, value type: {}", cacheName, keyType, valueType);
 
-        // 如果没有传入配置，从Properties生成配置
-        if (cacheConfig == null && cachePropertiesProvider != null) {
-            cacheConfig = cachePropertiesProvider.toCascadeCacheConfiguration(cacheName);
-            logger.debug("Generated config from Properties for cache '{}'", cacheName);
-        }
-
-        // 如果仍然没有配置，使用默认配置
+        // 如果没有传入配置，使用默认配置
         if (cacheConfig == null) {
             cacheConfig = createDefaultConfiguration(cacheName);
             logger.debug("Using default configuration for cache '{}'", cacheName);
@@ -222,24 +218,13 @@ public class SpringBootCacheManager implements CacheManager {
         UnifiedCacheBuilder<K, V> builder = UnifiedCacheBuilder.newBuilder(cacheName, keyType, valueType);
         // 应用L1配置
         if (cacheConfig.getL1().isEnabled()) {
-            builder = builder.enableL1(true)
-                    .maximumSize(cacheConfig.getL1().getMaximumSize())
-                    .recordStats(cacheConfig.getL1().isRecordStats());
-
-            if (cacheConfig.getL1().getExpireAfterWrite() != null) {
-                builder = builder.expireAfterWrite(cacheConfig.getL1().getExpireAfterWrite());
-            }
-            if (cacheConfig.getL1().getExpireAfterAccess() != null) {
-                builder = builder.expireAfterAccess(cacheConfig.getL1().getExpireAfterAccess());
-            }
+            builder.configL1(cacheConfig.getL1());
         }
 
         // 应用L2配置
         if (cacheConfig.getL2().isEnabled() && redissonClient != null) {
-            builder = builder.withRedis(redissonClient)
-                    .enableL2(true)
-                    .keyPrefix(cacheConfig.getL2().getKeyPrefix())
-                    .defaultTtl(cacheConfig.getL2().getDefaultTtl());
+            builder = builder.withRedis(redissonClient);
+            builder.configL2(cacheConfig.getL2());
         }
 
         // 应用防护配置
@@ -254,14 +239,20 @@ public class SpringBootCacheManager implements CacheManager {
             }
 
             if (cacheConfig.getProtection().getRandomTtl().isEnabled()) {
-                builder = builder.randomTtl(
-                        cacheConfig.getL2().getDefaultTtl(),
-                        0.1 // 默认10%的抖动
-                );
+                CascadeCacheConfiguration.ProtectionConfig.RandomTtlConfig randomTtlConfig = cacheConfig.getProtection().getRandomTtl();
+                builder = builder.randomTtl(randomTtlConfig);
+                // 默认10%的抖动
+                builder = builder.randomTtl(cacheConfig.getL2().getDefaultTtl(), 0.1);
             }
+            // 分布式锁
+            if (cacheConfig.getProtection().getDistributedLock().isEnabled()) {
+                CascadeCacheConfiguration.ProtectionConfig.DistributedLockConfig distributedLockConfig = cacheConfig.getProtection().getDistributedLock();
+                builder.distributedLock(distributedLockConfig);
+            }
+
         }
 
-        return builder.build();
+        return builder.build(cacheConfig);
     }
 
     /**
@@ -286,57 +277,6 @@ public class SpringBootCacheManager implements CacheManager {
         return config;
     }
 
-    private CascadeCacheConfiguration copyConfigWithName(CascadeCacheConfiguration defaultConfig, String cacheName) {
-
-        if (defaultConfig == null) {
-            // 如果没有默认配置，创建一个基础配置
-            return new CascadeCacheConfiguration()
-                    .setName(cacheName)
-                    .setEnabled(true);
-        }
-
-        // 创建新配置并复制关键配置项
-        CascadeCacheConfiguration newConfig = new CascadeCacheConfiguration()
-                .setName(cacheName)
-                .setEnabled(true);
-
-        // 复制L1配置
-        newConfig.getL1()
-                .setEnabled(defaultConfig.getL1().isEnabled())
-                .setMaximumSize(defaultConfig.getL1().getMaximumSize())
-                .setExpireAfterWrite(defaultConfig.getL1().getExpireAfterWrite())
-                .setExpireAfterAccess(defaultConfig.getL1().getExpireAfterAccess())
-                .setRecordStats(defaultConfig.getL1().isRecordStats());
-
-        // 复制L2配置
-        newConfig.getL2()
-                .setEnabled(defaultConfig.getL2().isEnabled())
-                .setDefaultTtl(defaultConfig.getL2().getDefaultTtl())
-                .setKeyPrefix(defaultConfig.getL2().getKeyPrefix())
-                .setRedissonClient(redissonClient);
-
-        // 复制同步配置
-        newConfig.getSync()
-                .setEnabled(defaultConfig.getSync().isEnabled());
-
-        // 复制防护配置
-        newConfig.getProtection()
-                .setEnabled(defaultConfig.getProtection().isEnabled());
-
-        // 复制布隆过滤器配置
-        newConfig.getProtection().getBloomFilter()
-                .setEnabled(defaultConfig.getProtection().getBloomFilter().isEnabled())
-                .setExpectedElements(defaultConfig.getProtection().getBloomFilter().getExpectedElements())
-                .setFalsePositiveRate(defaultConfig.getProtection().getBloomFilter().getFalsePositiveRate());
-
-        // 复制随机TTL配置
-        newConfig.getProtection().getRandomTtl()
-                .setEnabled(defaultConfig.getProtection().getRandomTtl().isEnabled())
-                .setBaseTtl(defaultConfig.getProtection().getRandomTtl().getBaseTtl())
-                .setJitterRange(defaultConfig.getProtection().getRandomTtl().getJitterRange());
-
-        return newConfig;
-    }
 
     @Override
     public <K, V> boolean registerCache(String cacheName, Cache<K, V> cache) {
@@ -421,7 +361,7 @@ public class SpringBootCacheManager implements CacheManager {
     @Override
     public void close() {
         if (closed.compareAndSet(false, true)) {
-            logger.info("Closing SpringBootCacheManager...");
+            logger.info("Closing CascadeCacheManager...");
 
             // 清理所有缓存
             caches.values().forEach(cache -> {
@@ -435,7 +375,7 @@ public class SpringBootCacheManager implements CacheManager {
             });
 
             caches.clear();
-            logger.info("SpringBootCacheManager closed");
+            logger.info("CascadeCacheManager closed");
         }
     }
 

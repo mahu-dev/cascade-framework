@@ -1,9 +1,11 @@
 package io.github.cascade.cache.core.unified;
 
 import io.github.cascade.cache.api.*;
+import io.github.cascade.cache.config.CascadeCacheConfiguration;
+import io.github.cascade.cache.protection.RandomTtlProtection;
 import io.github.cascade.cache.protection.SimplifiedCacheProtectionManager;
-import io.github.cascade.cache.sync.UnifiedCacheSynchronizer;
 import io.github.cascade.cache.refresh.CacheRefreshScheduler;
+import io.github.cascade.cache.sync.UnifiedCacheSynchronizer;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
@@ -41,6 +43,8 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
 
     // 功能组件
     private CacheLoader<K, V> cacheLoader;
+    @Setter
+    private CascadeCacheConfiguration cacheConfiguration;
     /**
      * -- SETTER --
      * 设置防护管理器
@@ -348,7 +352,15 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
         try {
             V value = cacheLoader.load(key);
             if (value != null) {
-                put(key, value);
+//                put(key, value);
+                if (protectionManager != null) {
+                    RandomTtlProtection randomTtl = protectionManager.getRandomTtl();
+                    if (randomTtl != null) {
+                        putWithTtl(key, value, randomTtl.calculateTtl(key));
+                    }
+                } else {
+                    putWithTtl(key, value, cacheConfiguration.getL2().getDefaultTtl());
+                }
             }
             return value;
         } catch (Exception e) {
@@ -746,7 +758,7 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
         if (this.refreshScheduler != null) {
             this.refreshScheduler.shutdown();
         }
-        
+
         this.refreshScheduler = refreshScheduler;
         log.info("Cache refresh scheduler configured for cache: {}", name);
     }
@@ -759,12 +771,12 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
             log.warn("Cannot enable auto refresh for key {}: no refresh scheduler configured", key);
             return;
         }
-        
+
         if (cacheLoader == null) {
             log.warn("Cannot enable auto refresh for key {}: no CacheLoader configured", key);
             return;
         }
-        
+
         refreshScheduler.scheduleRefresh(key);
         log.debug("Auto refresh enabled for key: {}", key);
     }
@@ -774,7 +786,7 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
      */
     public void enableAutoRefreshAll(Set<K> keys) {
         if (keys == null || keys.isEmpty()) return;
-        
+
         keys.forEach(this::enableAutoRefresh);
         log.info("Auto refresh enabled for {} keys in cache: {}", keys.size(), name);
     }
@@ -784,7 +796,7 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
      */
     public void disableAutoRefresh(K key) {
         if (refreshScheduler == null) return;
-        
+
         refreshScheduler.cancelRefresh(key);
         log.debug("Auto refresh disabled for key: {}", key);
     }
@@ -829,7 +841,11 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
                 value = cacheLoader.load(key);
                 if (value != null) {
                     log.debug("Cache loaded: key={}", key);
-                    put(key, value);
+                    if (protectionManager != null && protectionManager.getRandomTtl() != null) {
+                        putWithTtl(key, value, protectionManager.getRandomTtl().calculateTtl(key));
+                    } else {
+                        putWithTtl(key, value, cacheConfiguration.getL2().getDefaultTtl());
+                    }
                     return value;
                 }
             } catch (Exception e) {
@@ -877,19 +893,19 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
             refreshScheduler.shutdown();
             log.debug("Cache refresh scheduler stopped for: {}", name);
         }
-        
+
         // 关闭同步器
         if (synchronizer != null) {
             synchronizer.stop();
             log.debug("Cache synchronizer stopped for: {}", name);
         }
-        
+
         // 关闭缓存引擎
         l1Engine.close();
         if (isMultiTier) {
             l2Engine.close();
         }
-        
+
         log.info("Cache closed: {}", name);
     }
 

@@ -1,23 +1,22 @@
 package io.github.cascade.cache.core.unified;
 
-import io.github.cascade.cache.annotation.AutoConfigureLoader;
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheLoader;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import io.github.cascade.cache.core.CacheLoaderResolver;
 import io.github.cascade.cache.core.unified.CaffeineEngine.CaffeineConfig;
 import io.github.cascade.cache.core.unified.RedisEngine.RedisConfig;
+import io.github.cascade.cache.event.UnifiedEventProcessor;
 import io.github.cascade.cache.protection.*;
+import io.github.cascade.cache.refresh.CacheRefreshScheduler;
 import io.github.cascade.cache.sync.RedissonCacheSyncManager;
 import io.github.cascade.cache.sync.UnifiedCacheSynchronizer;
-import io.github.cascade.cache.event.UnifiedEventProcessor;
-import io.github.cascade.cache.refresh.CacheRefreshScheduler;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RedissonClient;
 import org.springframework.context.ApplicationContext;
 
 import java.time.Duration;
-import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 
@@ -66,8 +65,18 @@ public class UnifiedCacheBuilder<K, V> {
     private Duration refreshInterval = Duration.ofMinutes(10);
     private boolean refreshOnAccess = false;
 
+    /**
+     * -- SETTER --
+     * 设置Spring应用上下文
+     */
     // Spring上下文（用于自动发现）
+    @Setter
     private static ApplicationContext applicationContext;
+    /**
+     * -- SETTER --
+     * 设置CacheLoader解析器
+     */
+    @Setter
     private static CacheLoaderResolver cacheLoaderResolver;
 
     // 自动发现配置
@@ -141,59 +150,29 @@ public class UnifiedCacheBuilder<K, V> {
      */
     public UnifiedCacheBuilder<K, V> loader(CacheLoader<K, V> loader) {
         this.cacheLoader = loader;
-        this.l1Config.cacheLoader(loader);
-        this.l2Config.cacheLoader(loader);
+        this.l1Config.setCacheLoader(loader);
+        this.l2Config.setCacheLoader(loader);
         return this;
     }
 
     // ==================== L1缓存配置 ====================
+
+
+    public void configL1(CascadeCacheConfiguration.L1Config l1Config) {
+        this.enableL1 = l1Config.isEnabled();
+        this.l1Config.setMaximumSize(l1Config.getMaximumSize());
+        this.l1Config.setExpireAfterAccess(l1Config.getExpireAfterAccess());
+        this.l1Config.setExpireAfterWrite(l1Config.getExpireAfterWrite());
+        this.l1Config.setRecordStats(l1Config.isRecordStats());
+        this.l1Config.setInitialCapacity(l1Config.getInitialCapacity());
+        this.l1Config.setCacheLoader(this.cacheLoader);
+    }
 
     /**
      * 启用/禁用L1缓存
      */
     public UnifiedCacheBuilder<K, V> enableL1(boolean enable) {
         this.enableL1 = enable;
-        return this;
-    }
-
-    /**
-     * 设置L1最大大小
-     */
-    public UnifiedCacheBuilder<K, V> maximumSize(long size) {
-        this.l1Config.maximumSize(size);
-        return this;
-    }
-
-    /**
-     * 设置L1写入后过期时间
-     */
-    public UnifiedCacheBuilder<K, V> expireAfterWrite(Duration duration) {
-        this.l1Config.expireAfterWrite(duration);
-        return this;
-    }
-
-    /**
-     * 设置L1访问后过期时间
-     */
-    public UnifiedCacheBuilder<K, V> expireAfterAccess(Duration duration) {
-        this.l1Config.expireAfterAccess(duration);
-        return this;
-    }
-
-    /**
-     * 设置自动刷新间隔
-     */
-    public UnifiedCacheBuilder<K, V> refreshAfterWrite(Duration duration) {
-        this.l1Config.refreshAfterWrite(duration);
-        this.l2Config.refreshAfterWrite(duration);
-        return this;
-    }
-
-    /**
-     * 启用统计
-     */
-    public UnifiedCacheBuilder<K, V> recordStats(boolean record) {
-        this.l1Config.recordStats(record);
         return this;
     }
 
@@ -205,6 +184,16 @@ public class UnifiedCacheBuilder<K, V> {
     public UnifiedCacheBuilder<K, V> enableL2(boolean enable) {
         this.enableL2 = enable;
         return this;
+    }
+
+    public void configL2(CascadeCacheConfiguration.L2Config l2Config) {
+        this.enableL2 = l2Config.isEnabled();
+        this.l2Config.setKeyPrefix(l2Config.getKeyPrefix());
+        this.l2Config.setCacheLoader(this.cacheLoader);
+        this.l2Config.setDefaultTtl(l2Config.getDefaultTtl());
+        this.l2Config.setRefreshAfterWrite(l2Config.getRefreshAfterWrite());
+        this.l2Config.setEnableBatch(l2Config.isEnableBatch());
+        this.l2Config.setBatchSize(l2Config.getBatchSize());
     }
 
     /**
@@ -232,17 +221,10 @@ public class UnifiedCacheBuilder<K, V> {
      * 设置Redis键前缀
      */
     public UnifiedCacheBuilder<K, V> keyPrefix(String prefix) {
-        this.l2Config.keyPrefix(prefix);
+        this.l2Config.setKeyPrefix(prefix);
         return this;
     }
 
-    /**
-     * 设置Redis默认TTL
-     */
-    public UnifiedCacheBuilder<K, V> defaultTtl(Duration ttl) {
-        this.l2Config.defaultTtl(ttl);
-        return this;
-    }
 
     // ==================== 防护配置 ====================
 
@@ -280,6 +262,14 @@ public class UnifiedCacheBuilder<K, V> {
         return this;
     }
 
+    public UnifiedCacheBuilder<K, V> randomTtl(CascadeCacheConfiguration.ProtectionConfig.RandomTtlConfig randomTtlConfig) {
+        this.enableProtection = true;
+        Duration jitterRange = Duration.ofMillis((long) (randomTtlConfig.getBaseTtl().toMillis() * randomTtlConfig.getJitterRatio()));
+        this.randomTtl = new RandomTtlProtection(randomTtlConfig.getBaseTtl(), jitterRange,
+                RandomTtlProtection.JitterStrategy.UNIFORM);
+        return this;
+    }
+
     /**
      * 配置分布式锁防热点
      */
@@ -298,24 +288,32 @@ public class UnifiedCacheBuilder<K, V> {
         return this;
     }
 
+    public UnifiedCacheBuilder<K, V> distributedLock(CascadeCacheConfiguration.ProtectionConfig.DistributedLockConfig distributedLockConfig) {
+        this.enableProtection = true;
+        if (redissonClient != null) {
+            this.distributedLock = new RedissonLockProtection(
+                    redissonClient,
+                    cacheName + "_lock:",
+                    distributedLockConfig.getLockTimeout(),
+                    distributedLockConfig.getWaitTimeout(),
+                    distributedLockConfig.getMaxRetries(),
+                    distributedLockConfig.getRetryDelay()
+            );
+        }
+        return this;
+    }
+
     // ==================== 便捷配置方法 ====================
 
     /**
      * 一键配置基础缓存
      */
     public UnifiedCacheBuilder<K, V> basicConfig(long maxSize, Duration expireAfter) {
-        return maximumSize(maxSize).expireAfterWrite(expireAfter);
+        this.l1Config.setMaximumSize(maxSize);
+        this.l1Config.setExpireAfterWrite(expireAfter);
+        return this;
     }
 
-    /**
-     * 一键配置多级缓存
-     */
-    public UnifiedCacheBuilder<K, V> multiTierConfig(long l1Size, Duration l1Expire, Duration l2Ttl) {
-        return maximumSize(l1Size)
-                .expireAfterWrite(l1Expire)
-                .withRedis()
-                .defaultTtl(l2Ttl);
-    }
 
     /**
      * 一键配置防护机制
@@ -420,7 +418,7 @@ public class UnifiedCacheBuilder<K, V> {
     /**
      * 构建缓存
      */
-    public Cache<K, V> build() {
+    public Cache<K, V> build(CascadeCacheConfiguration cacheConfig) {
         validateConfig();
 
         // 创建L1引擎
@@ -448,7 +446,7 @@ public class UnifiedCacheBuilder<K, V> {
         } else {
             throw new IllegalStateException("At least one cache tier must be enabled");
         }
-
+        cache.setCacheConfiguration(cacheConfig);
         // 设置加载器
         if (cacheLoader != null) {
             cache.setLoader(cacheLoader);
@@ -466,9 +464,7 @@ public class UnifiedCacheBuilder<K, V> {
 
         // 设置防护
         if (enableProtection) {
-            SimplifiedCacheProtectionManager.Builder protectionBuilder =
-                    SimplifiedCacheProtectionManager.builder();
-
+            SimplifiedCacheProtectionManager.Builder protectionBuilder = SimplifiedCacheProtectionManager.builder();
             if (bloomFilter != null) {
                 protectionBuilder.bloomFilter(bloomFilter);
             }
@@ -478,7 +474,6 @@ public class UnifiedCacheBuilder<K, V> {
             if (distributedLock != null) {
                 protectionBuilder.redissonLock(distributedLock);
             }
-
             cache.setProtectionManager(protectionBuilder.build());
             log.debug("Configured protection for cache: {}", cacheName);
         }
@@ -488,17 +483,17 @@ public class UnifiedCacheBuilder<K, V> {
             try {
                 // 创建同步管理器
                 RedissonCacheSyncManager syncManager = new RedissonCacheSyncManager(redissonClient, syncTopic);
-                
+
                 // 创建事件处理器
                 UnifiedEventProcessor eventProcessor = new UnifiedEventProcessor(asyncSync);
-                
+
                 // 创建统一同步器
                 UnifiedCacheSynchronizer<K, V> synchronizer = new UnifiedCacheSynchronizer<>(
-                    cacheName, syncManager, eventProcessor);
-                
+                        cacheName, syncManager, eventProcessor);
+
                 // 设置到缓存中
                 cache.setSynchronizer(synchronizer);
-                
+
                 log.info("Configured distributed sync for cache: {}, topic: {}", cacheName, syncTopic);
             } catch (Exception e) {
                 log.warn("Failed to configure distributed sync for cache: {}, error: {}", cacheName, e.getMessage());
@@ -513,14 +508,14 @@ public class UnifiedCacheBuilder<K, V> {
                     cache.put(key, newValue);
                     log.debug("Auto refreshed cache key: {} with new value", key);
                 };
-                
+
                 // 创建刷新调度器
                 CacheRefreshScheduler<K, V> refreshScheduler = new CacheRefreshScheduler<>(
-                    refreshCallback, cacheLoader, refreshInterval);
-                
+                        refreshCallback, cacheLoader, refreshInterval);
+
                 // 设置到缓存中
                 cache.setRefreshScheduler(refreshScheduler);
-                
+
                 log.info("Configured auto refresh for cache: {}, interval: {}", cacheName, refreshInterval);
             } catch (Exception e) {
                 log.warn("Failed to configure auto refresh for cache: {}, error: {}", cacheName, e.getMessage());
@@ -564,51 +559,6 @@ public class UnifiedCacheBuilder<K, V> {
         }
     }
 
-    /**
-     * 尝试自动发现CacheLoader
-     */
-    @SuppressWarnings("unchecked")
-    private CacheLoader<K, V> tryAutoDiscoverCacheLoader() {
-        if (applicationContext == null || keyType == null || valueType == null) {
-            return null;
-        }
-
-        try {
-            // 1. 查找带@AutoConfigureLoader注解的Bean
-            Map<String, Object> candidates = applicationContext.getBeansWithAnnotation(AutoConfigureLoader.class);
-            for (Object bean : candidates.values()) {
-                if (bean instanceof CacheLoader<?, ?>) {
-                    // TODO: 实现类型匹配逻辑
-                    return (CacheLoader<K, V>) bean;
-                }
-            }
-
-            // 2. 按类型查找
-            Map<String, CacheLoader> loaders = applicationContext.getBeansOfType(CacheLoader.class);
-            if (loaders.size() == 1) {
-                return (CacheLoader<K, V>) loaders.values().iterator().next();
-            }
-
-        } catch (Exception e) {
-            log.debug("Failed to auto-discover CacheLoader: {}", e.getMessage());
-        }
-
-        return null;
-    }
-
-    /**
-     * 设置Spring应用上下文
-     */
-    public static void setApplicationContext(ApplicationContext context) {
-        applicationContext = context;
-    }
-
-    /**
-     * 设置CacheLoader解析器
-     */
-    public static void setCacheLoaderResolver(CacheLoaderResolver resolver) {
-        cacheLoaderResolver = resolver;
-    }
 
     /**
      * 启用/禁用自动发现CacheLoader
@@ -625,16 +575,16 @@ public class UnifiedCacheBuilder<K, V> {
         // 基础配置
         if (config.getCommon() != null) {
             var common = config.getCommon();
-            maximumSize(common.getMaximumSize());
-            recordStats(common.isRecordStats());
+            this.l1Config.setMaximumSize(common.getMaximumSize());
+            this.l1Config.setRecordStats(common.isRecordStats());
             if (common.getExpireAfterWrite() != null) {
-                expireAfterWrite(common.getExpireAfterWrite());
+                this.l1Config.setExpireAfterWrite(common.getExpireAfterWrite());
             }
             if (common.getExpireAfterAccess() != null) {
-                expireAfterAccess(common.getExpireAfterAccess());
+                this.l1Config.setExpireAfterAccess(common.getExpireAfterAccess());
             }
             if (common.getRefreshAfterWrite() != null) {
-                refreshAfterWrite(common.getRefreshAfterWrite());
+                this.l1Config.setRefreshAfterWrite(common.getRefreshAfterWrite());
             }
             if (common.getExecutor() != null) {
                 executor(common.getExecutor());
@@ -645,24 +595,24 @@ public class UnifiedCacheBuilder<K, V> {
         if (config.getL1() != null && config.getL1().isEnabled()) {
             var l1 = config.getL1();
             enableL1(true);
-            maximumSize(l1.getMaximumSize());
+            this.l1Config.setMaximumSize(l1.getMaximumSize());
             if (l1.getExpireAfterWrite() != null) {
-                expireAfterWrite(l1.getExpireAfterWrite());
+                this.l1Config.setExpireAfterWrite(l1.getExpireAfterWrite());
             }
             if (l1.getExpireAfterAccess() != null) {
-                expireAfterAccess(l1.getExpireAfterAccess());
+                this.l1Config.setExpireAfterAccess(l1.getExpireAfterAccess());
             }
-            recordStats(l1.isRecordStats());
+            this.l1Config.setRecordStats(l1.isRecordStats());
             // 其他L1特定配置...
         }
 
         // L2配置
         if (config.getL2() != null && config.getL2().isEnabled()) {
-            var l2 = config.getL2();
+            CascadeCacheConfiguration.L2Config l2 = config.getL2();
             enableL2(true);
             keyPrefix(l2.getKeyPrefix());
             if (l2.getDefaultTtl() != null) {
-                defaultTtl(l2.getDefaultTtl());
+                this.l2Config.setDefaultTtl(l2.getDefaultTtl());
             }
             // L2序列化器和客户端配置
             if (l2.getRedissonClient() != null) {
@@ -686,28 +636,30 @@ public class UnifiedCacheBuilder<K, V> {
         if (config.getProtection() != null && config.getProtection().isEnabled()) {
             var protection = config.getProtection();
             enableProtection(true);
-            
+
             // 布隆过滤器配置
             var bloomFilterConfig = protection.getBloomFilter();
             if (bloomFilterConfig != null && bloomFilterConfig.isEnabled()) {
                 bloomFilter(bloomFilterConfig.getExpectedElements(), bloomFilterConfig.getFalsePositiveRate());
             }
-            
+
             // 随机TTL配置
             var randomTtlConfig = protection.getRandomTtl();
             if (randomTtlConfig != null && randomTtlConfig.isEnabled()) {
-                Duration baseTtl = randomTtlConfig.getBaseTtl() != null ? 
-                    randomTtlConfig.getBaseTtl() : Duration.ofMinutes(30);
+                Duration baseTtl = randomTtlConfig.getBaseTtl() != null ?
+                        randomTtlConfig.getBaseTtl() : Duration.ofMinutes(30);
                 randomTtl(baseTtl, randomTtlConfig.getJitterRatio());
             }
-            
+
             // 分布式锁配置
             var distributedLockConfig = protection.getDistributedLock();
             if (distributedLockConfig != null && distributedLockConfig.isEnabled()) {
                 Duration lockTimeout = distributedLockConfig.getLockTimeout() != null ?
-                    distributedLockConfig.getLockTimeout() : Duration.ofSeconds(30);
+                        distributedLockConfig.getLockTimeout() : Duration.ofSeconds(30);
                 distributedLock(lockTimeout);
             }
         }
     }
+
+
 }

@@ -1,5 +1,7 @@
 package io.github.cascade.cache.protection;
 
+import lombok.Getter;
+
 import java.time.Duration;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
@@ -13,8 +15,23 @@ import java.util.function.Function;
  */
 public class RandomTtlProtection {
 
+    /**
+     * -- GETTER --
+     * 获取基础TTL
+     */
+    @Getter
     private final Duration baseTtl;
+    /**
+     * -- GETTER --
+     * 获取抖动范围
+     */
+    @Getter
     private final Duration jitterRange;
+    /**
+     * -- GETTER --
+     * 获取抖动策略
+     */
+    @Getter
     private final JitterStrategy jitterStrategy;
     private final Function<Object, Duration> customJitterFunction;
     private final Random random;
@@ -22,8 +39,8 @@ public class RandomTtlProtection {
     /**
      * 构造函数
      *
-     * @param baseTtl 基础TTL
-     * @param jitterRange 抖动范围
+     * @param baseTtl        基础TTL
+     * @param jitterRange    抖动范围
      * @param jitterStrategy 抖动策略
      */
     public RandomTtlProtection(Duration baseTtl, Duration jitterRange, JitterStrategy jitterStrategy) {
@@ -33,14 +50,14 @@ public class RandomTtlProtection {
     /**
      * 构造函数（支持自定义抖动函数）
      *
-     * @param baseTtl 基础TTL
-     * @param jitterRange 抖动范围
-     * @param jitterStrategy 抖动策略
+     * @param baseTtl              基础TTL
+     * @param jitterRange          抖动范围
+     * @param jitterStrategy       抖动策略
      * @param customJitterFunction 自定义抖动函数
      */
-    public RandomTtlProtection(Duration baseTtl, Duration jitterRange, 
-                              JitterStrategy jitterStrategy, 
-                              Function<Object, Duration> customJitterFunction) {
+    public RandomTtlProtection(Duration baseTtl, Duration jitterRange,
+                               JitterStrategy jitterStrategy,
+                               Function<Object, Duration> customJitterFunction) {
         this.baseTtl = baseTtl;
         this.jitterRange = jitterRange;
         this.jitterStrategy = jitterStrategy;
@@ -92,7 +109,7 @@ public class RandomTtlProtection {
      */
     private Duration calculateUniformJitter() {
         long jitterMillis = ThreadLocalRandom.current().nextLong(
-            -jitterRange.toMillis(), jitterRange.toMillis() + 1);
+                -jitterRange.toMillis(), jitterRange.toMillis() + 1);
         return Duration.ofMillis(jitterMillis);
     }
 
@@ -128,7 +145,7 @@ public class RandomTtlProtection {
         if (key == null) {
             return Duration.ZERO;
         }
-        
+
         int hash = key.hashCode();
         // 使用哈希值生成确定性的抖动
         long jitterMillis = (hash % (2 * jitterRange.toMillis() + 1)) - jitterRange.toMillis();
@@ -141,49 +158,38 @@ public class RandomTtlProtection {
     private Duration calculatePercentageJitter() {
         // jitterRange作为百分比使用
         double percentage = ThreadLocalRandom.current().nextDouble(
-            -jitterRange.toMillis() / 100.0, jitterRange.toMillis() / 100.0 + 0.01);
+                -jitterRange.toMillis() / 100.0, jitterRange.toMillis() / 100.0 + 0.01);
         long jitterMillis = (long) (baseTtl.toMillis() * percentage);
         return Duration.ofMillis(jitterMillis);
-    }
-
-    /**
-     * 获取基础TTL
-     */
-    public Duration getBaseTtl() {
-        return baseTtl;
-    }
-
-    /**
-     * 获取抖动范围
-     */
-    public Duration getJitterRange() {
-        return jitterRange;
-    }
-
-    /**
-     * 获取抖动策略
-     */
-    public JitterStrategy getJitterStrategy() {
-        return jitterStrategy;
     }
 
     /**
      * 抖动策略枚举
      */
     public enum JitterStrategy {
-        /** 均匀分布：在[-jitterRange, +jitterRange]范围内均匀分布 */
+        /**
+         * 均匀分布：在[-jitterRange, +jitterRange]范围内均匀分布
+         */
         UNIFORM,
-        
-        /** 高斯分布：以0为中心的正态分布，3σ = jitterRange */
+
+        /**
+         * 高斯分布：以0为中心的正态分布，3σ = jitterRange
+         */
         GAUSSIAN,
-        
-        /** 指数分布：指数分布的抖动 */
+
+        /**
+         * 指数分布：指数分布的抖动
+         */
         EXPONENTIAL,
-        
-        /** 基于哈希：使用键的哈希值生成确定性抖动 */
+
+        /**
+         * 基于哈希：使用键的哈希值生成确定性抖动
+         */
         HASH_BASED,
-        
-        /** 百分比：jitterRange作为baseTtl的百分比 */
+
+        /**
+         * 百分比：jitterRange作为baseTtl的百分比
+         */
         PERCENTAGE
     }
 
@@ -285,15 +291,15 @@ public class RandomTtlProtection {
      * 预定义的常用配置
      */
     public static class Presets {
-        
+
         /**
          * 轻度抖动：±10%的TTL抖动
          */
         public static RandomTtlProtection lightJitter(Duration baseTtl) {
             return builder()
-                .baseTtl(baseTtl)
-                .percentageJitter(0.1)
-                .build();
+                    .baseTtl(baseTtl)
+                    .percentageJitter(0.1)
+                    .build();
         }
 
         /**
@@ -301,9 +307,9 @@ public class RandomTtlProtection {
          */
         public static RandomTtlProtection mediumJitter(Duration baseTtl) {
             return builder()
-                .baseTtl(baseTtl)
-                .percentageJitter(0.2)
-                .build();
+                    .baseTtl(baseTtl)
+                    .percentageJitter(0.2)
+                    .build();
         }
 
         /**
@@ -311,9 +317,9 @@ public class RandomTtlProtection {
          */
         public static RandomTtlProtection heavyJitter(Duration baseTtl) {
             return builder()
-                .baseTtl(baseTtl)
-                .percentageJitter(0.3)
-                .build();
+                    .baseTtl(baseTtl)
+                    .percentageJitter(0.3)
+                    .build();
         }
 
         /**
@@ -321,9 +327,9 @@ public class RandomTtlProtection {
          */
         public static RandomTtlProtection fixedRangeJitter(Duration baseTtl, Duration jitterRange) {
             return builder()
-                .baseTtl(baseTtl)
-                .uniformJitter(jitterRange)
-                .build();
+                    .baseTtl(baseTtl)
+                    .uniformJitter(jitterRange)
+                    .build();
         }
 
         /**
@@ -331,9 +337,9 @@ public class RandomTtlProtection {
          */
         public static RandomTtlProtection gaussianJitter(Duration baseTtl, Duration jitterRange) {
             return builder()
-                .baseTtl(baseTtl)
-                .gaussianJitter(jitterRange)
-                .build();
+                    .baseTtl(baseTtl)
+                    .gaussianJitter(jitterRange)
+                    .build();
         }
 
         /**
@@ -341,9 +347,9 @@ public class RandomTtlProtection {
          */
         public static RandomTtlProtection deterministicJitter(Duration baseTtl, Duration jitterRange) {
             return builder()
-                .baseTtl(baseTtl)
-                .hashBasedJitter(jitterRange)
-                .build();
+                    .baseTtl(baseTtl)
+                    .hashBasedJitter(jitterRange)
+                    .build();
         }
     }
 }

@@ -8,8 +8,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import java.time.Duration;
-
 /**
  * 缓存配置类
  * 演示自动CacheLoader发现机制
@@ -25,14 +23,11 @@ public class CacheConfiguration {
     @Bean
     public Cache<String, User> userCache() {
         log.info("Creating userCache with auto-discovery enabled");
-        
+
         return UnifiedCacheBuilder.stringCache("userCache", User.class)
-            .enableL1(true)
-            .maximumSize(1000)
-            .expireAfterWrite(Duration.ofMinutes(10))
-            .recordStats(true)
-            .autoDiscoverLoader(true) // 显式启用自动发现
-            .build(); // 这里会自动发现并配置UserCacheLoader
+                .enableL1(true)
+                .autoDiscoverLoader(true) // 显式启用自动发现
+                .build(null); // 这里会自动发现并配置UserCacheLoader
     }
 
     /**
@@ -42,11 +37,9 @@ public class CacheConfiguration {
     @Bean
     public Cache<String, User> userSimpleCache() {
         log.info("Creating user cache with naming convention discovery");
-        
+
         return UnifiedCacheBuilder.stringCache("user", User.class)
-            .enableL1(true)
-            .maximumSize(500)
-            .expireAfterWrite(Duration.ofMinutes(5))
-            .build(); // 按命名约定自动发现
+                .enableL1(true)
+                .build(null); // 按命名约定自动发现
     }
 }

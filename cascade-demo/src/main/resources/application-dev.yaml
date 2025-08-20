@@ -1,0 +1,54 @@
+# Spring Boot配置 - application.yml
+spring:
+  application:
+    name: cascade-cache-demo
+
+  # Redis配置 - 使用Redisson
+  redis:
+    redisson:
+      config: |
+        clusterServersConfig:
+          nodeAddresses:
+            - "redis://127.0.0.1:6379"
+            - "redis://127.0.0.1:6380"
+            - "redis://127.0.0.1:6381"
+            - "redis://127.0.0.1:6382"
+            - "redis://127.0.0.1:6383"
+            - "redis://127.0.0.1:6384"
+          scanInterval: 5000
+          password: "56445218@"
+          masterConnectionPoolSize: 64
+          slaveConnectionPoolSize: 64
+          idleConnectionTimeout: 10000
+          connectTimeout: 10000
+          timeout: 3000
+          retryAttempts: 3
+          retryInterval: 1500
+          readMode: "SLAVE"
+          subscriptionMode: "MASTER"
+          loadBalancer: !<org.redisson.connection.balancer.RoundRobinLoadBalancer> {}
+          subscriptionConnectionPoolSize: 50
+          dnsMonitoringInterval: 5000
+          failedSlaveCheckInterval: 60000
+          failedSlaveReconnectionInterval: 3000
+        threads: 16
+        nettyThreads: 32
+        transportMode: "NIO"
+        codec: !<org.redisson.codec.JsonJacksonCodec> {}
+
+# Cascade框架配置
+cascade:
+  enabled: true
+  l1:
+    enabled: true
+  l2:
+    enabled: true
+
+# 日志配置
+logging:
+  level:
+    io.github.cascade: DEBUG
+    org.redisson: INFO
+    org.springframework.data.redis: INFO
+    io.netty: INFO
+    root: INFO

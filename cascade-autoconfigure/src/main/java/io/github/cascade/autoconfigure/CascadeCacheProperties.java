@@ -414,29 +414,29 @@ public class CascadeCacheProperties implements CachePropertiesProvider {
     @Override
     public CascadeCacheConfiguration toCascadeCacheConfiguration(String cacheName) {
         CascadeCacheConfiguration config = new CascadeCacheConfiguration();
-        
+
         // 基础配置
         config.setName(cacheName != null ? cacheName : defaultCacheName)
-              .setEnabled(enabled);
-        
+                .setEnabled(enabled);
+
         // 转换通用配置
         convertCommonConfig(config.getCommon());
-        
+
         // 转换L1配置
         convertL1Config(config.getL1());
-        
+
         // 转换L2配置
         convertL2Config(config.getL2());
-        
+
         // 转换同步配置
         convertSyncConfig(config.getSync());
-        
+
         // 转换防护配置
         convertProtectionConfig(config.getProtection());
-        
+
         // 转换监控配置
         convertMonitoringConfig(config.getMonitoring());
-        
+
         return config;
     }
 
@@ -445,8 +445,8 @@ public class CascadeCacheProperties implements CachePropertiesProvider {
      */
     private void convertCommonConfig(CascadeCacheConfiguration.CommonConfig target) {
         target.setMaximumSize(common.maximumSize)
-              .setRecordStats(common.recordStats);
-        
+                .setRecordStats(common.recordStats);
+
         if (common.expireAfterWriteSeconds > 0) {
             target.setExpireAfterWrite(Duration.ofSeconds(common.expireAfterWriteSeconds));
         }
@@ -456,6 +456,7 @@ public class CascadeCacheProperties implements CachePropertiesProvider {
         if (common.refreshAfterWriteSeconds > 0) {
             target.setRefreshAfterWrite(Duration.ofSeconds(common.refreshAfterWriteSeconds));
         }
+        target.setRecordStats(common.recordStats);
     }
 
     /**
@@ -463,14 +464,14 @@ public class CascadeCacheProperties implements CachePropertiesProvider {
      */
     private void convertL1Config(CascadeCacheConfiguration.L1Config target) {
         target.setEnabled(l1.enabled)
-              .setMaximumSize(l1.maximumSize)
-              .setRecordStats(l1.recordStats)
-              .setInitialCapacity(l1.initialCapacity)
-              .setConcurrencyLevel(l1.concurrencyLevel)
-              .setWeakKeys(l1.weakKeys)
-              .setWeakValues(l1.weakValues)
-              .setSoftValues(l1.softValues);
-        
+                .setMaximumSize(l1.maximumSize)
+                .setRecordStats(l1.recordStats)
+                .setInitialCapacity(l1.initialCapacity)
+                .setConcurrencyLevel(l1.concurrencyLevel)
+                .setWeakKeys(l1.weakKeys)
+                .setWeakValues(l1.weakValues)
+                .setSoftValues(l1.softValues);
+
         if (l1.expireAfterWriteSeconds > 0) {
             target.setExpireAfterWrite(Duration.ofSeconds(l1.expireAfterWriteSeconds));
         }
@@ -484,11 +485,11 @@ public class CascadeCacheProperties implements CachePropertiesProvider {
      */
     private void convertL2Config(CascadeCacheConfiguration.L2Config target) {
         target.setEnabled(l2.enabled)
-              .setKeyPrefix(l2.keyPrefix)
-              .setEnableBatch(l2.enableBatch)
-              .setBatchSize(l2.batchSize)
-              .setSerializer(l2.serializer);
-        
+                .setKeyPrefix(l2.keyPrefix)
+                .setEnableBatch(l2.enableBatch)
+                .setBatchSize(l2.batchSize)
+                .setSerializer(l2.serializer);
+
         if (l2.defaultTtlSeconds > 0) {
             target.setDefaultTtl(Duration.ofSeconds(l2.defaultTtlSeconds));
         }
@@ -508,13 +509,13 @@ public class CascadeCacheProperties implements CachePropertiesProvider {
      */
     private void convertRedisConfig(CascadeCacheConfiguration.L2Config.RedisConfig target) {
         target.setHost(l2.redis.host)
-              .setPort(l2.redis.port)
-              .setPassword(l2.redis.password)
-              .setDatabase(l2.redis.database)
-              .setMaxTotal(l2.redis.maxTotal)
-              .setMaxIdle(l2.redis.maxIdle)
-              .setMinIdle(l2.redis.minIdle);
-        
+                .setPort(l2.redis.port)
+                .setPassword(l2.redis.password)
+                .setDatabase(l2.redis.database)
+                .setMaxTotal(l2.redis.maxTotal)
+                .setMaxIdle(l2.redis.maxIdle)
+                .setMinIdle(l2.redis.minIdle);
+
         if (l2.redis.timeoutSeconds > 0) {
             target.setTimeout(Duration.ofSeconds(l2.redis.timeoutSeconds));
         }
@@ -525,9 +526,9 @@ public class CascadeCacheProperties implements CachePropertiesProvider {
      */
     private void convertSyncConfig(CascadeCacheConfiguration.SyncConfig target) {
         target.setEnabled(sync.enabled)
-              .setTopic(sync.topic)
-              .setAsync(sync.async);
-        
+                .setTopic(sync.topic)
+                .setAsync(sync.async);
+
         if (sync.timeoutSeconds > 0) {
             target.setTimeout(Duration.ofSeconds(sync.timeoutSeconds));
         }
@@ -538,31 +539,31 @@ public class CascadeCacheProperties implements CachePropertiesProvider {
      */
     private void convertProtectionConfig(CascadeCacheConfiguration.ProtectionConfig target) {
         target.setEnabled(protection.enabled);
-        
+
         // 布隆过滤器配置
         target.getBloomFilter()
-              .setEnabled(protection.bloomFilter.enabled)
-              .setExpectedElements(protection.bloomFilter.expectedElements)
-              .setFalsePositiveRate(protection.bloomFilter.falsePositiveRate);
-        
+                .setEnabled(protection.bloomFilter.enabled)
+                .setExpectedElements(protection.bloomFilter.expectedElements)
+                .setFalsePositiveRate(protection.bloomFilter.falsePositiveRate);
+
         // 随机TTL配置
         target.getRandomTtl()
-              .setEnabled(protection.randomTtl.enabled)
-              .setJitterRatio(protection.randomTtl.jitterRatio);
-        
+                .setEnabled(protection.randomTtl.enabled)
+                .setJitterRatio(protection.randomTtl.jitterRatio);
+
         if (protection.randomTtl.baseTtlSeconds > 0) {
             target.getRandomTtl().setBaseTtl(Duration.ofSeconds(protection.randomTtl.baseTtlSeconds));
         }
         if (protection.randomTtl.jitterRangeSeconds > 0) {
             target.getRandomTtl().setJitterRange(Duration.ofSeconds(protection.randomTtl.jitterRangeSeconds));
         }
-        
+
         // 分布式锁配置
         target.getDistributedLock()
-              .setEnabled(protection.distributedLock.enabled)
-              .setMaxRetries(protection.distributedLock.maxRetries)
-              .setKeyPrefix(protection.distributedLock.keyPrefix);
-        
+                .setEnabled(protection.distributedLock.enabled)
+                .setMaxRetries(protection.distributedLock.maxRetries)
+                .setKeyPrefix(protection.distributedLock.keyPrefix);
+
         if (protection.distributedLock.lockTimeoutSeconds > 0) {
             target.getDistributedLock().setLockTimeout(Duration.ofSeconds(protection.distributedLock.lockTimeoutSeconds));
         }
@@ -579,10 +580,10 @@ public class CascadeCacheProperties implements CachePropertiesProvider {
      */
     private void convertMonitoringConfig(CascadeCacheConfiguration.MonitoringConfig target) {
         target.setEnabled(monitoring.enabled)
-              .setEnableMetrics(monitoring.enableMetrics)
-              .setEnableTracing(monitoring.enableTracing)
-              .setEventListenerClass(monitoring.eventListenerClass);
-        
+                .setEnableMetrics(monitoring.enableMetrics)
+                .setEnableTracing(monitoring.enableTracing)
+                .setEventListenerClass(monitoring.eventListenerClass);
+
         if (monitoring.metricsIntervalSeconds > 0) {
             target.setMetricsInterval(Duration.ofSeconds(monitoring.metricsIntervalSeconds));
         }

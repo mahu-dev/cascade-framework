@@ -3,7 +3,7 @@ package io.github.cascade.autoconfigure;
 import io.github.cascade.cache.api.CacheManager;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import io.github.cascade.cache.core.unified.UnifiedCacheBuilder;
-import io.github.cascade.cache.manager.SpringBootCacheManager;
+import io.github.cascade.cache.manager.CascadeCacheManager;
 import lombok.Getter;
 import org.redisson.api.RedissonClient;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -27,11 +27,11 @@ import org.springframework.context.annotation.Bean;
 public class CascadeAutoConfiguration {
 
     /**
-     * SpringBootCacheManager Bean - 具体实现类
+     * CascadeCacheManager Bean - 具体实现类
      */
     @Bean
     @ConditionalOnMissingBean
-    public SpringBootCacheManager springBootCacheManager(CascadeCacheProperties properties,
+    public CascadeCacheManager cascadeCacheManager(CascadeCacheProperties properties,
                                                          ApplicationContext applicationContext) {
         // 从Spring Boot配置属性创建内部配置
 //        CascadeCacheConfiguration defaultConfig = createConfigurationFromProperties(properties);
@@ -44,16 +44,16 @@ public class CascadeAutoConfiguration {
             // RedissonClient不存在时忽略
         }
 
-        return new SpringBootCacheManager(redissonClient, properties);
+        return new CascadeCacheManager(redissonClient, properties);
     }
 
     /**
-     * CacheManager Bean - 接口类型，指向SpringBootCacheManager
+     * CacheManager Bean - 接口类型，指向CascadeCacheManager
      */
 //    @Bean
 //    @Primary
 //    @ConditionalOnMissingBean(name = "cacheManager")
-//    public CacheManager cascadeCacheManager(SpringBootCacheManager springBootCacheManager) {
+//    public CacheManager cascadeCacheManager(CascadeCacheManager cascadeCacheManager) {
 //        return springBootCacheManager;
 //    }
 

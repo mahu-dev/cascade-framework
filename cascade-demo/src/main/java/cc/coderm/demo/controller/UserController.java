@@ -3,7 +3,7 @@ package cc.coderm.demo.controller;
 import cc.coderm.demo.model.User;
 import cc.coderm.demo.service.UserService;
 import io.github.cascade.cache.api.Cache;
-import io.github.cascade.cache.manager.SpringBootCacheManager;
+import io.github.cascade.cache.manager.CascadeCacheManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,7 +32,7 @@ public class UserController {
 
 
     @Autowired
-    private SpringBootCacheManager springBootCacheManager;
+    private CascadeCacheManager cascadeCacheManager;
 
     // 注入自动发现的缓存
     @Autowired
@@ -42,18 +42,25 @@ public class UserController {
 
     @GetMapping("test1")
     public void test() {
-        System.out.println("SpringBootCacheManager: " + springBootCacheManager);
+        System.out.println("CascadeCacheManager: " + cascadeCacheManager);
 
         // 检查RedissonClient是否正确配置
-        if (springBootCacheManager.getRedissonClient() != null) {
-            org.redisson.api.RedissonClient redissonClient = springBootCacheManager.getRedissonClient();
+        if (cascadeCacheManager.getRedissonClient() != null) {
+            org.redisson.api.RedissonClient redissonClient = cascadeCacheManager.getRedissonClient();
             System.out.println("RedissonClient配置: " + redissonClient.getConfig());
         } else {
             System.out.println("RedissonClient未配置");
         }
 
-        Cache<Object, Object> test = springBootCacheManager.getOrCreateCache("test");
-        test.put("test", "test111");
+        Cache<String, User> test = cascadeCacheManager.getOrCreateCache("test", User.class);
+
+        User user = new User();
+        user.setId(1L);
+        user.setName("王五");
+        user.setEmail("wangwu@123.com");
+        user.setAge(1);
+
+        test.put("test", user);
 
     }
 
@@ -64,7 +71,7 @@ public class UserController {
         // 使用TypeReference捕获类型信息
 //        Cache<String, User> cache = springBootCacheManager.getOrCreateCacheWithTypeRef("userCache", new TypeReference<>() {
 //        });
-        Cache<String, User> test = springBootCacheManager.getOrCreateCache("test", User.class);
+        Cache<String, User> test = cascadeCacheManager.getOrCreateCache("test", User.class);
 
 
         System.out.println(test.getOrLoad("test"));

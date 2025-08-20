@@ -21,7 +21,7 @@ public class CascadeCacheConfiguration {
     /**
      * 缓存名称
      */
-    private String name;
+    private String name = "default";
 
     /**
      * 是否启用缓存
