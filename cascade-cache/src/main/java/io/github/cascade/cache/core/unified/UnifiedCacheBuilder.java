@@ -40,7 +40,7 @@ public class UnifiedCacheBuilder<K, V> {
     private CacheLoader<K, V> cacheLoader;
 
     // L1配置
-    private final CaffeineConfig l1Config = new CaffeineConfig();
+    private final CaffeineConfig<K, V> l1Config = new CaffeineConfig<>();
     private boolean enableL1 = true;
 
     // L2配置
@@ -437,13 +437,13 @@ public class UnifiedCacheBuilder<K, V> {
         }
 
         // 创建统一缓存
-        UnifiedCache<K, V> cache;
+        SmartCache<K, V> cache;
         if (l1Engine != null && l2Engine != null) {
-            cache = new UnifiedCache<>(cacheName, l1Engine, l2Engine, executor);
+            cache = new SmartCache<>(cacheName, l1Engine, l2Engine, executor);
         } else if (l1Engine != null) {
-            cache = new UnifiedCache<>(cacheName, l1Engine);
+            cache = new SmartCache<>(cacheName, l1Engine);
         } else if (l2Engine != null) {
-            cache = new UnifiedCache<>(cacheName, l2Engine);
+            cache = new SmartCache<>(cacheName, l2Engine);
         } else {
             throw new IllegalStateException("At least one cache tier must be enabled");
         }

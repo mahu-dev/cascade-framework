@@ -2,7 +2,7 @@ package io.github.cascade.cache.annotation;
 
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheManager;
-import io.github.cascade.cache.core.unified.UnifiedCache;
+import io.github.cascade.cache.core.unified.SmartCache;
 import io.github.cascade.cache.event.UnifiedEventProcessor;
 import io.github.cascade.cache.event.UnifiedCacheEvent;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -384,8 +384,8 @@ public class CascadeCacheAspect {
     @SuppressWarnings("unchecked")
     private void putWithTtl(Cache<String, Object> cache, String key, Object value, Duration ttl) {
         try {
-            if (cache instanceof UnifiedCache) {
-                ((UnifiedCache<String, Object>) cache).putWithTtl(key, value, ttl);
+            if (cache instanceof SmartCache) {
+                ((SmartCache<String, Object>) cache).putWithTtl(key, value, ttl);
             } else {
                 // 如果缓存不支持TTL，则使用普通put方法
                 cache.put(key, value);

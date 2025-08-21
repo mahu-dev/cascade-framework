@@ -20,15 +20,18 @@ import java.util.concurrent.ForkJoinPool;
 import java.util.function.Function;
 
 /**
- * 统一缓存实现
+ * 统一缓存实现（遗留版本）
  * 使用组合模式替代继承，支持单级和多级缓存
+ * 注意：此类已被SmartCache替代，保留用于向后兼容
  *
  * @param <K> 键类型
  * @param <V> 值类型
  * @author cascade
+ * @deprecated 使用 {@link SmartCache} 替代
  */
 @Slf4j
-public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCache<K, V> {
+@Deprecated
+public class UnifiedCacheLegacy<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCache<K, V> {
 
     private final String name;
     private final CacheEngine<K, V> l1Engine;
@@ -67,21 +70,21 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
     /**
      * 单级缓存构造器
      */
-    public UnifiedCache(String name, CacheEngine<K, V> engine) {
+    public UnifiedCacheLegacy(String name, CacheEngine<K, V> engine) {
         this(name, engine, null, ForkJoinPool.commonPool());
     }
 
     /**
      * 多级缓存构造器
      */
-    public UnifiedCache(String name, CacheEngine<K, V> l1Engine, CacheEngine<K, V> l2Engine) {
+    public UnifiedCacheLegacy(String name, CacheEngine<K, V> l1Engine, CacheEngine<K, V> l2Engine) {
         this(name, l1Engine, l2Engine, ForkJoinPool.commonPool());
     }
 
     /**
      * 完整构造器
      */
-    public UnifiedCache(String name, CacheEngine<K, V> l1Engine, CacheEngine<K, V> l2Engine, Executor executor) {
+    public UnifiedCacheLegacy(String name, CacheEngine<K, V> l1Engine, CacheEngine<K, V> l2Engine, Executor executor) {
         this.name = name;
         this.l1Engine = l1Engine;
         this.l2Engine = l2Engine;
