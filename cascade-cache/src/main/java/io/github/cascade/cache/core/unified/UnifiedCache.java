@@ -143,7 +143,7 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
 
     @Override
     public void put(K key, V value) {
-        putWithTtl(key, value, null);
+        putWithTtl(key, value, cacheConfiguration.getL2().getRefreshAfterWrite());
     }
 
     public void putWithTtl(K key, V value, Duration ttl) {
@@ -167,6 +167,7 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
 
         // 触发分布式同步
         if (synchronizer != null) {
+            log.debug("触发分布式同步: key={}, tiers={}", key, isMultiTier ? "L1+L2" : "L1");
             synchronizer.notifyPut(key, value);
         }
 
@@ -830,7 +831,7 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
             if (value != null) {
                 log.debug("Cache L2 hit: key={}", key);
                 // 提升到L1
-                l1Engine.put(key, value);
+                l1Engine.put(key, value, cacheConfiguration.getL1().getExpireAfterWrite());
                 return value;
             }
         }
@@ -999,5 +1000,14 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
             l1Stats.reset();
             l2Stats.reset();
         }
+    }
+
+    public String toString() {
+        return "UnifiedCache{" +
+                "name='" + name + '\'' +
+                ", l1Engine=" + l1Engine +
+                ", l2Engine=" + l2Engine +
+                ", isMultiTier=" + isMultiTier +
+                '}';
     }
 }

@@ -30,12 +30,12 @@ public class CacheLoaderResolver implements ApplicationContextAware {
     @Override
     public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
         this.applicationContext = applicationContext;
-        log.info("CacheLoaderResolver initialized with ApplicationContext");
+        log.info("缓存加载器解析器已通过ApplicationContext初始化");
 
         // 打印所有可用的CacheLoader
         if (log.isDebugEnabled()) {
             Map<String, CacheLoader> loaderBeans = applicationContext.getBeansOfType(CacheLoader.class);
-            log.debug("Found {} CacheLoader beans: {}", loaderBeans.size(), loaderBeans.keySet());
+            log.debug("发现 {} 个缓存加载器Bean: {}", loaderBeans.size(), loaderBeans.keySet());
         }
     }
 
@@ -49,7 +49,7 @@ public class CacheLoaderResolver implements ApplicationContextAware {
     @SuppressWarnings("unchecked")
     public <K, V> CacheLoader<K, V> resolveCacheLoader(Class<K> keyType, Class<V> valueType) {
         if (applicationContext == null) {
-            log.warn("ApplicationContext not available, cannot resolve CacheLoader");
+            log.warn("ApplicationContext不可用，无法解析缓存加载器");
             return null;
         }
 
@@ -69,17 +69,14 @@ public class CacheLoaderResolver implements ApplicationContextAware {
             CacheLoader<?, ?> loader = entry.getValue();
 
             if (isLoaderCompatible(loader, keyType, valueType)) {
-                log.info("Found compatible CacheLoader: {} for types <{}, {}>",
-                        beanName, keyType.getSimpleName(), valueType.getSimpleName());
-
+                log.info("为类型 <{}, {}> 找到兼容的缓存加载器: {}", keyType.getSimpleName(), valueType.getSimpleName(), beanName);
                 // 缓存结果
                 loaderCache.put(cacheKey, loader);
                 return (CacheLoader<K, V>) loader;
             }
         }
 
-        log.debug("No compatible CacheLoader found for types <{}, {}>",
-                keyType.getSimpleName(), valueType.getSimpleName());
+        log.debug("未找到类型 <{}, {}> 的兼容缓存加载器", keyType.getSimpleName(), valueType.getSimpleName());
         return null;
     }
 
@@ -126,13 +123,13 @@ public class CacheLoaderResolver implements ApplicationContextAware {
                     if (bean instanceof CacheLoader) {
                         CacheLoader<?, ?> loader = (CacheLoader<?, ?>) bean;
                         if (isLoaderCompatible(loader, keyType, valueType)) {
-                            log.info("Found CacheLoader by naming convention: {} -> {}", beanName, loader.getClass().getSimpleName());
+                            log.info("通过命名约定找到缓存加载器: {} -> {}", beanName, loader.getClass().getSimpleName());
                             return (CacheLoader<K, V>) loader;
                         }
                     }
                 }
             } catch (BeansException e) {
-                log.debug("Bean {} not found or not accessible: {}", beanName, e.getMessage());
+                log.debug("Bean {} 未找到或不可访问: {}", beanName, e.getMessage());
             }
         }
 
@@ -157,7 +154,7 @@ public class CacheLoaderResolver implements ApplicationContextAware {
             boolean keyCompatible = loaderKeyType == null || keyType.isAssignableFrom(loaderKeyType) || loaderKeyType.isAssignableFrom(keyType);
             boolean valueCompatible = loaderValueType == null || valueType.isAssignableFrom(loaderValueType) || loaderValueType.isAssignableFrom(valueType);
 
-            log.debug("Type compatibility check: CacheLoader<{}, {}> vs <{}, {}> -> key:{}, value:{}",
+            log.debug("类型兼容性检查: CacheLoader<{}, {}> vs <{}, {}> -> key:{}, value:{}",
                     loaderKeyType != null ? loaderKeyType.getSimpleName() : "?",
                     loaderValueType != null ? loaderValueType.getSimpleName() : "?",
                     keyType.getSimpleName(), valueType.getSimpleName(),
@@ -165,7 +162,7 @@ public class CacheLoaderResolver implements ApplicationContextAware {
 
             return keyCompatible && valueCompatible;
         } catch (Exception e) {
-            log.debug("Error checking loader compatibility: {}", e.getMessage());
+            log.debug("检查加载器兼容性时出错: {}", e.getMessage());
             return false;
         }
     }
@@ -224,6 +221,6 @@ public class CacheLoaderResolver implements ApplicationContextAware {
      */
     public void clearCache() {
         loaderCache.clear();
-        log.debug("CacheLoader cache cleared");
+        log.debug("缓存加载器缓存已清空");
     }
 }

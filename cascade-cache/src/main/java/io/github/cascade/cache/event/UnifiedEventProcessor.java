@@ -31,12 +31,13 @@ public class UnifiedEventProcessor {
 
     public UnifiedEventProcessor(boolean enableAsyncProcessing) {
         this.enableAsyncProcessing = enableAsyncProcessing;
-        this.asyncExecutor = enableAsyncProcessing ? 
-            Executors.newCachedThreadPool(r -> {
-                Thread t = new Thread(r, "unified-event-processor");
-                t.setDaemon(true);
-                return t;
-            }) : null;
+        this.running.set(true);
+        this.asyncExecutor = enableAsyncProcessing ?
+                Executors.newCachedThreadPool(r -> {
+                    Thread t = new Thread(r, "unified-event-processor");
+                    t.setDaemon(true);
+                    return t;
+                }) : null;
     }
 
     /**
@@ -44,7 +45,7 @@ public class UnifiedEventProcessor {
      */
     public void start() {
         if (running.compareAndSet(false, true)) {
-            log.info("Unified event processor started with {} handlers", handlers.size());
+            log.info("统一事件处理器启动，包含 {} 个处理器", handlers.size());
         }
     }
 
@@ -56,7 +57,7 @@ public class UnifiedEventProcessor {
             if (asyncExecutor != null) {
                 asyncExecutor.shutdown();
             }
-            log.info("Unified event processor stopped");
+            log.info("统一事件处理器已停止");
         }
     }
 
@@ -65,7 +66,7 @@ public class UnifiedEventProcessor {
      */
     public void publishEvent(UnifiedCacheEvent event) {
         if (!running.get()) {
-            log.debug("Event processor not running, ignoring event: {}", event);
+            log.debug("事件处理器未运行，忽略事件: {}", event);
             return;
         }
 
@@ -81,7 +82,7 @@ public class UnifiedEventProcessor {
      */
     public void registerHandler(EventHandler handler) {
         handlers.add(handler);
-        log.debug("Registered event handler: {}", handler.getClass().getSimpleName());
+        log.debug("注册事件处理器: {}", handler.getClass().getSimpleName());
     }
 
     /**
@@ -89,7 +90,7 @@ public class UnifiedEventProcessor {
      */
     public void unregisterHandler(EventHandler handler) {
         if (handlers.remove(handler)) {
-            log.debug("Unregistered event handler: {}", handler.getClass().getSimpleName());
+            log.debug("注销事件处理器: {}", handler.getClass().getSimpleName());
         }
     }
 
@@ -100,10 +101,11 @@ public class UnifiedEventProcessor {
         for (EventHandler handler : handlers) {
             if (handler.canHandle(event)) {
                 try {
+                    log.debug("处理事件: {}", event);
                     handler.handleEvent(event);
                 } catch (Exception e) {
-                    log.error("Error in event handler {}: {}", 
-                        handler.getClass().getSimpleName(), e.getMessage(), e);
+                    log.error("事件处理器 {} 发生错误: {}",
+                            handler.getClass().getSimpleName(), e.getMessage(), e);
                 }
             }
         }
@@ -127,17 +129,17 @@ public class UnifiedEventProcessor {
      * 事件处理器接口
      */
     public interface EventHandler {
-        
+
         /**
          * 是否可以处理此事件
          */
         boolean canHandle(UnifiedCacheEvent event);
-        
+
         /**
          * 处理事件
          */
         void handleEvent(UnifiedCacheEvent event);
-        
+
         /**
          * 获取处理器名称
          */
@@ -150,17 +152,17 @@ public class UnifiedEventProcessor {
      * 抽象事件处理器基类
      */
     public abstract static class AbstractEventHandler implements EventHandler {
-        
+
         private final Predicate<UnifiedCacheEvent> filter;
-        
+
         protected AbstractEventHandler() {
             this.filter = null;
         }
-        
+
         protected AbstractEventHandler(Predicate<UnifiedCacheEvent> filter) {
             this.filter = filter;
         }
-        
+
         @Override
         public boolean canHandle(UnifiedCacheEvent event) {
             return filter == null || filter.test(event);
@@ -171,41 +173,41 @@ public class UnifiedEventProcessor {
      * 日志事件处理器
      */
     public static class LoggingEventHandler extends AbstractEventHandler {
-        
+
         private static final Logger eventLog = LoggerFactory.getLogger("cache.events");
-        
+
         public LoggingEventHandler() {
             super();
         }
-        
+
         public LoggingEventHandler(Predicate<UnifiedCacheEvent> filter) {
             super(filter);
         }
-        
+
         @Override
         public void handleEvent(UnifiedCacheEvent event) {
             switch (event.getLevel()) {
                 case TRACE:
                     if (eventLog.isTraceEnabled()) {
-                        eventLog.trace("Cache event: {}", event);
+                        eventLog.trace("缓存事件: {}", event);
                     }
                     break;
                 case DEBUG:
                     if (eventLog.isDebugEnabled()) {
-                        eventLog.debug("Cache event: {}", event);
+                        eventLog.debug("缓存事件: {}", event);
                     }
                     break;
                 case INFO:
-                    eventLog.info("Cache event: {}", event);
+                    eventLog.info("缓存事件: {}", event);
                     break;
                 case WARN:
-                    eventLog.warn("Cache event: {}", event);
+                    eventLog.warn("缓存事件: {}", event);
                     break;
                 case ERROR:
                     if (event.getException() != null) {
-                        eventLog.error("Cache event: {}", event, event.getException());
+                        eventLog.error("缓存事件: {}", event, event.getException());
                     } else {
-                        eventLog.error("Cache event: {}", event);
+                        eventLog.error("缓存事件: {}", event);
                     }
                     break;
             }
@@ -216,17 +218,17 @@ public class UnifiedEventProcessor {
      * 指标收集事件处理器
      */
     public static class MetricsEventHandler extends AbstractEventHandler {
-        
+
         public MetricsEventHandler() {
             // 只处理监控相关事件
             super(event -> event.isMonitoringEvent() || event.isOperationEvent());
         }
-        
+
         @Override
         public void handleEvent(UnifiedCacheEvent event) {
             // 这里可以集成到统一的指标收集系统
             // 例如更新 CacheMetricsCollector
-            log.debug("Collecting metrics for event: {}", event.getType());
+            log.debug("为事件收集指标: {}", event.getType());
         }
     }
 
@@ -234,17 +236,17 @@ public class UnifiedEventProcessor {
      * 同步事件处理器
      */
     public static class SyncEventHandler extends AbstractEventHandler {
-        
+
         public SyncEventHandler() {
             // 只处理同步事件
             super(UnifiedCacheEvent::isSyncEvent);
         }
-        
+
         @Override
         public void handleEvent(UnifiedCacheEvent event) {
             // 处理分布式同步逻辑
-            log.debug("Processing sync event: {} from node: {}", 
-                event.getType(), event.getSourceNodeId());
+            log.debug("处理来自节点 {} 的同步事件: {}",
+                    event.getSourceNodeId(), event.getType());
         }
     }
 }

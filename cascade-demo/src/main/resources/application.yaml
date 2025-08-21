@@ -46,8 +46,8 @@ cascade:
   l1:
     enabled: true
     maximumSize: 1000
-    expireAfterWriteSeconds: 600   # 10分钟
-    expireAfterAccessSeconds: 300  # 5分钟
+    expireAfterWriteSeconds: 60   # 10分钟
+    expireAfterAccessSeconds: 120  # 5分钟
     recordStats: true
     initialCapacity: 32
     concurrencyLevel: 8
@@ -59,8 +59,8 @@ cascade:
   l2:
     enabled: true
     keyPrefix: "myapp:cache:"
-    defaultTtlSeconds: 60        # 1小时
-    refreshAfterWriteSeconds: 30 # 30分钟
+    defaultTtlSeconds: 600        # 1小时
+    refreshAfterWriteSeconds: 300 # 30分钟
     enableBatch: true
     batchSize: 50
     serializer: "json"

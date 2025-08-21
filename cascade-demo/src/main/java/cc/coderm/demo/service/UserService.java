@@ -29,7 +29,7 @@ public class UserService {
 
     // 初始化一些测试数据
     public UserService() {
-        userDatabase.put("test", new User("张三", "zhangsan@example.com", 25));
+        userDatabase.put("1", new User("张三", "zhangsan@example.com", 25));
         userDatabase.put("2", new User("李四", "lisi@example.com", 30));
         userDatabase.put("3", new User("王五", "wangwu@example.com", 28));
         nextId = 4L;

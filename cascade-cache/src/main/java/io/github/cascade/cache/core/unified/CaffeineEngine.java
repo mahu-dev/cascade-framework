@@ -35,9 +35,7 @@ public class CaffeineEngine<K, V> implements CacheEngine<K, V> {
      */
     public CaffeineEngine(String name, CaffeineConfig config) {
         this.name = name;
-
         Caffeine<Object, Object> builder = Caffeine.newBuilder();
-
         // 应用配置
         if (config.maximumSize > 0) {
             builder.maximumSize(config.maximumSize);
@@ -64,7 +62,6 @@ public class CaffeineEngine<K, V> implements CacheEngine<K, V> {
 
         if (useLoadingCache) {
             // 创建Caffeine CacheLoader适配器
-//            com.github.benmanes.caffeine.cache.CacheLoader<K, V> caffeineCacheLoader = key -> config.<K, V>cacheLoader().load(key);
             com.github.benmanes.caffeine.cache.CacheLoader<K, V> caffeineCacheLoader = key -> (V) config.cacheLoader.load(key);
             this.loadingCache = builder.build(caffeineCacheLoader);
             this.cache = loadingCache; // LoadingCache实现了Cache接口
@@ -88,7 +85,7 @@ public class CaffeineEngine<K, V> implements CacheEngine<K, V> {
             value = cache.getIfPresent(key);
         }
 
-        log.debug("Cache get: key={}, hit={}", key, value != null);
+        log.debug("CaffeineEngine get: key={}, hit={}", key, value != null);
         return value;
     }
 
@@ -119,7 +116,7 @@ public class CaffeineEngine<K, V> implements CacheEngine<K, V> {
     public void put(K key, V value, Duration ttl) {
         // Caffeine不支持单独设置TTL，使用全局配置
         put(key, value);
-        log.debug("Cache put with TTL: key={}, ttl={}", key, ttl);
+        log.debug("Cache put with TTL: key={}, ttl={}", key, ttl.toSeconds());
     }
 
     @Override

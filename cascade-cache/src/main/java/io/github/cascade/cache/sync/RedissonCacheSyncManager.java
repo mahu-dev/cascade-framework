@@ -15,11 +15,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 基于Redisson的缓存同步管理器实现
  */
 public class RedissonCacheSyncManager implements CacheSyncManager {
-    
+
     private static final Logger logger = LoggerFactory.getLogger(RedissonCacheSyncManager.class);
-    
+
     private static final String DEFAULT_TOPIC = "cascade:cache:sync";
-    
+
     private final RedissonClient redissonClient;
     private final String topicName;
     private final String nodeId;
@@ -27,13 +27,13 @@ public class RedissonCacheSyncManager implements CacheSyncManager {
     private final ConcurrentMap<String, CacheSyncListener> listeners = new ConcurrentHashMap<>();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final CacheSyncStats stats = new CacheSyncStats();
-    
+
     private RTopic topic;
-    
+
     public RedissonCacheSyncManager(RedissonClient redissonClient) {
         this(redissonClient, DEFAULT_TOPIC);
     }
-    
+
     public RedissonCacheSyncManager(RedissonClient redissonClient, String topicName) {
         this.redissonClient = redissonClient;
         this.topicName = topicName;
@@ -41,7 +41,7 @@ public class RedissonCacheSyncManager implements CacheSyncManager {
         this.objectMapper = new ObjectMapper();
         this.objectMapper.findAndRegisterModules();
     }
-    
+
     private String generateNodeId() {
         try {
             String hostName = InetAddress.getLocalHost().getHostName();
@@ -53,12 +53,12 @@ public class RedissonCacheSyncManager implements CacheSyncManager {
             return "node-" + System.currentTimeMillis() + "-" + Thread.currentThread().getId();
         }
     }
-    
+
     @Override
     public void start() {
         if (running.compareAndSet(false, true)) {
             logger.info("Starting cache sync manager with topic: {}, nodeId: {}", topicName, nodeId);
-            
+
             topic = redissonClient.getTopic(topicName);
             topic.addListener(String.class, (channel, message) -> {
                 try {
@@ -68,42 +68,43 @@ public class RedissonCacheSyncManager implements CacheSyncManager {
                     stats.incrementErrorCount();
                 }
             });
-            
+
             logger.info("Cache sync manager started successfully");
         }
     }
-    
+
     @Override
     public void stop() {
         if (running.compareAndSet(true, false)) {
             logger.info("Stopping cache sync manager");
-            
+
             if (topic != null) {
                 topic.removeAllListeners();
             }
-            
+
             listeners.clear();
             logger.info("Cache sync manager stopped");
         }
     }
-    
+
     @Override
     public boolean isRunning() {
         return running.get();
     }
-    
+
     @Override
     public String getCurrentNodeId() {
         return nodeId;
     }
-    
+
     @Override
     public void publishEvent(CacheSyncEvent event) {
+        logger.debug("Publishing sync event: {}", event);
         if (!running.get()) {
             logger.warn("Cache sync manager is not running, cannot publish event: {}", event);
             return;
         }
-        
+
         if (event.getSourceNodeId().equals(nodeId)) {
             try {
                 String message = serializeEvent(event);
@@ -117,7 +118,7 @@ public class RedissonCacheSyncManager implements CacheSyncManager {
             }
         }
     }
-    
+
     @Override
     public void registerListener(CacheSyncListener listener) {
         if (listener != null && listener.getListenerId() != null) {
@@ -125,7 +126,7 @@ public class RedissonCacheSyncManager implements CacheSyncManager {
             logger.info("Registered cache sync listener: {}", listener.getListenerId());
         }
     }
-    
+
     @Override
     public void unregisterListener(String listenerId) {
         if (listenerId != null) {
@@ -135,29 +136,29 @@ public class RedissonCacheSyncManager implements CacheSyncManager {
             }
         }
     }
-    
+
     @Override
     public int getListenerCount() {
         return listeners.size();
     }
-    
+
     @Override
     public CacheSyncStats getStats() {
         return stats;
     }
-    
+
     private void handleSyncMessage(String message) {
         try {
             CacheSyncEvent event = deserializeEvent(message);
-            
+
             // 跳过自己发送的消息
             if (nodeId.equals(event.getSourceNodeId())) {
                 return;
             }
-            
+
             stats.incrementReceiveCount();
             logger.debug("Received sync event: {}", event);
-            
+
             // 分发给所有监听器
             for (CacheSyncListener listener : listeners.values()) {
                 if (listener.isActive() && listener.shouldHandle(event)) {
@@ -169,13 +170,13 @@ public class RedissonCacheSyncManager implements CacheSyncManager {
                     }
                 }
             }
-            
+
         } catch (Exception e) {
             logger.error("Error deserializing sync message: {}", message, e);
             stats.incrementErrorCount();
         }
     }
-    
+
     private String serializeEvent(CacheSyncEvent event) {
         try {
             return objectMapper.writeValueAsString(new CacheSyncEventDto(event));
@@ -183,7 +184,7 @@ public class RedissonCacheSyncManager implements CacheSyncManager {
             throw new RuntimeException("Failed to serialize sync event", e);
         }
     }
-    
+
     private CacheSyncEvent deserializeEvent(String message) {
         try {
             CacheSyncEventDto dto = objectMapper.readValue(message, CacheSyncEventDto.class);
@@ -192,7 +193,7 @@ public class RedissonCacheSyncManager implements CacheSyncManager {
             throw new RuntimeException("Failed to deserialize sync event", e);
         }
     }
-    
+
     /**
      * 缓存同步事件DTO，用于序列化
      */
@@ -204,9 +205,10 @@ public class RedissonCacheSyncManager implements CacheSyncManager {
         public Object[] keys;
         public String sourceNodeId;
         public long timestamp;
-        
-        public CacheSyncEventDto() {}
-        
+
+        public CacheSyncEventDto() {
+        }
+
         public CacheSyncEventDto(CacheSyncEvent event) {
             this.cacheId = event.getCacheId();
             this.operation = event.getOperation().name();
@@ -216,10 +218,10 @@ public class RedissonCacheSyncManager implements CacheSyncManager {
             this.sourceNodeId = event.getSourceNodeId();
             this.timestamp = event.getTimestamp().toEpochMilli();
         }
-        
+
         public CacheSyncEvent toEvent() {
             CacheSyncEvent.Operation op = CacheSyncEvent.Operation.valueOf(operation);
-            
+
             switch (op) {
                 case PUT:
                     return new CacheSyncEvent(cacheId, key, value, sourceNodeId);

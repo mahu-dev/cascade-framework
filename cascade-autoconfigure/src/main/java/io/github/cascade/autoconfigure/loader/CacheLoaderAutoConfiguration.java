@@ -51,8 +51,8 @@ public class CacheLoaderAutoConfiguration {
         @Override
         public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
             // 检查是否是Cache实例
-//            logger.info("正在处理Cache Bean: {}", beanName);
             if (bean instanceof Cache) {
+                logger.info("正在处理Cache Bean: {}", beanName);
                 tryInjectCacheLoader((Cache<?, ?>) bean, beanName);
             }
             return bean;

@@ -247,6 +247,7 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
      * 发布同步事件到事件处理器
      */
     private void publishSyncEvent(K key, V value, UnifiedCacheEvent.Type type) {
+        log.debug("发布同步事件 key = {},value = {},type = {}", key, value, type);
         UnifiedCacheEvent event = UnifiedCacheEvent.builder(cacheId, type)
                 .sourceNodeId(syncManager.getCurrentNodeId())
                 .key(key)
@@ -261,6 +262,7 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
      * 发布到同步管理器
      */
     private void publishToSyncManager(CacheSyncEvent event) {
+        log.debug("publishToSyncManager 发布同步事件: {}", event);
         long startTime = System.nanoTime();
         try {
             syncManager.publishEvent(event);

@@ -288,7 +288,8 @@ public class UnifiedCacheBuilder<K, V> {
         return this;
     }
 
-    public UnifiedCacheBuilder<K, V> distributedLock(CascadeCacheConfiguration.ProtectionConfig.DistributedLockConfig distributedLockConfig) {
+    public UnifiedCacheBuilder<K, V> distributedLock(CascadeCacheConfiguration.ProtectionConfig.DistributedLockConfig
+                                                             distributedLockConfig) {
         this.enableProtection = true;
         if (redissonClient != null) {
             this.distributedLock = new RedissonLockProtection(
@@ -424,14 +425,14 @@ public class UnifiedCacheBuilder<K, V> {
         // 创建L1引擎
         CacheEngine<K, V> l1Engine = null;
         if (enableL1) {
-            l1Engine = new CaffeineEngine<>(cacheName + "_l1", l1Config);
+            l1Engine = new CaffeineEngine<>(cacheName, l1Config);
             log.debug("Created L1 engine: {}", cacheName);
         }
 
         // 创建L2引擎
         CacheEngine<K, V> l2Engine = null;
         if (enableL2 && redissonClient != null) {
-            l2Engine = new RedisEngine<>(cacheName + "_l2", redissonClient, l2Config);
+            l2Engine = new RedisEngine<>(cacheName, redissonClient, l2Config);
             log.debug("Created L2 engine: {}", cacheName);
         }
 
@@ -464,6 +465,7 @@ public class UnifiedCacheBuilder<K, V> {
 
         // 设置防护
         if (enableProtection) {
+            log.debug("设置防护...");
             SimplifiedCacheProtectionManager.Builder protectionBuilder = SimplifiedCacheProtectionManager.builder();
             if (bloomFilter != null) {
                 protectionBuilder.bloomFilter(bloomFilter);
@@ -480,6 +482,7 @@ public class UnifiedCacheBuilder<K, V> {
 
         // 设置同步器
         if (enableSync && redissonClient != null) {
+            log.debug("设置同步器...");
             try {
                 // 创建同步管理器
                 RedissonCacheSyncManager syncManager = new RedissonCacheSyncManager(redissonClient, syncTopic);
@@ -502,6 +505,7 @@ public class UnifiedCacheBuilder<K, V> {
 
         // 设置刷新调度器
         if (enableAutoRefresh && cacheLoader != null) {
+            log.debug("设置刷新调度器...");
             try {
                 // 创建刷新回调
                 CacheRefreshScheduler.RefreshCallback<K, V> refreshCallback = (key, newValue) -> {

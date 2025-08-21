@@ -7,7 +7,6 @@ import io.github.cascade.cache.manager.CascadeCacheManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -34,11 +33,6 @@ public class UserController {
     @Autowired
     private CascadeCacheManager cascadeCacheManager;
 
-    // 注入自动发现的缓存
-    @Autowired
-    @Qualifier("userCache")
-    private Cache<String, User> userCache;
-
 
     @GetMapping("test1")
     public void test() {
@@ -52,7 +46,7 @@ public class UserController {
             System.out.println("RedissonClient未配置");
         }
 
-        Cache<String, User> test = cascadeCacheManager.getOrCreateCache("test", User.class);
+        Cache<String, User> test = cascadeCacheManager.getOrCreateCache("user", User.class);
 
         User user = new User();
         user.setId(1L);
@@ -60,22 +54,31 @@ public class UserController {
         user.setEmail("wangwu@123.com");
         user.setAge(1);
 
-        test.put("test", user);
+        test.put("1", user);
 
     }
 
     @GetMapping("test2")
-    public void test2() {
+    public void test2(@RequestParam("id") String id) {
+        Cache<String, User> test = cascadeCacheManager.getOrCreateCache("user", User.class);
+        System.out.println(test.getOrLoad(id));
 
-//        Cache<Object, Object> test = springBootCacheManager.getOrCreateCache("test");
-        // 使用TypeReference捕获类型信息
-//        Cache<String, User> cache = springBootCacheManager.getOrCreateCacheWithTypeRef("userCache", new TypeReference<>() {
-//        });
-        Cache<String, User> test = cascadeCacheManager.getOrCreateCache("test", User.class);
+    }
 
 
-        System.out.println(test.getOrLoad("test"));
+    @GetMapping("test4")
+    public String test4(@RequestParam("cacheName") String cacheName) {
+        Cache<Object, Object> cache = cascadeCacheManager.getCache(cacheName);
+        System.out.println(cache.toString());
+        return cache.toString();
+    }
 
+    @GetMapping("test5")
+    public User test5(@RequestParam("cacheName") String cacheName) {
+        Cache<Long, User> user = cascadeCacheManager.newCache("user", Long.class, User.class);
+        user.put(1000L, new User(1000L, "张三", "zhangsan@123.com", 188));
+        User user1 = user.get(1000L);
+        return user1;
     }
 
 
@@ -146,69 +149,4 @@ public class UserController {
     }
 
 
-    /**
-     * 测试自动CacheLoader功能
-     */
-    @GetMapping("/cache/auto-load/{userId}")
-    public User testAutoLoad(@PathVariable String userId) {
-        log.info("Testing auto CacheLoader for user: {}", userId);
-
-        // 使用自动发现CacheLoader的缓存
-        long start = System.currentTimeMillis();
-        User user = userCache.get(userId); // 这里会自动从UserCacheLoader加载如果缓存未命中
-        long end = System.currentTimeMillis();
-
-        log.info("Cache get operation took: {}ms", end - start);
-        log.info("Cache stats: {}", userCache.getStats());
-
-        return user;
-    }
-
-    /**
-     * 测试批量自动加载
-     */
-    @GetMapping("/cache/auto-load-batch")
-    public List<User> testBatchAutoLoad(@RequestParam("ids") List<String> userIds) {
-        log.info("Testing batch auto CacheLoader for users: {}", userIds);
-
-        long start = System.currentTimeMillis();
-        var usersMap = userCache.getAll(java.util.Set.copyOf(userIds));
-        long end = System.currentTimeMillis();
-
-        log.info("Batch cache get operation took: {}ms", end - start);
-        log.info("Loaded {} users from cache", usersMap.size());
-
-        return usersMap.values().stream().toList();
-    }
-
-    /**
-     * 检查自动发现状态
-     */
-    @GetMapping("/cache/discovery-status")
-    public String checkDiscoveryStatus() {
-        StringBuilder status = new StringBuilder();
-        status.append("=== CacheLoader Auto-Discovery Status ===\n");
-
-        try {
-            // 检查userCache是否有CacheLoader
-            status.append("UserCache CacheLoader: ");
-            if (userCache instanceof io.github.cascade.cache.core.unified.UnifiedCache) {
-                var unifiedCache = (io.github.cascade.cache.core.unified.UnifiedCache<String, User>) userCache;
-                if (unifiedCache.getLoader() != null) {
-                    status.append("✅ Found - ").append(unifiedCache.getLoader().getClass().getSimpleName()).append("\n");
-                } else {
-                    status.append("❌ Not Found\n");
-                }
-            } else {
-                status.append("⚠️ Not UnifiedCache instance\n");
-            }
-
-            status.append("Cache Stats: ").append(userCache.getStats()).append("\n");
-
-        } catch (Exception e) {
-            status.append("❌ Error: ").append(e.getMessage()).append("\n");
-        }
-
-        return status.toString();
-    }
 }

@@ -2,10 +2,7 @@ package io.github.cascade.cache.core.unified;
 
 import io.github.cascade.cache.api.CacheLoader;
 import io.github.cascade.cache.api.CacheStats;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import lombok.*;
 import lombok.experimental.Accessors;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RBucket;
@@ -30,6 +27,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * @author cascade
  */
 @Slf4j
+@ToString
 public class RedisEngine<K, V> implements CacheEngine<K, V> {
 
     private final RedissonClient redisson;
@@ -51,7 +49,8 @@ public class RedisEngine<K, V> implements CacheEngine<K, V> {
         this.name = name;
         this.redisson = redisson;
         this.config = config;
-        this.keyPrefix = config.keyPrefix != null ? config.keyPrefix : name + ":";
+        String prefix = config.keyPrefix != null ? config.keyPrefix + ":" + name + ":" : name + ":";
+        this.keyPrefix = prefix.replaceAll(":+", ":");
 
         // 启动刷新任务
         if (config.refreshAfterWrite != null && config.cacheLoader != null) {
@@ -127,7 +126,7 @@ public class RedisEngine<K, V> implements CacheEngine<K, V> {
             writeTimestamps.put(key, Instant.now());
         }
 
-        log.debug("Redis put: key={}, ttl={}", key, ttl);
+        log.debug("Redis put: key={}, ttl={}", key, ttl.toSeconds());
     }
 
     @Override
@@ -190,7 +189,8 @@ public class RedisEngine<K, V> implements CacheEngine<K, V> {
     public long size() {
         RKeys keys = redisson.getKeys();
         String pattern = keyPrefix + "*";
-        return keys.countExists(pattern);
+        return keys.getKeysStreamByPattern(pattern).count();
+//        return keys.countExists(pattern);
     }
 
     @Override
