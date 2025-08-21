@@ -421,7 +421,6 @@ public class UnifiedCacheBuilder<K, V> {
      */
     public Cache<K, V> build(CascadeCacheConfiguration cacheConfig) {
         validateConfig();
-
         // 创建L1引擎
         CacheEngine<K, V> l1Engine = null;
         if (enableL1) {
