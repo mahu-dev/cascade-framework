@@ -13,7 +13,7 @@ import java.util.function.Function;
  * @param <V> 缓存值类型
  * @author cascade
  */
-public interface AsyncCache<K, V> {
+public interface AsyncCache<K, V> extends Cache<K, V> {
 
     /**
      * 异步获取缓存值

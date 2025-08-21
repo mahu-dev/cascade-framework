@@ -634,7 +634,7 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
     }
 
     @Override
-    public void promote(K key) {
+    public void moveUp(K key) {
         if (!isMultiTier || key == null) return;
 
         V value = l2Engine.get(key);
@@ -644,7 +644,7 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
     }
 
     @Override
-    public void promoteAll(Set<K> keys) {
+    public void moveUpAll(Set<K> keys) {
         if (!isMultiTier || keys == null || keys.isEmpty()) return;
 
         Map<K, V> values = l2Engine.getAll(keys);
@@ -654,7 +654,7 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
     }
 
     @Override
-    public void demote(K key) {
+    public void moveDown(K key) {
         if (!isMultiTier || key == null) return;
 
         V value = l1Engine.get(key);
@@ -665,7 +665,7 @@ public class UnifiedCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, Tiered
     }
 
     @Override
-    public void demoteAll(Set<K> keys) {
+    public void moveDownAll(Set<K> keys) {
         if (!isMultiTier || keys == null || keys.isEmpty()) return;
 
         Map<K, V> values = l1Engine.getAll(keys);

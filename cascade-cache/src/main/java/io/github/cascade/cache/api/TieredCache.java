@@ -71,32 +71,32 @@ public interface TieredCache<K, V> extends Cache<K, V> {
     CacheStats getStats(CacheTier tier);
 
     /**
-     * 将数据从低级缓存提升到高级缓存
+     * 将数据从低级缓存向上移动到高级缓存
      *
      * @param key 缓存键
      */
-    void promote(K key);
+    void moveUp(K key);
 
     /**
-     * 批量提升数据
+     * 批量将数据向上移动
      *
      * @param keys 缓存键集合
      */
-    void promoteAll(Set<K> keys);
+    void moveUpAll(Set<K> keys);
 
     /**
-     * 将数据从高级缓存降级到低级缓存
+     * 将数据从高级缓存向下移动到低级缓存
      *
      * @param key 缓存键
      */
-    void demote(K key);
+    void moveDown(K key);
 
     /**
-     * 批量降级数据
+     * 批量将数据向下移动
      *
      * @param keys 缓存键集合
      */
-    void demoteAll(Set<K> keys);
+    void moveDownAll(Set<K> keys);
 
     /**
      * 同步所有层级的缓存
