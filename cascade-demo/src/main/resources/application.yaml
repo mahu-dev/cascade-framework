@@ -112,6 +112,8 @@ cascade:
   # 刷新配置
   refresh:
     enabled: true
+    defaultRefreshInterval: 5
+
   # Redis配置
 #  data:
 #    redis:

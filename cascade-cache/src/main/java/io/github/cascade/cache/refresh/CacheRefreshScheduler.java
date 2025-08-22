@@ -71,7 +71,7 @@ public class CacheRefreshScheduler<K, V> {
 
         scheduledRefreshes.put(key, future);
 
-        log.debug("Scheduled refresh for key {} in {}", key, refreshInterval);
+        log.debug("Scheduled refresh for key {} in {}", key, refreshInterval.toSeconds());
     }
 
     /**

@@ -452,7 +452,7 @@ public class CascadeCacheConfiguration {
         /**
          * 默认刷新间隔
          */
-        private Duration defaultRefreshInterval = Duration.ofMinutes(10);
+        private Duration defaultRefreshInterval = Duration.ofSeconds(10);
 
         /**
          * 最小刷新间隔

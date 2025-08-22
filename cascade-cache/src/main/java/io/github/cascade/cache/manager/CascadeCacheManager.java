@@ -5,7 +5,8 @@ import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheManager;
 import io.github.cascade.cache.config.CachePropertiesProvider;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
-import io.github.cascade.cache.core.unified.UnifiedCacheBuilder;
+import io.github.cascade.cache.factory.CacheFactory;
+import io.github.cascade.cache.factory.SmartCacheFactory;
 import io.github.cascade.cache.metrics.UnifiedMonitoringManager;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -19,7 +20,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Function;
 
 /**
  * Cascade 缓存管理器
@@ -31,7 +31,6 @@ public class CascadeCacheManager implements CacheManager {
 
     private static final Logger logger = LoggerFactory.getLogger(CascadeCacheManager.class);
     private static final String UNKNOWN_TYPE = "Unknown";
-    private static final String CACHE_REGISTERED_MESSAGE = "缓存 '{}' 已注册到监控管理器";
 
     private final CachePropertiesProvider cachePropertiesProvider;
     /**
@@ -45,17 +44,19 @@ public class CascadeCacheManager implements CacheManager {
     // 监控管理器 - 可选依赖
     private final UnifiedMonitoringManager monitoringManager;
 
+    // 缓存工厂 - 负责缓存创建
+    private final CacheFactory cacheFactory;
+
     // 简化的状态管理
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
-    // CacheManager 字段
-    private Function<String, Cache<?, ?>> cacheFactory;
 
 
     public CascadeCacheManager(RedissonClient redissonClient) {
         this.redissonClient = redissonClient;
         this.cachePropertiesProvider = null;
         this.monitoringManager = null;
+        this.cacheFactory = new SmartCacheFactory(redissonClient);
     }
 
     public CascadeCacheManager(RedissonClient redissonClient,
@@ -63,6 +64,7 @@ public class CascadeCacheManager implements CacheManager {
         this.redissonClient = redissonClient;
         this.cachePropertiesProvider = cachePropertiesProvider;
         this.monitoringManager = null;
+        this.cacheFactory = new SmartCacheFactory(redissonClient);
     }
 
     public CascadeCacheManager(RedissonClient redissonClient,
@@ -71,6 +73,17 @@ public class CascadeCacheManager implements CacheManager {
         this.redissonClient = redissonClient;
         this.cachePropertiesProvider = cachePropertiesProvider;
         this.monitoringManager = monitoringManager;
+        this.cacheFactory = new SmartCacheFactory(redissonClient, monitoringManager);
+    }
+
+    public CascadeCacheManager(RedissonClient redissonClient,
+                               CachePropertiesProvider cachePropertiesProvider,
+                               UnifiedMonitoringManager monitoringManager,
+                               CacheFactory cacheFactory) {
+        this.redissonClient = redissonClient;
+        this.cachePropertiesProvider = cachePropertiesProvider;
+        this.monitoringManager = monitoringManager;
+        this.cacheFactory = cacheFactory != null ? cacheFactory : new SmartCacheFactory(redissonClient, monitoringManager);
     }
 
 
@@ -131,198 +144,18 @@ public class CascadeCacheManager implements CacheManager {
 
     /**
      * 从配置创建缓存的统一方法
-     * 优化后的版本：职责分离、错误处理、可读性改善
+     * 委托给CacheFactory处理缓存创建
      */
     private <K, V> Cache<K, V> createCacheFromConfig(String cacheName, CascadeCacheConfiguration cacheConfig,
                                                      Class<K> keyType, Class<V> valueType) {
-        logger.info("创建智能缓存 '{}' - Key: {}, Value: {}", cacheName,
-                keyType != null ? keyType.getSimpleName() : UNKNOWN_TYPE,
-                valueType != null ? valueType.getSimpleName() : UNKNOWN_TYPE);
+        logger.debug("委托缓存工厂创建缓存: {}", cacheName);
 
         try {
-            // 1. 准备和验证配置
-            cacheConfig = prepareConfiguration(cacheName, cacheConfig);
-
-            // 2. 创建并配置构建器
-            UnifiedCacheBuilder<K, V> builder = createConfiguredBuilder(cacheName, cacheConfig, keyType, valueType);
-
-            // 3. 构建缓存
-            Cache<K, V> cache = builder.build(cacheConfig);
-            logger.debug("智能缓存 '{}' 创建成功", cacheName);
-            return cache;
-
+            return cacheFactory.createCache(cacheName, cacheConfig, keyType, valueType);
         } catch (Exception e) {
-            logger.error("创建缓存 '{}' 失败: {}", cacheName, e.getMessage(), e);
-            throw new RuntimeException("缓存创建失败: " + cacheName, e);
+            logger.error("缓存工厂创建缓存 '{}' 失败: {}", cacheName, e.getMessage(), e);
+            throw new CacheCreationException("缓存创建失败: " + cacheName, e);
         }
-    }
-
-    /**
-     * 准备和验证缓存配置
-     */
-    private CascadeCacheConfiguration prepareConfiguration(String cacheName, CascadeCacheConfiguration cacheConfig) {
-        // 使用默认配置（如果需要）
-        if (cacheConfig == null) {
-            cacheConfig = createDefaultConfiguration(cacheName);
-            logger.debug("缓存 '{}' 使用默认配置", cacheName);
-        }
-
-        // 设置Redis客户端（如果L2启用）
-        if (redissonClient != null && cacheConfig.getL2().isEnabled()) {
-            cacheConfig.getL2().setRedissonClient(redissonClient);
-        }
-
-        // 验证配置合理性
-        validateCacheConfiguration(cacheConfig);
-
-        return cacheConfig;
-    }
-
-    /**
-     * 创建和配置缓存构建器
-     */
-    private <K, V> UnifiedCacheBuilder<K, V> createConfiguredBuilder(String cacheName,
-                                                                     CascadeCacheConfiguration cacheConfig,
-                                                                     Class<K> keyType,
-                                                                     Class<V> valueType) {
-        UnifiedCacheBuilder<K, V> builder = UnifiedCacheBuilder.newBuilder(cacheName, keyType, valueType);
-
-        // 设置监控管理器
-        if (monitoringManager != null) {
-            builder = builder.withMonitoringManager(monitoringManager);
-        }
-
-        // 应用分层配置
-        builder = configureTiers(builder, cacheConfig);
-
-        // 应用增强功能配置
-        builder = configureEnhancements(builder, cacheConfig);
-
-        return builder;
-    }
-
-    /**
-     * 配置缓存分层（L1/L2）
-     */
-    private <K, V> UnifiedCacheBuilder<K, V> configureTiers(UnifiedCacheBuilder<K, V> builder,
-                                                            CascadeCacheConfiguration cacheConfig) {
-        // L1配置
-        if (cacheConfig.getL1().isEnabled()) {
-            builder.configL1(cacheConfig.getL1());
-            logger.debug("已启用L1缓存层");
-        }
-
-        // L2配置
-        if (cacheConfig.getL2().isEnabled() && redissonClient != null) {
-            builder = builder.withRedis(redissonClient);
-            builder.configL2(cacheConfig.getL2());
-            logger.debug("已启用L2缓存层");
-        }
-        return builder;
-    }
-
-    /**
-     * 配置增强功能（防护、同步等）
-     */
-    private <K, V> UnifiedCacheBuilder<K, V> configureEnhancements(UnifiedCacheBuilder<K, V> builder,
-                                                                   CascadeCacheConfiguration cacheConfig) {
-        // 同步配置
-        if (cacheConfig.getSync().isEnabled()) {
-            builder = builder.withSync();
-            logger.debug("已启用缓存同步");
-        }
-
-        // 防护配置
-        if (cacheConfig.getProtection().isEnabled()) {
-            builder = configureProtection(builder, cacheConfig.getProtection());
-        }
-
-        // 自动刷新配置
-        if (cacheConfig.getRefresh().isEnabled()) {
-            builder = builder.withAutoRefresh(cacheConfig.getRefresh().getDefaultRefreshInterval());
-//            builder = configureRefresh(builder, cacheConfig.getRefresh());
-        }
-
-        // CacheLoader自动发现配置
-        builder = builder.autoDiscoverLoader(true);
-
-        return builder;
-    }
-
-    /**
-     * 配置缓存防护功能
-     */
-    private <K, V> UnifiedCacheBuilder<K, V> configureProtection(UnifiedCacheBuilder<K, V> builder,
-                                                                 CascadeCacheConfiguration.ProtectionConfig protectionConfig) {
-        builder = builder.enableProtection(true);
-        logger.debug("已启用缓存防护");
-
-        // 布隆过滤器
-        if (protectionConfig.getBloomFilter().isEnabled()) {
-            var bloomFilterConfig = protectionConfig.getBloomFilter();
-            builder = builder.bloomFilter(
-                    bloomFilterConfig.getExpectedElements(),
-                    bloomFilterConfig.getFalsePositiveRate()
-            );
-            logger.debug("已配置布隆过滤器: expectedElements={}, fpp={}",
-                    bloomFilterConfig.getExpectedElements(),
-                    bloomFilterConfig.getFalsePositiveRate());
-        }
-
-        // 随机TTL
-        if (protectionConfig.getRandomTtl().isEnabled()) {
-            var randomTtlConfig = protectionConfig.getRandomTtl();
-            builder = builder.randomTtl(randomTtlConfig);
-            logger.debug("已配置随机TTL防护");
-        }
-
-        // 分布式锁
-        if (protectionConfig.getDistributedLock().isEnabled()) {
-            var lockConfig = protectionConfig.getDistributedLock();
-            builder.distributedLock(lockConfig);
-            logger.debug("已配置分布式锁防护");
-        }
-
-        return builder;
-    }
-
-    /**
-     * 配置自动刷新功能
-     */
-    private <K, V> UnifiedCacheBuilder<K, V> configureRefresh(UnifiedCacheBuilder<K, V> builder,
-                                                              CascadeCacheConfiguration.RefreshConfig refreshConfig) {
-        // 配置刷新调度器
-        if (refreshConfig.isEnabled()) {
-            // 这里可以添加刷新调度器的配置逻辑
-            // 例如：builder.withRefreshScheduler(refreshConfig)
-            logger.debug("已启用自动刷新: 间隔={}, 线程数={}",
-                    refreshConfig.getDefaultRefreshInterval(),
-                    refreshConfig.getThreadPoolSize());
-
-            // 预加载配置
-            if (refreshConfig.getPreload().isEnabled()) {
-                logger.debug("已启用预加载: 阈值={}s, 批大小={}",
-                        refreshConfig.getPreload().getPreloadThresholdSeconds(),
-                        refreshConfig.getPreload().getBatchSize());
-            }
-        }
-        return builder;
-    }
-
-    /**
-     * 验证缓存配置的合理性
-     */
-    private void validateCacheConfiguration(CascadeCacheConfiguration config) {
-        if (!config.getL1().isEnabled() && !config.getL2().isEnabled()) {
-            throw new IllegalArgumentException("至少需要启用一个缓存层级（L1或L2）");
-        }
-
-        if (config.getL2().isEnabled() && redissonClient == null) {
-            logger.warn("L2缓存已启用但RedissonClient为null，将禁用L2");
-            config.getL2().setEnabled(false);
-        }
-
-        // 可以添加更多验证逻辑...
     }
 
     /**
@@ -497,13 +330,10 @@ public class CascadeCacheManager implements CacheManager {
 
     // ==================== 工厂方法 ====================
 
-    @Override
-    public void setCacheFactory(Function<String, Cache<?, ?>> cacheFactory) {
-        this.cacheFactory = cacheFactory;
-    }
-
-    @Override
-    public Function<String, Cache<?, ?>> getCacheFactory() {
+    /**
+     * 获取缓存工厂实例
+     */
+    public CacheFactory getCacheFactoryInstance() {
         return cacheFactory;
     }
 

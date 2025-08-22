@@ -4,7 +4,6 @@ import io.github.cascade.api.HealthStatus;
 
 import java.util.Collection;
 import java.util.Map;
-import java.util.function.Function;
 
 /**
  * 缓存管理器接口
@@ -134,12 +133,12 @@ public interface CacheManager {
      *
      * @param cacheFactory 缓存工厂函数
      */
-    void setCacheFactory(Function<String, Cache<?, ?>> cacheFactory);
+//    void setCacheFactory(Function<String, Cache<?, ?>> cacheFactory);
 
     /**
      * 获取缓存工厂函数
      *
      * @return 缓存工厂函数
      */
-    Function<String, Cache<?, ?>> getCacheFactory();
+//    Function<String, Cache<?, ?>> getCacheFactory();
 }
