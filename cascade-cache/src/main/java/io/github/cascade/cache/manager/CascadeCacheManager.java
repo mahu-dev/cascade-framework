@@ -30,6 +30,8 @@ import java.util.function.Function;
 public class CascadeCacheManager implements CacheManager {
 
     private static final Logger logger = LoggerFactory.getLogger(CascadeCacheManager.class);
+    private static final String UNKNOWN_TYPE = "Unknown";
+    private static final String CACHE_REGISTERED_MESSAGE = "缓存 '{}' 已注册到监控管理器";
 
     private final CachePropertiesProvider cachePropertiesProvider;
     /**
@@ -42,7 +44,7 @@ public class CascadeCacheManager implements CacheManager {
 
     // 监控管理器 - 可选依赖
     private final UnifiedMonitoringManager monitoringManager;
-    
+
     // 简化的状态管理
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
@@ -62,7 +64,7 @@ public class CascadeCacheManager implements CacheManager {
         this.cachePropertiesProvider = cachePropertiesProvider;
         this.monitoringManager = null;
     }
-    
+
     public CascadeCacheManager(RedissonClient redissonClient,
                                CachePropertiesProvider cachePropertiesProvider,
                                UnifiedMonitoringManager monitoringManager) {
@@ -77,7 +79,7 @@ public class CascadeCacheManager implements CacheManager {
     @PostConstruct
     private void init() {
         logger.debug("Cascade缓存管理器已由Spring容器初始化");
-        
+
         // 启动监控管理器
         if (monitoringManager != null) {
             monitoringManager.start();
@@ -112,47 +114,7 @@ public class CascadeCacheManager implements CacheManager {
      */
     @Override
     public <V> Cache<String, V> getOrCreateCache(String cacheName, Class<V> valueType) {
-        // 创建缓存的时候 要支持全部高级配置项，最终创建 EnhancedDistributedTieredCache
-        if (closed.get()) {
-            logger.warn("尝试从已关闭的管理器获取或创建缓存 '{}'", cacheName);
-            return null;
-        }
-
-        // 先尝试获取已存在的缓存
-        Cache<String, V> existingCache = getCache(cacheName);
-        if (existingCache != null) {
-            logger.debug("CacheManager 获取到缓存 {} ", cacheName);
-            return existingCache;
-        }
-
-        // 缓存不存在，创建新缓存
-        logger.info("CacheManager 创建新缓存 {} ", cacheName);
-
-        try {
-            // 复制默认配置并设置缓存名称
-            CascadeCacheConfiguration cacheConfig = null;
-            if (cachePropertiesProvider != null) {
-                cacheConfig = cachePropertiesProvider.toCascadeCacheConfiguration(cacheName);
-            } else {
-                cacheConfig = createDefaultConfiguration(cacheName);
-            }
-
-            // 使用统一方法创建缓存
-            Cache<String, V> newCache = createCacheFromConfig(cacheName, cacheConfig, String.class, valueType);
-
-            // 注册到管理器
-            if (registerCache(cacheName, newCache)) {
-                logger.info("成功创建并注册了增强型缓存 {}", cacheName);
-                return newCache;
-            } else {
-                logger.warn("注册缓存失败 {}, 返回现有缓存", cacheName);
-                return getCache(cacheName);
-            }
-
-        } catch (Exception e) {
-            logger.error("创建缓存失败 {} : {}", cacheName, e.getMessage(), e);
-            return null;
-        }
+        return getOrCreateCacheInternal(cacheName, String.class, valueType);
     }
 
     /**
@@ -164,45 +126,7 @@ public class CascadeCacheManager implements CacheManager {
      * @return 缓存实例
      */
     public <K, V> Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType) {
-        // 创建缓存的时候 要支持全部高级配置项，最终创建 EnhancedDistributedTieredCache
-        if (closed.get()) {
-            logger.warn("尝试从已关闭的管理器获取或创建缓存 {}", cacheName);
-            return null;
-        }
-        // 先尝试获取已存在的缓存
-        Cache<K, V> existingCache = getCache(cacheName);
-        if (existingCache != null) {
-            logger.debug("找到已存在的缓存 {}", cacheName);
-            return existingCache;
-        }
-        // 缓存不存在，创建新缓存
-        logger.info("正在创建具有增强功能的新缓存 {}", cacheName);
-
-        try {
-            // 复制默认配置并设置缓存名称
-            CascadeCacheConfiguration cacheConfig = null;
-            if (cachePropertiesProvider != null) {
-                cacheConfig = cachePropertiesProvider.toCascadeCacheConfiguration(cacheName);
-            } else {
-                cacheConfig = createDefaultConfiguration(cacheName);
-            }
-
-            // 使用统一方法创建缓存
-            Cache<K, V> newCache = createCacheFromConfig(cacheName, cacheConfig, keyType, valueType);
-
-            // 注册到管理器
-            if (registerCache(cacheName, newCache)) {
-                logger.info("成功创建并注册了增强型缓存 '{}'", cacheName);
-                return newCache;
-            } else {
-                logger.warn("注册缓存失败 {}, 返回现有缓存", cacheName);
-                return getCache(cacheName);
-            }
-
-        } catch (Exception e) {
-            logger.error("创建缓存失败 {} : {}", cacheName, e.getMessage(), e);
-            return null;
-        }
+        return getOrCreateCacheInternal(cacheName, keyType, valueType);
     }
 
     /**
@@ -212,8 +136,8 @@ public class CascadeCacheManager implements CacheManager {
     private <K, V> Cache<K, V> createCacheFromConfig(String cacheName, CascadeCacheConfiguration cacheConfig,
                                                      Class<K> keyType, Class<V> valueType) {
         logger.info("创建智能缓存 '{}' - Key: {}, Value: {}", cacheName,
-                keyType != null ? keyType.getSimpleName() : "Unknown",
-                valueType != null ? valueType.getSimpleName() : "Unknown");
+                keyType != null ? keyType.getSimpleName() : UNKNOWN_TYPE,
+                valueType != null ? valueType.getSimpleName() : UNKNOWN_TYPE);
 
         try {
             // 1. 准备和验证配置
@@ -315,10 +239,10 @@ public class CascadeCacheManager implements CacheManager {
 
         // 自动刷新配置
         if (cacheConfig.getRefresh().isEnabled()) {
-            builder = builder.withAutoRefresh();
+            builder = builder.withAutoRefresh(cacheConfig.getRefresh().getDefaultRefreshInterval());
 //            builder = configureRefresh(builder, cacheConfig.getRefresh());
         }
-        
+
         // CacheLoader自动发现配置
         builder = builder.autoDiscoverLoader(true);
 
@@ -449,13 +373,13 @@ public class CascadeCacheManager implements CacheManager {
             return null;
         }
         Cache<K, V> oldCache = (Cache<K, V>) caches.put(cacheName, cache);
-        
+
         // 向监控管理器注册缓存
         if (monitoringManager != null) {
             monitoringManager.registerCache(cacheName);
             logger.debug("缓存 '{}' 已注册到监控管理器", cacheName);
         }
-        
+
         logger.info("缓存 '{}' 强制注册成功", cacheName);
         return oldCache;
     }
@@ -620,5 +544,67 @@ public class CascadeCacheManager implements CacheManager {
 
     // ==================== 私有辅助方法 ====================
 
+    /**
+     * 统一的获取或创建缓存内部方法 - 消除重复代码，支持双检锁优化
+     */
+    private <K, V> Cache<K, V> getOrCreateCacheInternal(String cacheName, Class<K> keyType, Class<V> valueType) {
+        if (closed.get()) {
+            logger.warn("尝试从已关闭的管理器获取或创建缓存 '{}'", cacheName);
+            return null;
+        }
+
+        // 第一次检查：快速路径，无锁检查
+        Cache<K, V> existingCache = getCache(cacheName);
+        if (existingCache != null) {
+            logger.debug("快速获取已存在缓存: {}", cacheName);
+            return existingCache;
+        }
+
+        // 使用computeIfAbsent实现双检锁语义，确保只有一个线程创建缓存
+        @SuppressWarnings("unchecked")
+        Cache<K, V> cache = (Cache<K, V>) caches.computeIfAbsent(cacheName, k -> {
+            logger.info("正在创建新缓存: {} - Key: {}, Value: {}", cacheName,
+                    keyType != null ? keyType.getSimpleName() : UNKNOWN_TYPE,
+                    valueType != null ? valueType.getSimpleName() : UNKNOWN_TYPE);
+
+            try {
+                // 准备配置
+                CascadeCacheConfiguration cacheConfig = cachePropertiesProvider != null
+                        ? cachePropertiesProvider.toCascadeCacheConfiguration(cacheName)
+                        : createDefaultConfiguration(cacheName);
+
+                // 创建缓存
+                Cache<K, V> newCache = createCacheFromConfig(cacheName, cacheConfig, keyType, valueType);
+
+                // 注册到监控管理器
+                if (monitoringManager != null) {
+                    monitoringManager.registerCache(cacheName);
+                    logger.debug("缓存 '{}' 已注册到监控管理器", cacheName);
+                }
+
+                logger.info("成功创建缓存: {}", cacheName);
+                return newCache;
+
+            } catch (Exception e) {
+                logger.error("创建缓存失败: {} - {}", cacheName, e.getMessage(), e);
+                // 重新抛出异常，让computeIfAbsent不会存储null值
+                if (e instanceof RuntimeException) {
+                    throw (RuntimeException) e;
+                }
+                throw new CacheCreationException("缓存创建失败: " + cacheName, e);
+            }
+        });
+
+        return cache;
+    }
+
+    /**
+     * 自定义缓存创建异常
+     */
+    public static class CacheCreationException extends RuntimeException {
+        public CacheCreationException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
 
 }
