@@ -7,6 +7,7 @@ import io.github.cascade.cache.core.CacheLoaderResolver;
 import io.github.cascade.cache.core.unified.CaffeineEngine.CaffeineConfig;
 import io.github.cascade.cache.core.unified.RedisEngine.RedisConfig;
 import io.github.cascade.cache.event.UnifiedEventProcessor;
+import io.github.cascade.cache.metrics.UnifiedMonitoringManager;
 import io.github.cascade.cache.protection.*;
 import io.github.cascade.cache.refresh.CacheRefreshScheduler;
 import io.github.cascade.cache.sync.RedissonCacheSyncManager;
@@ -62,7 +63,7 @@ public class UnifiedCacheBuilder<K, V> {
 
     // 刷新配置
     private boolean enableAutoRefresh = false;
-    private Duration refreshInterval = Duration.ofMinutes(10);
+    private Duration refreshInterval = Duration.ofSeconds(30);
     private boolean refreshOnAccess = false;
 
     /**
@@ -81,6 +82,9 @@ public class UnifiedCacheBuilder<K, V> {
 
     // 自动发现配置
     private boolean autoDiscoverLoader = true;
+
+    // 监控管理器
+    private UnifiedMonitoringManager monitoringManager;
 
     /**
      * 构造器
@@ -401,7 +405,7 @@ public class UnifiedCacheBuilder<K, V> {
      */
     public UnifiedCacheBuilder<K, V> withAutoRefresh() {
         return enableAutoRefresh(true)
-                .refreshInterval(Duration.ofMinutes(10))
+                .refreshInterval(Duration.ofSeconds(5))
                 .refreshOnAccess(false);
     }
 
@@ -438,11 +442,11 @@ public class UnifiedCacheBuilder<K, V> {
         // 创建统一缓存
         SmartCache<K, V> cache;
         if (l1Engine != null && l2Engine != null) {
-            cache = new SmartCache<>(cacheName, l1Engine, l2Engine, executor);
+            cache = new SmartCache<>(cacheName, l1Engine, l2Engine, executor, monitoringManager);
         } else if (l1Engine != null) {
-            cache = new SmartCache<>(cacheName, l1Engine);
+            cache = new SmartCache<>(cacheName, l1Engine, null, executor, monitoringManager);
         } else if (l2Engine != null) {
-            cache = new SmartCache<>(cacheName, l2Engine);
+            cache = new SmartCache<>(cacheName, null, l2Engine, executor, monitoringManager);
         } else {
             throw new IllegalStateException("At least one cache tier must be enabled");
         }
@@ -455,6 +459,7 @@ public class UnifiedCacheBuilder<K, V> {
             CacheLoader<K, V> discoveredLoader = cacheLoaderResolver.resolveCacheLoader(keyType, valueType);
             if (discoveredLoader != null) {
                 cache.setLoader(discoveredLoader);
+                this.cacheLoader = discoveredLoader;
                 log.info("Auto-discovered CacheLoader: {} for cache: {}", discoveredLoader.getClass().getSimpleName(), cacheName);
             } else {
                 log.debug("No compatible CacheLoader found for cache: {} with types <{}, {}>",
@@ -519,7 +524,7 @@ public class UnifiedCacheBuilder<K, V> {
                 // 设置到缓存中
                 cache.setRefreshScheduler(refreshScheduler);
 
-                log.info("Configured auto refresh for cache: {}, interval: {}", cacheName, refreshInterval);
+                log.info("Configured auto refresh for cache: {}, interval: {}", cacheName, refreshInterval.toSeconds());
             } catch (Exception e) {
                 log.warn("Failed to configure auto refresh for cache: {}, error: {}", cacheName, e.getMessage());
             }
@@ -568,6 +573,16 @@ public class UnifiedCacheBuilder<K, V> {
      */
     public UnifiedCacheBuilder<K, V> autoDiscoverLoader(boolean enabled) {
         this.autoDiscoverLoader = enabled;
+        return this;
+    }
+
+    // ==================== 监控配置 ====================
+
+    /**
+     * 设置监控管理器
+     */
+    public UnifiedCacheBuilder<K, V> withMonitoringManager(UnifiedMonitoringManager monitoringManager) {
+        this.monitoringManager = monitoringManager;
         return this;
     }
 

@@ -402,8 +402,8 @@ public class CacheCore<K, V> {
             }
         }
 
-        // 3. 使用CacheLoader加载（如果有）
-        if (cacheLoader != null) {
+        // 3. 使用CacheLoader加载（如果有）,并且刷新未启用，因为上层高级API 已经处理了刷新逻辑
+        if (cacheLoader != null && !cacheConfiguration.getRefresh().isEnabled()) {
             try {
                 value = cacheLoader.load(key);
                 if (value != null) {
@@ -425,7 +425,6 @@ public class CacheCore<K, V> {
      */
     private Map<K, V> getAllFromMultiTier(Set<K> keys) {
         Map<K, V> result = new HashMap<>(keys.size());
-
         // 1. 从L1获取
         Map<K, V> l1Results = l1Engine.getAll(keys);
         result.putAll(l1Results);

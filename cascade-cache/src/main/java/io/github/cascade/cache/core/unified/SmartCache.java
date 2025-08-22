@@ -1,16 +1,15 @@
 package io.github.cascade.cache.core.unified;
 
+import io.github.cascade.api.HealthStatus;
 import io.github.cascade.cache.api.*;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
+import io.github.cascade.cache.metrics.UnifiedMonitoringManager;
 import io.github.cascade.cache.protection.SimplifiedCacheProtectionManager;
 import io.github.cascade.cache.refresh.CacheRefreshScheduler;
 import io.github.cascade.cache.sync.UnifiedCacheSynchronizer;
-import io.github.cascade.api.HealthStatus;
-import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -58,13 +57,21 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
      * 完整构造器
      */
     public SmartCache(String name, CacheEngine<K, V> l1Engine, CacheEngine<K, V> l2Engine, Executor executor) {
+        this(name, l1Engine, l2Engine, executor, null);
+    }
+    
+    /**
+     * 完整构造器（包含监控管理器）
+     */
+    public SmartCache(String name, CacheEngine<K, V> l1Engine, CacheEngine<K, V> l2Engine, Executor executor,
+                     UnifiedMonitoringManager monitoringManager) {
         this.name = name;
         this.executor = executor;
-        
+
         // 创建核心组件
         this.core = new CacheCore<>(name, l1Engine, l2Engine, executor);
         this.enhancer = new CacheEnhancer<>(name, executor);
-        this.monitor = new CacheMonitor<>(name, core, executor);
+        this.monitor = new CacheMonitor<>(name, core, executor, monitoringManager);
 
         log.debug("Created {} smart cache: {}", core.isMultiTier() ? "multi-tier" : "single-tier", name);
     }
@@ -74,19 +81,15 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
     @Override
     public V get(K key) {
         if (key == null) return null;
-
-        Instant startTime = Instant.now();
-        
         return enhancer.enhanceGet(() -> {
             V value = core.get(key);
-            
             // 监控记录
             if (value != null) {
                 monitor.recordHit(key);
             } else {
                 monitor.recordMiss(key);
             }
-            
+
             return value;
         }, key);
     }
@@ -94,7 +97,6 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
     @Override
     public Map<K, V> getAll(Set<K> keys) {
         if (keys == null || keys.isEmpty()) return Map.of();
-
         return core.getAll(keys);
     }
 
@@ -120,10 +122,16 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
     public void put(K key, V value) {
         if (key == null || value == null) return;
 
+        log.debug("SmartCache.put调用: key={}, value={}", key, value != null ? "非null" : "null");
         enhancer.enhancePut(() -> {
             core.put(key, value);
             monitor.recordPut(key, value);
         }, key, value);
+
+        // 自动调度刷新任务（如果启用了刷新功能）
+        log.debug("尝试启用自动刷新: key={}", key);
+        enhancer.enableAutoRefresh(key);
+        log.debug("自动刷新调用完成: key={}", key);
     }
 
     /**
@@ -136,6 +144,9 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
             core.putWithTtl(key, value, ttl);
             monitor.recordPut(key, value);
         }, key, value);
+
+        // 自动调度刷新任务（如果启用了刷新功能）
+        enhancer.enableAutoRefresh(key);
     }
 
     @Override
@@ -146,6 +157,9 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
             core.putAll(map);
             map.forEach(monitor::recordPut);
         }, map.keySet());
+
+        // 自动调度刷新任务（如果启用了刷新功能）
+        enhancer.enableAutoRefreshAll(map.keySet());
     }
 
     @Override
@@ -157,6 +171,9 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
             monitor.recordPut(key, value);
             // 注意：这里没有通过enhancer，因为putIfAbsent有返回值
             // 实际项目中可能需要更复杂的处理
+
+            // 自动调度刷新任务（如果启用了刷新功能）
+            enhancer.enableAutoRefresh(key);
         }
         return result;
     }
@@ -435,12 +452,56 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
      * 获取缓存值或使用loader加载
      */
     public V getOrLoad(K key) {
-        return enhancer.enhanceLoad(() -> core.getOrLoad(key), key);
+        if (key == null) return null;
+
+        return enhancer.enhanceLoad(() -> {
+            // 先尝试从缓存获取
+            V cachedValue = core.get(key);
+            if (cachedValue != null) {
+                monitor.recordHit(key);
+                return cachedValue;
+            }
+
+            // 缓存未命中，尝试加载
+            monitor.recordMiss(key);
+            return loadAndCache(key);
+        }, key);
+    }
+
+    /**
+     * 加载数据并缓存
+     */
+    private V loadAndCache(K key) {
+        CacheLoader<K, V> loader = core.getCacheLoader();
+        if (loader == null) {
+            log.debug("No CacheLoader configured for cache: {}, key: {}", name, key);
+            return null;
+        }
+        try {
+            V loadedValue = loader.load(key);
+            if (loadedValue != null) {
+                // 使用SmartCache的put方法触发自动刷新
+                put(key, loadedValue);
+                log.debug("Loaded and cached: key={}", key);
+            }
+            return loadedValue;
+        } catch (Exception e) {
+            log.error("Failed to load key: {} from cache: {}", key, name, e);
+            return null;
+        }
     }
 
     @Override
     public V get(K key, Function<K, V> mappingFunction) {
-        return core.get(key, mappingFunction);
+        V value = core.get(key);
+        if (value == null && mappingFunction != null) {
+            value = mappingFunction.apply(key);
+            if (value != null) {
+                // 使用SmartCache的put方法，这样会触发自动刷新
+                put(key, value);
+            }
+        }
+        return value;
     }
 
     /**

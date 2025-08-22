@@ -3,6 +3,7 @@ package cc.coderm.demo.controller;
 import cc.coderm.demo.model.User;
 import cc.coderm.demo.service.UserService;
 import io.github.cascade.cache.api.Cache;
+import io.github.cascade.cache.api.CacheStats;
 import io.github.cascade.cache.manager.CascadeCacheManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -79,6 +80,16 @@ public class UserController {
         user.put(1000L, new User(1000L, "张三", "zhangsan@123.com", 188));
         User user1 = user.get(1000L);
         return user1;
+    }
+
+    @GetMapping("test6")
+    public void test6() {
+        Cache<Long, User> user = cascadeCacheManager.newCache("user", Long.class, User.class);
+        long size = user.size();
+        System.out.println("缓存大小: " + size);
+        CacheStats stats = user.getStats();
+        System.out.println("缓存统计信息: " + stats.toString());
+
     }
 
 

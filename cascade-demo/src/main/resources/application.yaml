@@ -109,7 +109,9 @@ cascade:
     enableTracing: true           # 启用链路追踪
     metricsIntervalSeconds: 30    # 30秒指标收集间隔
     eventListenerClass: "com.myapp.cache.CustomCacheEventListener"
-
+  # 刷新配置
+  refresh:
+    enabled: true
   # Redis配置
 #  data:
 #    redis:

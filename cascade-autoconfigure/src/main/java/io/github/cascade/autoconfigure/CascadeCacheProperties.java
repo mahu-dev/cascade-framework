@@ -3,6 +3,7 @@ package io.github.cascade.autoconfigure;
 import io.github.cascade.cache.config.CachePropertiesProvider;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import lombok.Data;
+import lombok.experimental.Accessors;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
@@ -56,6 +57,12 @@ public class CascadeCacheProperties implements CachePropertiesProvider {
      * 监控配置
      */
     private MonitoringProperties monitoring = new MonitoringProperties();
+
+
+    /**
+     * 刷新调度器配置
+     */
+    private RefreshConfig refresh = new RefreshConfig();
 
     /**
      * 通用配置
@@ -408,6 +415,105 @@ public class CascadeCacheProperties implements CachePropertiesProvider {
     }
 
     /**
+     * 刷新调度器配置
+     */
+    @Data
+    @Accessors(chain = true)
+    public static class RefreshConfig {
+        /**
+         * 是否启用自动刷新
+         */
+        private boolean enabled = false;
+
+        /**
+         * 默认刷新间隔
+         */
+        private Duration defaultRefreshInterval = Duration.ofMinutes(10);
+
+        /**
+         * 最小刷新间隔
+         */
+        private Duration minRefreshInterval = Duration.ofMinutes(1);
+
+        /**
+         * 最大刷新间隔
+         */
+        private Duration maxRefreshInterval = Duration.ofHours(1);
+
+        /**
+         * 刷新线程池大小
+         */
+        private int threadPoolSize = 2;
+
+        /**
+         * 刷新队列容量
+         */
+        private int queueCapacity = 1000;
+
+        /**
+         * 是否允许并发刷新
+         */
+        private boolean allowConcurrentRefresh = false;
+
+        /**
+         * 刷新超时时间
+         */
+        private Duration refreshTimeout = Duration.ofSeconds(30);
+
+        /**
+         * 失败重试次数
+         */
+        private int maxRetries = 3;
+
+        /**
+         * 重试间隔
+         */
+        private Duration retryInterval = Duration.ofSeconds(5);
+
+        /**
+         * 是否在初始化时启动调度器
+         */
+        private boolean startOnInit = true;
+
+        /**
+         * 调度器关闭超时时间
+         */
+        private Duration shutdownTimeout = Duration.ofSeconds(10);
+
+        /**
+         * 预加载配置
+         */
+        private PreloadConfig preload = new PreloadConfig();
+
+        /**
+         * 预加载配置
+         */
+        @Data
+        @Accessors(chain = true)
+        public static class PreloadConfig {
+            /**
+             * 是否启用预加载
+             */
+            private boolean enabled = false;
+
+            /**
+             * 预加载触发阈值（秒数）
+             */
+            private long preloadThresholdSeconds = 60;
+
+            /**
+             * 预加载批处理大小
+             */
+            private int batchSize = 50;
+
+            /**
+             * 预加载线程数
+             */
+            private int concurrency = 2;
+        }
+    }
+
+    /**
      * 转换为运行时配置对象
      * 统一配置转换逻辑，支持完整的分层配置转换
      */
@@ -437,7 +543,42 @@ public class CascadeCacheProperties implements CachePropertiesProvider {
         // 转换监控配置
         convertMonitoringConfig(config.getMonitoring());
 
+        // 转换刷新配置
+        convertRefreshConfig(config.getRefresh());
+
         return config;
+    }
+
+    /**
+     * 转换刷新配置
+     */
+    private void convertRefreshConfig(CascadeCacheConfiguration.RefreshConfig target) {
+        // 基本配置
+        target.setEnabled(refresh.enabled)
+                .setDefaultRefreshInterval(refresh.defaultRefreshInterval)
+                .setMinRefreshInterval(refresh.minRefreshInterval)
+                .setMaxRefreshInterval(refresh.maxRefreshInterval)
+                .setThreadPoolSize(refresh.threadPoolSize)
+                .setQueueCapacity(refresh.queueCapacity)
+                .setAllowConcurrentRefresh(refresh.allowConcurrentRefresh)
+                .setRefreshTimeout(refresh.refreshTimeout)
+                .setMaxRetries(refresh.maxRetries)
+                .setRetryInterval(refresh.retryInterval)
+                .setStartOnInit(refresh.startOnInit)
+                .setShutdownTimeout(refresh.shutdownTimeout);
+
+        // 转换预加载配置
+        convertPreloadConfig(target.getPreload());
+    }
+
+    /**
+     * 转换预加载配置
+     */
+    private void convertPreloadConfig(CascadeCacheConfiguration.RefreshConfig.PreloadConfig target) {
+        target.setEnabled(refresh.preload.enabled)
+                .setPreloadThresholdSeconds(refresh.preload.preloadThresholdSeconds)
+                .setBatchSize(refresh.preload.batchSize)
+                .setConcurrency(refresh.preload.concurrency);
     }
 
     /**

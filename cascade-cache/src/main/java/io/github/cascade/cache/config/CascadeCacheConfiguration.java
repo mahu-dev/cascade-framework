@@ -59,6 +59,11 @@ public class CascadeCacheConfiguration {
     private MonitoringConfig monitoring = new MonitoringConfig();
 
     /**
+     * 刷新调度器配置
+     */
+    private RefreshConfig refresh = new RefreshConfig();
+
+    /**
      * 通用配置
      */
     @Data
@@ -431,5 +436,104 @@ public class CascadeCacheConfiguration {
          * 事件监听器类名
          */
         private String eventListenerClass;
+    }
+
+    /**
+     * 刷新调度器配置
+     */
+    @Data
+    @Accessors(chain = true)
+    public static class RefreshConfig {
+        /**
+         * 是否启用自动刷新
+         */
+        private boolean enabled = false;
+
+        /**
+         * 默认刷新间隔
+         */
+        private Duration defaultRefreshInterval = Duration.ofMinutes(10);
+
+        /**
+         * 最小刷新间隔
+         */
+        private Duration minRefreshInterval = Duration.ofMinutes(1);
+
+        /**
+         * 最大刷新间隔
+         */
+        private Duration maxRefreshInterval = Duration.ofHours(1);
+
+        /**
+         * 刷新线程池大小
+         */
+        private int threadPoolSize = 2;
+
+        /**
+         * 刷新队列容量
+         */
+        private int queueCapacity = 1000;
+
+        /**
+         * 是否允许并发刷新
+         */
+        private boolean allowConcurrentRefresh = false;
+
+        /**
+         * 刷新超时时间
+         */
+        private Duration refreshTimeout = Duration.ofSeconds(30);
+
+        /**
+         * 失败重试次数
+         */
+        private int maxRetries = 3;
+
+        /**
+         * 重试间隔
+         */
+        private Duration retryInterval = Duration.ofSeconds(5);
+
+        /**
+         * 是否在初始化时启动调度器
+         */
+        private boolean startOnInit = true;
+
+        /**
+         * 调度器关闭超时时间
+         */
+        private Duration shutdownTimeout = Duration.ofSeconds(10);
+
+        /**
+         * 预加载配置
+         */
+        private PreloadConfig preload = new PreloadConfig();
+
+        /**
+         * 预加载配置
+         */
+        @Data
+        @Accessors(chain = true)
+        public static class PreloadConfig {
+            /**
+             * 是否启用预加载
+             */
+            private boolean enabled = false;
+
+            /**
+             * 预加载触发阈值（秒数）
+             */
+            private long preloadThresholdSeconds = 60;
+
+            /**
+             * 预加载批处理大小
+             */
+            private int batchSize = 50;
+
+            /**
+             * 预加载线程数
+             */
+            private int concurrency = 2;
+        }
     }
 }

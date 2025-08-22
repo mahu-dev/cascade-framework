@@ -3,6 +3,8 @@ package io.github.cascade.cache.core.unified;
 import io.github.cascade.api.HealthStatus;
 import io.github.cascade.cache.api.CacheStats;
 import io.github.cascade.cache.api.CacheTier;
+import io.github.cascade.cache.event.UnifiedCacheEvent;
+import io.github.cascade.cache.metrics.UnifiedMonitoringManager;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
@@ -28,6 +30,7 @@ public class CacheMonitor<K, V> {
     private final String cacheName;
     private final CacheCore<K, V> cacheCore;
     private final Executor executor;
+    private final UnifiedMonitoringManager monitoringManager;
 
     // 统计计数器
     private final LongAdder hitCount = new LongAdder();
@@ -47,9 +50,15 @@ public class CacheMonitor<K, V> {
     private HealthStatus lastHealthStatus = HealthStatus.up();
 
     public CacheMonitor(String cacheName, CacheCore<K, V> cacheCore, Executor executor) {
+        this(cacheName, cacheCore, executor, null);
+    }
+    
+    public CacheMonitor(String cacheName, CacheCore<K, V> cacheCore, Executor executor, 
+                       UnifiedMonitoringManager monitoringManager) {
         this.cacheName = cacheName;
         this.cacheCore = cacheCore;
         this.executor = executor;
+        this.monitoringManager = monitoringManager;
     }
 
     // ==================== 操作监控 ====================
@@ -60,6 +69,9 @@ public class CacheMonitor<K, V> {
     public void recordHit(K key) {
         hitCount.increment();
         log.trace("缓存命中: cache={}, key={}", cacheName, key);
+        
+        // 发布监控事件
+        publishMonitoringEvent(UnifiedCacheEvent.Type.HIT, key, null);
     }
 
     /**
@@ -68,6 +80,9 @@ public class CacheMonitor<K, V> {
     public void recordMiss(K key) {
         missCount.increment();
         log.trace("缓存未命中: cache={}, key={}", cacheName, key);
+        
+        // 发布监控事件
+        publishMonitoringEvent(UnifiedCacheEvent.Type.MISS, key, null);
     }
 
     /**
@@ -85,6 +100,9 @@ public class CacheMonitor<K, V> {
         loadSuccessCount.increment();
         totalLoadTime.addAndGet(loadTime.toMillis());
         log.trace("数据加载成功: cache={}, key={}, loadTime={}", cacheName, key, loadTime);
+        
+        // 发布监控事件
+        publishMonitoringEvent(UnifiedCacheEvent.Type.LOAD_SUCCESS, key, null, loadTime);
     }
 
     /**
@@ -95,6 +113,9 @@ public class CacheMonitor<K, V> {
         totalLoadTime.addAndGet(loadTime.toMillis());
         log.debug("数据加载失败: cache={}, key={}, loadTime={}, error={}",
                 cacheName, key, loadTime, exception.getMessage());
+        
+        // 发布监控事件
+        publishMonitoringEvent(UnifiedCacheEvent.Type.LOAD_FAILURE, key, null, loadTime, exception);
     }
 
     /**
@@ -103,6 +124,9 @@ public class CacheMonitor<K, V> {
     public void recordPut(K key, V value) {
         putCount.increment();
         log.trace("缓存写入: cache={}, key={}", cacheName, key);
+        
+        // 发布监控事件
+        publishMonitoringEvent(UnifiedCacheEvent.Type.PUT, key, value);
     }
 
     /**
@@ -111,6 +135,9 @@ public class CacheMonitor<K, V> {
     public void recordEvict(K key) {
         evictCount.increment();
         log.trace("缓存删除: cache={}, key={}", cacheName, key);
+        
+        // 发布监控事件
+        publishMonitoringEvent(UnifiedCacheEvent.Type.EVICT, key, null);
     }
 
     /**
@@ -288,6 +315,43 @@ public class CacheMonitor<K, V> {
         );
     }
 
+    // ==================== 监控事件发布 ====================
+
+    /**
+     * 发布监控事件到统一监控管理器
+     */
+    private void publishMonitoringEvent(UnifiedCacheEvent.Type type, K key, V value) {
+        publishMonitoringEvent(type, key, value, null, null);
+    }
+
+    /**
+     * 发布监控事件到统一监控管理器
+     */
+    private void publishMonitoringEvent(UnifiedCacheEvent.Type type, K key, V value, Duration duration) {
+        publishMonitoringEvent(type, key, value, duration, null);
+    }
+
+    /**
+     * 发布监控事件到统一监控管理器
+     */
+    private void publishMonitoringEvent(UnifiedCacheEvent.Type type, K key, V value, Duration duration, Throwable exception) {
+        if (monitoringManager != null) {
+            UnifiedCacheEvent.Builder builder = UnifiedCacheEvent.builder(cacheName, type)
+                    .key(key)
+                    .value(value);
+            
+            if (duration != null) {
+                builder.duration(duration);
+            }
+            
+            if (exception != null) {
+                builder.exception(exception);
+            }
+            
+            monitoringManager.publishEvent(builder.build());
+        }
+    }
+
     // ==================== 统计重置 ====================
 
     /**
@@ -373,6 +437,21 @@ public class CacheMonitor<K, V> {
         @Override
         public void reset() {
             resetStats();
+        }
+
+        @Override
+        public String toString() {
+            return String.format(
+                "CacheStats{requests=%d, hits=%d, misses=%d, hitRate=%.2f%%, loads=%d, avgLoadTime=%.2fms, evictions=%d, exceptions=%d}",
+                requestCount(),
+                hitCount(),
+                missCount(),
+                hitRate() * 100,
+                loadCount(),
+                averageLoadPenalty(),
+                evictionCount(),
+                loadExceptionCount()
+            );
         }
     }
 

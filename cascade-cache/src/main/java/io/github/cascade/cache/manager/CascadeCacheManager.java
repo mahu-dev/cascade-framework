@@ -6,6 +6,7 @@ import io.github.cascade.cache.api.CacheManager;
 import io.github.cascade.cache.config.CachePropertiesProvider;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import io.github.cascade.cache.core.unified.UnifiedCacheBuilder;
+import io.github.cascade.cache.metrics.UnifiedMonitoringManager;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.Getter;
@@ -30,7 +31,6 @@ public class CascadeCacheManager implements CacheManager {
 
     private static final Logger logger = LoggerFactory.getLogger(CascadeCacheManager.class);
 
-    private final CascadeCacheConfiguration defaultConfig;
     private final CachePropertiesProvider cachePropertiesProvider;
     /**
      * -- GETTER --
@@ -40,6 +40,9 @@ public class CascadeCacheManager implements CacheManager {
     private final RedissonClient redissonClient;
     private final Map<String, Cache<?, ?>> caches = new ConcurrentHashMap<>();
 
+    // 监控管理器 - 可选依赖
+    private final UnifiedMonitoringManager monitoringManager;
+    
     // 简化的状态管理
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
@@ -47,18 +50,25 @@ public class CascadeCacheManager implements CacheManager {
     private Function<String, Cache<?, ?>> cacheFactory;
 
 
-    public CascadeCacheManager(CascadeCacheConfiguration defaultConfig,
-                               RedissonClient redissonClient) {
-        this.defaultConfig = defaultConfig;
+    public CascadeCacheManager(RedissonClient redissonClient) {
         this.redissonClient = redissonClient;
         this.cachePropertiesProvider = null;
+        this.monitoringManager = null;
     }
 
     public CascadeCacheManager(RedissonClient redissonClient,
                                CachePropertiesProvider cachePropertiesProvider) {
-        this.defaultConfig = null;
         this.redissonClient = redissonClient;
         this.cachePropertiesProvider = cachePropertiesProvider;
+        this.monitoringManager = null;
+    }
+    
+    public CascadeCacheManager(RedissonClient redissonClient,
+                               CachePropertiesProvider cachePropertiesProvider,
+                               UnifiedMonitoringManager monitoringManager) {
+        this.redissonClient = redissonClient;
+        this.cachePropertiesProvider = cachePropertiesProvider;
+        this.monitoringManager = monitoringManager;
     }
 
 
@@ -67,6 +77,12 @@ public class CascadeCacheManager implements CacheManager {
     @PostConstruct
     private void init() {
         logger.debug("Cascade缓存管理器已由Spring容器初始化");
+        
+        // 启动监控管理器
+        if (monitoringManager != null) {
+            monitoringManager.start();
+            logger.info("统一监控管理器已启动");
+        }
     }
 
     @PreDestroy
@@ -247,6 +263,11 @@ public class CascadeCacheManager implements CacheManager {
                                                                      Class<V> valueType) {
         UnifiedCacheBuilder<K, V> builder = UnifiedCacheBuilder.newBuilder(cacheName, keyType, valueType);
 
+        // 设置监控管理器
+        if (monitoringManager != null) {
+            builder = builder.withMonitoringManager(monitoringManager);
+        }
+
         // 应用分层配置
         builder = configureTiers(builder, cacheConfig);
 
@@ -292,6 +313,15 @@ public class CascadeCacheManager implements CacheManager {
             builder = configureProtection(builder, cacheConfig.getProtection());
         }
 
+        // 自动刷新配置
+        if (cacheConfig.getRefresh().isEnabled()) {
+            builder = builder.withAutoRefresh();
+//            builder = configureRefresh(builder, cacheConfig.getRefresh());
+        }
+        
+        // CacheLoader自动发现配置
+        builder = builder.autoDiscoverLoader(true);
+
         return builder;
     }
 
@@ -329,6 +359,29 @@ public class CascadeCacheManager implements CacheManager {
             logger.debug("已配置分布式锁防护");
         }
 
+        return builder;
+    }
+
+    /**
+     * 配置自动刷新功能
+     */
+    private <K, V> UnifiedCacheBuilder<K, V> configureRefresh(UnifiedCacheBuilder<K, V> builder,
+                                                              CascadeCacheConfiguration.RefreshConfig refreshConfig) {
+        // 配置刷新调度器
+        if (refreshConfig.isEnabled()) {
+            // 这里可以添加刷新调度器的配置逻辑
+            // 例如：builder.withRefreshScheduler(refreshConfig)
+            logger.debug("已启用自动刷新: 间隔={}, 线程数={}",
+                    refreshConfig.getDefaultRefreshInterval(),
+                    refreshConfig.getThreadPoolSize());
+
+            // 预加载配置
+            if (refreshConfig.getPreload().isEnabled()) {
+                logger.debug("已启用预加载: 阈值={}s, 批大小={}",
+                        refreshConfig.getPreload().getPreloadThresholdSeconds(),
+                        refreshConfig.getPreload().getBatchSize());
+            }
+        }
         return builder;
     }
 
@@ -377,7 +430,14 @@ public class CascadeCacheManager implements CacheManager {
             logger.warn("尝试向已关闭的管理器注册缓存 '{}'", cacheName);
             return false;
         }
-        Cache<?, ?> c = caches.computeIfAbsent(cacheName, k -> cache);
+        Cache<?, ?> c = caches.computeIfAbsent(cacheName, k -> {
+            // 向监控管理器注册缓存
+            if (monitoringManager != null) {
+                monitoringManager.registerCache(cacheName);
+                logger.debug("缓存 '{}' 已注册到监控管理器", cacheName);
+            }
+            return cache;
+        });
         return c != null;
     }
 
@@ -389,6 +449,13 @@ public class CascadeCacheManager implements CacheManager {
             return null;
         }
         Cache<K, V> oldCache = (Cache<K, V>) caches.put(cacheName, cache);
+        
+        // 向监控管理器注册缓存
+        if (monitoringManager != null) {
+            monitoringManager.registerCache(cacheName);
+            logger.debug("缓存 '{}' 已注册到监控管理器", cacheName);
+        }
+        
         logger.info("缓存 '{}' 强制注册成功", cacheName);
         return oldCache;
     }
@@ -402,6 +469,11 @@ public class CascadeCacheManager implements CacheManager {
 
         Cache<?, ?> removedCache = caches.remove(cacheName);
         if (removedCache != null) {
+            // 从监控管理器注销缓存
+            if (monitoringManager != null) {
+                monitoringManager.unregisterCache(cacheName);
+                logger.debug("缓存 '{}' 已从监控管理器注销", cacheName);
+            }
             logger.info("缓存 '{}' 移除成功", cacheName);
         } else {
             logger.warn("未找到要移除的缓存 '{}'", cacheName);
@@ -458,6 +530,12 @@ public class CascadeCacheManager implements CacheManager {
                     logger.warn("关闭缓存时发生错误: {}", e.getMessage());
                 }
             });
+
+            // 停止监控管理器
+            if (monitoringManager != null) {
+                monitoringManager.stop();
+                logger.info("统一监控管理器已停止");
+            }
 
             caches.clear();
             logger.info("Cascade缓存管理器已关闭");
@@ -542,15 +620,5 @@ public class CascadeCacheManager implements CacheManager {
 
     // ==================== 私有辅助方法 ====================
 
-
-    // ==================== 工具方法 ====================
-
-    /**
-     * 获取默认的CascadeCacheConfiguration配置
-     * 供CascadeCacheBuilder使用
-     */
-    public CascadeCacheConfiguration getDefaultCascadeCacheConfig() {
-        return defaultConfig;
-    }
 
 }
