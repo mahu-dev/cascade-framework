@@ -59,12 +59,12 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
     public SmartCache(String name, CacheEngine<K, V> l1Engine, CacheEngine<K, V> l2Engine, Executor executor) {
         this(name, l1Engine, l2Engine, executor, null);
     }
-    
+
     /**
      * 完整构造器（包含监控管理器）
      */
     public SmartCache(String name, CacheEngine<K, V> l1Engine, CacheEngine<K, V> l2Engine, Executor executor,
-                     UnifiedMonitoringManager monitoringManager) {
+                      UnifiedMonitoringManager monitoringManager) {
         this.name = name;
         this.executor = executor;
 
@@ -115,6 +115,22 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
             }
         }
 
+        return result;
+    }
+
+    @Override
+    public Map<K, V> getAllOrLoad(Set<K> keys) throws Exception {
+        if (keys == null || keys.isEmpty()) return Map.of();
+        Map<K, V> result = getAll(keys);
+        keys.removeAll(result.keySet());
+        CacheLoader<K, V> cacheLoader = core.getCacheLoader();
+        if (!keys.isEmpty() && cacheLoader != null) {
+            Map<K, V> kvMap = cacheLoader.loadAll(keys);
+            if (kvMap != null && !kvMap.isEmpty()) {
+                putAll(kvMap);
+                result.putAll(kvMap);
+            }
+        }
         return result;
     }
 

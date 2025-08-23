@@ -53,6 +53,8 @@ public interface Cache<K, V> {
      */
     Map<K, V> getAll(Set<K> keys, Function<Set<K>, Map<K, V>> loader);
 
+    Map<K, V> getAllOrLoad(Set<K> keys) throws Exception;
+
     // ==================== 基础写入操作 ====================
 
     /**

@@ -10,9 +10,13 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 /**
@@ -35,6 +39,11 @@ public class CacheCore<K, V> {
     @Getter
     private final boolean isMultiTier;
     private final Executor executor;
+    
+    // 并行同步统计
+    private final AtomicLong parallelSyncCount = new AtomicLong(0);
+    private final AtomicLong syncFailureCount = new AtomicLong(0);
+    private final AtomicInteger activeSyncTasks = new AtomicInteger(0);
 
     @Getter
     @Setter
@@ -82,32 +91,103 @@ public class CacheCore<K, V> {
     }
 
     /**
-     * 带TTL存储缓存值
+     * 带TTL存储缓存值 - 并行优化版本
      */
     public void putWithTtl(K key, V value, Duration ttl) {
         if (key == null || value == null) return;
 
-        // 写入所有层级
-        l1Engine.put(key, value, ttl);
         if (isMultiTier) {
-            l2Engine.put(key, value, ttl);
+            // 并行写入L1和L2
+            parallelSyncCount.incrementAndGet();
+            activeSyncTasks.incrementAndGet();
+            
+            CompletableFuture<Void> l1Future = CompletableFuture.runAsync(() -> {
+                try {
+                    l1Engine.put(key, value, ttl);
+                } catch (Exception e) {
+                    log.warn("L1 put failed: key={}", key, e);
+                    syncFailureCount.incrementAndGet();
+                }
+            }, executor);
+
+            CompletableFuture<Void> l2Future = CompletableFuture.runAsync(() -> {
+                try {
+                    l2Engine.put(key, value, ttl);
+                } catch (Exception e) {
+                    log.warn("L2 put failed: key={}", key, e);
+                    syncFailureCount.incrementAndGet();
+                }
+            }, executor);
+
+            // 等待两个操作完成，但不阻塞太久
+            try {
+                CompletableFuture.allOf(l1Future, l2Future)
+                    .orTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                    .join();
+            } catch (Exception e) {
+                log.warn("Parallel put timeout or failed: key={}", key, e);
+                syncFailureCount.incrementAndGet();
+            } finally {
+                activeSyncTasks.decrementAndGet();
+            }
+        } else {
+            // 单级缓存直接写入
+            l1Engine.put(key, value, ttl);
         }
 
-        log.debug("Cache put: key={}, tiers={}", key, isMultiTier ? "L1+L2" : "L1");
+        log.debug("Cache put: key={}, tiers={}, mode={}", key, 
+                isMultiTier ? "L1+L2" : "L1", 
+                isMultiTier ? "parallel" : "direct");
     }
 
     /**
-     * 批量存储缓存值
+     * 批量存储缓存值 - 并行优化版本
      */
     public void putAll(Map<K, V> map) {
         if (map == null || map.isEmpty()) return;
 
-        l1Engine.putAll(map);
         if (isMultiTier) {
-            l2Engine.putAll(map);
+            // 并行批量写入L1和L2
+            parallelSyncCount.incrementAndGet();
+            activeSyncTasks.incrementAndGet();
+            
+            CompletableFuture<Void> l1Future = CompletableFuture.runAsync(() -> {
+                try {
+                    l1Engine.putAll(map);
+                } catch (Exception e) {
+                    log.warn("L1 putAll failed: size={}", map.size(), e);
+                    syncFailureCount.incrementAndGet();
+                }
+            }, executor);
+
+            CompletableFuture<Void> l2Future = CompletableFuture.runAsync(() -> {
+                try {
+                    l2Engine.putAll(map);
+                } catch (Exception e) {
+                    log.warn("L2 putAll failed: size={}", map.size(), e);
+                    syncFailureCount.incrementAndGet();
+                }
+            }, executor);
+
+            // 等待两个操作完成
+            try {
+                CompletableFuture.allOf(l1Future, l2Future)
+                    .orTimeout(10, java.util.concurrent.TimeUnit.SECONDS)  // 批量操作允许更长超时
+                    .join();
+            } catch (Exception e) {
+                log.warn("Parallel putAll timeout or failed: size={}", map.size(), e);
+                syncFailureCount.incrementAndGet();
+            } finally {
+                activeSyncTasks.decrementAndGet();
+            }
+        } else {
+            // 单级缓存直接写入
+            l1Engine.putAll(map);
         }
 
-        log.debug("Cache putAll: size={}, tiers={}", map.size(), isMultiTier ? "L1+L2" : "L1");
+        log.debug("Cache putAll: size={}, tiers={}, mode={}", map.size(), 
+                isMultiTier ? "L1+L2" : "L1",
+                isMultiTier ? "parallel" : "direct");
     }
 
     /**
@@ -377,7 +457,7 @@ public class CacheCore<K, V> {
     // ==================== 私有方法 ====================
 
     /**
-     * 从多级缓存获取值
+     * 从多级缓存获取值 - 并行提升优化版本
      */
     private V getFromTiers(K key) {
         // 1. 先从L1获取
@@ -392,12 +472,23 @@ public class CacheCore<K, V> {
             value = l2Engine.get(key);
             if (value != null) {
                 log.debug("Cache L2 hit: key={}", key);
-                // 提升到L1
-                if (cacheConfiguration != null) {
-                    l1Engine.put(key, value, cacheConfiguration.getL1().getExpireAfterWrite());
-                } else {
-                    l1Engine.put(key, value);
-                }
+                
+                // 异步提升到L1（不阻塞返回）
+                final V finalValue = value;
+                CompletableFuture.runAsync(() -> {
+                    try {
+                        if (cacheConfiguration != null) {
+                            l1Engine.put(key, finalValue, cacheConfiguration.getL1().getExpireAfterWrite());
+                        } else {
+                            l1Engine.put(key, finalValue);
+                        }
+                        log.debug("Async promotion to L1 completed: key={}", key);
+                    } catch (Exception e) {
+                        log.warn("Async promotion to L1 failed: key={}", key, e);
+                        syncFailureCount.incrementAndGet();
+                    }
+                }, executor);
+                
                 return value;
             }
         }
@@ -421,23 +512,33 @@ public class CacheCore<K, V> {
     }
 
     /**
-     * 多级缓存批量获取
+     * 多级缓存批量获取 - 并行提升优化版本
      */
     private Map<K, V> getAllFromMultiTier(Set<K> keys) {
         Map<K, V> result = new HashMap<>(keys.size());
+        Set<K> remainingKeys = new HashSet<>(keys); // 创建副本，避免修改原始集合
+        
         // 1. 从L1获取
-        Map<K, V> l1Results = l1Engine.getAll(keys);
+        Map<K, V> l1Results = l1Engine.getAll(remainingKeys);
         result.putAll(l1Results);
 
         // 2. 从L2获取剩余的
-        keys.removeAll(l1Results.keySet());
-        if (!keys.isEmpty()) {
-            Map<K, V> l2Results = l2Engine.getAll(keys);
+        remainingKeys.removeAll(l1Results.keySet());
+        if (!remainingKeys.isEmpty()) {
+            Map<K, V> l2Results = l2Engine.getAll(remainingKeys);
             result.putAll(l2Results);
 
-            // 提升到L1
+            // 异步批量提升到L1（不阻塞返回）
             if (!l2Results.isEmpty()) {
-                l1Engine.putAll(l2Results);
+                CompletableFuture.runAsync(() -> {
+                    try {
+                        l1Engine.putAll(l2Results);
+                        log.debug("Async batch promotion to L1 completed: size={}", l2Results.size());
+                    } catch (Exception e) {
+                        log.warn("Async batch promotion to L1 failed: size={}", l2Results.size(), e);
+                        syncFailureCount.incrementAndGet();
+                    }
+                }, executor);
             }
         }
 
@@ -452,6 +553,45 @@ public class CacheCore<K, V> {
             return cacheConfiguration.getL2().getDefaultTtl();
         }
         return Duration.ofHours(1); // 默认1小时
+    }
+
+    // ==================== 性能监控和统计 ====================
+
+    /**
+     * 获取并行同步统计信息
+     */
+    public ParallelSyncStats getParallelSyncStats() {
+        return new ParallelSyncStats(
+                parallelSyncCount.get(),
+                syncFailureCount.get(),
+                activeSyncTasks.get(),
+                isMultiTier
+        );
+    }
+
+    /**
+     * 重置并行同步统计
+     */
+    public void resetParallelSyncStats() {
+        parallelSyncCount.set(0);
+        syncFailureCount.set(0);
+        // 不重置activeSyncTasks，因为它表示当前活跃任务数
+    }
+
+    /**
+     * 获取综合性能指标
+     */
+    public ComprehensiveMetrics getComprehensiveMetrics() {
+        CacheStats stats = getStats();
+        ParallelSyncStats syncStats = getParallelSyncStats();
+        
+        return new ComprehensiveMetrics(
+                name,
+                isMultiTier,
+                stats,
+                syncStats,
+                System.currentTimeMillis()
+        );
     }
 
     // ==================== Getter/Setter ====================
@@ -538,5 +678,131 @@ public class CacheCore<K, V> {
             l1Stats.reset();
             l2Stats.reset();
         }
+    }
+
+    // ==================== 监控数据类 ====================
+
+    /**
+     * 并行同步统计信息
+     */
+    public static class ParallelSyncStats {
+        private final long totalSyncCount;
+        private final long failureCount;
+        private final int activeTasks;
+        private final boolean multiTier;
+        private final long timestamp;
+
+        public ParallelSyncStats(long totalSyncCount, long failureCount, int activeTasks, boolean multiTier) {
+            this.totalSyncCount = totalSyncCount;
+            this.failureCount = failureCount;
+            this.activeTasks = activeTasks;
+            this.multiTier = multiTier;
+            this.timestamp = System.currentTimeMillis();
+        }
+
+        public long getTotalSyncCount() { return totalSyncCount; }
+        public long getFailureCount() { return failureCount; }
+        public int getActiveTasks() { return activeTasks; }
+        public boolean isMultiTier() { return multiTier; }
+        public long getTimestamp() { return timestamp; }
+
+        public double getSuccessRate() {
+            return totalSyncCount > 0 ? (double) (totalSyncCount - failureCount) / totalSyncCount : 1.0;
+        }
+
+        public double getFailureRate() {
+            return totalSyncCount > 0 ? (double) failureCount / totalSyncCount : 0.0;
+        }
+
+        @Override
+        public String toString() {
+            return String.format(
+                "ParallelSyncStats{total=%d, failures=%d(%.2f%%), active=%d, multiTier=%s}",
+                totalSyncCount, failureCount, getFailureRate() * 100, activeTasks, multiTier
+            );
+        }
+    }
+
+    /**
+     * 综合性能指标
+     */
+    public static class ComprehensiveMetrics {
+        private final String cacheName;
+        private final boolean multiTier;
+        private final CacheStats cacheStats;
+        private final ParallelSyncStats syncStats;
+        private final long timestamp;
+
+        public ComprehensiveMetrics(String cacheName, boolean multiTier, CacheStats cacheStats, 
+                                   ParallelSyncStats syncStats, long timestamp) {
+            this.cacheName = cacheName;
+            this.multiTier = multiTier;
+            this.cacheStats = cacheStats;
+            this.syncStats = syncStats;
+            this.timestamp = timestamp;
+        }
+
+        public String getCacheName() { return cacheName; }
+        public boolean isMultiTier() { return multiTier; }
+        public CacheStats getCacheStats() { return cacheStats; }
+        public ParallelSyncStats getSyncStats() { return syncStats; }
+        public long getTimestamp() { return timestamp; }
+
+        /**
+         * 获取缓存健康度评分 (0-100)
+         */
+        public int getHealthScore() {
+            double hitRate = cacheStats.hitRate();
+            double syncSuccessRate = syncStats.getSuccessRate();
+            
+            // 命中率权重70%，同步成功率权重30%
+            return (int) ((hitRate * 70 + syncSuccessRate * 30));
+        }
+
+        /**
+         * 获取性能等级
+         */
+        public PerformanceGrade getPerformanceGrade() {
+            int score = getHealthScore();
+            if (score >= 90) return PerformanceGrade.EXCELLENT;
+            else if (score >= 75) return PerformanceGrade.GOOD;
+            else if (score >= 60) return PerformanceGrade.FAIR;
+            else return PerformanceGrade.POOR;
+        }
+
+        @Override
+        public String toString() {
+            return String.format(
+                "ComprehensiveMetrics{cache='%s', multiTier=%s, hitRate=%.2f%%, " +
+                "requests=%d, syncSuccess=%.2f%%, health=%d, grade=%s}",
+                cacheName, multiTier, cacheStats.hitRate() * 100, 
+                cacheStats.requestCount(), syncStats.getSuccessRate() * 100, 
+                getHealthScore(), getPerformanceGrade()
+            );
+        }
+    }
+
+    /**
+     * 性能等级枚举
+     */
+    public enum PerformanceGrade {
+        EXCELLENT("优秀", 90, 100),
+        GOOD("良好", 75, 89),
+        FAIR("一般", 60, 74),
+        POOR("较差", 0, 59);
+
+        private final String description;
+        private final int minScore;
+        private final int maxScore;
+
+        PerformanceGrade(String description, int minScore, int maxScore) {
+            this.description = description;
+            this.minScore = minScore;
+            this.maxScore = maxScore;
+        }
+
+        public String getDescription() { return description; }
+        public int getMinScore() { return minScore; }
+        public int getMaxScore() { return maxScore; }
     }
 }
