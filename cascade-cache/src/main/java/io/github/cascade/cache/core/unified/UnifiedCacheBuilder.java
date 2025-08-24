@@ -424,116 +424,243 @@ public class UnifiedCacheBuilder<K, V> {
      * 构建缓存
      */
     public Cache<K, V> build(CascadeCacheConfiguration cacheConfig) {
-        validateConfig();
-        // 创建L1引擎
-        CacheEngine<K, V> l1Engine = null;
-        if (enableL1) {
-            l1Engine = new CaffeineEngine<>(cacheName, l1Config);
-            log.debug("Created L1 engine: {}", cacheName);
+        long startTime = System.currentTimeMillis();
+        try {
+            log.debug("Starting to build cache: {}", cacheName);
+
+            validateConfig();
+
+            // 创建缓存引擎
+            CacheEngines engines = createCacheEngines();
+
+            // 创建统一缓存
+            SmartCache<K, V> cache = createSmartCache(engines, cacheConfig);
+
+            // 配置缓存组件
+            configureCache(cache);
+
+            long buildTime = System.currentTimeMillis() - startTime;
+            log.info("Successfully built cache '{}' in {}ms - L1={}, L2={}, protection={}, sync={}, autoRefresh={}",
+                    cacheName, buildTime, enableL1, enableL2, enableProtection, enableSync, enableAutoRefresh);
+
+            return cache;
+        } catch (Exception e) {
+            long buildTime = System.currentTimeMillis() - startTime;
+            log.error("Failed to build cache '{}' after {}ms: {}", cacheName, buildTime, e.getMessage(), e);
+            throw new RuntimeException("Cache build failed for: " + cacheName, e);
+        }
+    }
+
+    /**
+     * 缓存引擎容器
+     */
+    private static class CacheEngines {
+        final CacheEngine<?, ?> l1Engine;
+        final CacheEngine<?, ?> l2Engine;
+
+        CacheEngines(CacheEngine<?, ?> l1Engine, CacheEngine<?, ?> l2Engine) {
+            this.l1Engine = l1Engine;
+            this.l2Engine = l2Engine;
+        }
+    }
+
+    /**
+     * 创建缓存引擎
+     */
+    private CacheEngines createCacheEngines() {
+        CacheEngine<K, V> l1Engine = createL1Engine();
+        CacheEngine<K, V> l2Engine = createL2Engine();
+
+        if (l1Engine == null && l2Engine == null) {
+            throw new IllegalStateException("At least one cache tier must be enabled for cache: " + cacheName);
         }
 
-        // 创建L2引擎
-        CacheEngine<K, V> l2Engine = null;
-        if (enableL2 && redissonClient != null) {
-            l2Engine = new RedisEngine<>(cacheName, redissonClient, l2Config);
-            log.debug("Created L2 engine: {}", cacheName);
+        return new CacheEngines(l1Engine, l2Engine);
+    }
+
+    /**
+     * 创建L1缓存引擎
+     */
+    private CacheEngine<K, V> createL1Engine() {
+        if (!enableL1) {
+            return null;
         }
 
-        // 创建统一缓存
-        SmartCache<K, V> cache;
-        if (l1Engine != null && l2Engine != null) {
-            cache = new SmartCache<>(cacheName, l1Engine, l2Engine, executor, monitoringManager);
-        } else if (l1Engine != null) {
-            cache = new SmartCache<>(cacheName, l1Engine, null, executor, monitoringManager);
-        } else if (l2Engine != null) {
-            cache = new SmartCache<>(cacheName, null, l2Engine, executor, monitoringManager);
-        } else {
-            throw new IllegalStateException("At least one cache tier must be enabled");
+        try {
+            CacheEngine<K, V> l1Engine = new CaffeineEngine<>(cacheName, l1Config);
+            log.debug("Created L1 engine for cache: {}", cacheName);
+            return l1Engine;
+        } catch (Exception e) {
+            log.error("Failed to create L1 engine for cache: {}", cacheName, e);
+            throw new RuntimeException("L1 engine creation failed", e);
         }
+    }
+
+    /**
+     * 创建L2缓存引擎
+     */
+    private CacheEngine<K, V> createL2Engine() {
+        if (!enableL2 || redissonClient == null) {
+            return null;
+        }
+
+        try {
+            CacheEngine<K, V> l2Engine = new RedisEngine<>(cacheName, redissonClient, l2Config);
+            log.debug("Created L2 engine for cache: {}", cacheName);
+            return l2Engine;
+        } catch (Exception e) {
+            log.error("Failed to create L2 engine for cache: {}", cacheName, e);
+            throw new RuntimeException("L2 engine creation failed", e);
+        }
+    }
+
+    /**
+     * 创建SmartCache实例
+     */
+    @SuppressWarnings("unchecked")
+    private SmartCache<K, V> createSmartCache(CacheEngines engines, CascadeCacheConfiguration cacheConfig) {
+        SmartCache<K, V> cache = new SmartCache<>(
+                cacheName,
+                (CacheEngine<K, V>) engines.l1Engine,
+                (CacheEngine<K, V>) engines.l2Engine,
+                executor,
+                monitoringManager
+        );
         cache.setCacheConfiguration(cacheConfig);
-        // 设置加载器
+        return cache;
+    }
+
+    /**
+     * 配置缓存的所有组件
+     */
+    private void configureCache(SmartCache<K, V> cache) {
+        configureCacheLoader(cache);
+        configureProtectionManager(cache);
+        configureSynchronizer(cache);
+        configureRefreshScheduler(cache);
+    }
+
+    /**
+     * 配置缓存加载器
+     */
+    private void configureCacheLoader(SmartCache<K, V> cache) {
         if (cacheLoader != null) {
             cache.setLoader(cacheLoader);
+            log.debug("Set explicit CacheLoader for cache: {}", cacheName);
         } else if (autoDiscoverLoader && cacheLoaderResolver != null && keyType != null && valueType != null) {
-            // 使用CacheLoaderResolver自动发现
+            discoverAndSetCacheLoader(cache);
+        }
+    }
+
+    /**
+     * 自动发现并设置缓存加载器
+     */
+    private void discoverAndSetCacheLoader(SmartCache<K, V> cache) {
+        try {
             CacheLoader<K, V> discoveredLoader = cacheLoaderResolver.resolveCacheLoader(keyType, valueType);
             if (discoveredLoader != null) {
                 cache.setLoader(discoveredLoader);
                 this.cacheLoader = discoveredLoader;
-                log.info("Auto-discovered CacheLoader: {} for cache: {}", discoveredLoader.getClass().getSimpleName(), cacheName);
+                log.info("Auto-discovered CacheLoader: {} for cache: {}",
+                        discoveredLoader.getClass().getSimpleName(), cacheName);
             } else {
                 log.debug("No compatible CacheLoader found for cache: {} with types <{}, {}>",
-                        cacheName, keyType.getSimpleName(), valueType.getSimpleName());
+                        cacheName, keyType != null ? keyType.getSimpleName() : "null",
+                        valueType != null ? valueType.getSimpleName() : "null");
             }
+        } catch (Exception e) {
+            log.warn("Failed to discover CacheLoader for cache: {}: {}", cacheName, e.getMessage());
+        }
+    }
+
+    /**
+     * 配置防护机制
+     */
+    private void configureProtectionManager(SmartCache<K, V> cache) {
+        if (!enableProtection) {
+            return;
         }
 
-        // 设置防护
-        if (enableProtection) {
-            log.debug("设置防护...");
+        try {
+            log.debug("Configuring protection mechanisms for cache: {}", cacheName);
             SimplifiedCacheProtectionManager.Builder protectionBuilder = SimplifiedCacheProtectionManager.builder();
+
             if (bloomFilter != null) {
                 protectionBuilder.bloomFilter(bloomFilter);
+                log.debug("Added bloom filter protection for cache: {}", cacheName);
             }
+
             if (randomTtl != null) {
                 protectionBuilder.randomTtl(randomTtl);
+                log.debug("Added random TTL protection for cache: {}", cacheName);
             }
+
             if (distributedLock != null) {
                 protectionBuilder.redissonLock(distributedLock);
+                log.debug("Added distributed lock protection for cache: {}", cacheName);
             }
+
             cache.setProtectionManager(protectionBuilder.build());
-            log.debug("Configured protection for cache: {}", cacheName);
+            log.info("Successfully configured protection for cache: {}", cacheName);
+        } catch (Exception e) {
+            log.error("Failed to configure protection for cache: {}: {}", cacheName, e.getMessage(), e);
+            throw new RuntimeException("Protection configuration failed", e);
+        }
+    }
+
+    /**
+     * 配置同步器
+     */
+    private void configureSynchronizer(SmartCache<K, V> cache) {
+        if (!enableSync || redissonClient == null) {
+            return;
         }
 
-        // 设置同步器
-        if (enableSync && redissonClient != null) {
-            log.debug("设置同步器...");
-            try {
-                // 创建同步管理器
-                RedissonCacheSyncManager syncManager = new RedissonCacheSyncManager(redissonClient, syncTopic);
+        try {
+            log.debug("Configuring synchronizer for cache: {}", cacheName);
 
-                // 创建事件处理器
-                UnifiedEventProcessor eventProcessor = new UnifiedEventProcessor(asyncSync);
+            RedissonCacheSyncManager syncManager = new RedissonCacheSyncManager(redissonClient, syncTopic);
+            UnifiedEventProcessor eventProcessor = new UnifiedEventProcessor(asyncSync);
+            UnifiedCacheSynchronizer<K, V> synchronizer = new UnifiedCacheSynchronizer<>(
+                    cacheName, syncManager, eventProcessor);
 
-                // 创建统一同步器
-                UnifiedCacheSynchronizer<K, V> synchronizer = new UnifiedCacheSynchronizer<>(
-                        cacheName, syncManager, eventProcessor);
+            cache.setSynchronizer(synchronizer);
+            log.info("Successfully configured distributed sync for cache: '{}' with topic: '{}'",
+                    cacheName, syncTopic);
+        } catch (Exception e) {
+            log.error("Failed to configure distributed sync for cache: {}: {}", cacheName, e.getMessage(), e);
+            // 不抛出异常，允许缓存在没有同步的情况下工作
+            log.warn("Cache '{}' will work without distributed synchronization", cacheName);
+        }
+    }
 
-                // 设置到缓存中
-                cache.setSynchronizer(synchronizer);
-
-                log.info("Configured distributed sync for cache: {}, topic: {}", cacheName, syncTopic);
-            } catch (Exception e) {
-                log.warn("Failed to configure distributed sync for cache: {}, error: {}", cacheName, e.getMessage());
-            }
+    /**
+     * 配置刷新调度器
+     */
+    private void configureRefreshScheduler(SmartCache<K, V> cache) {
+        if (!enableAutoRefresh || cacheLoader == null) {
+            return;
         }
 
-        // 设置刷新调度器
-        if (enableAutoRefresh && cacheLoader != null) {
-            log.debug("设置刷新调度器...");
-            try {
-                // 创建刷新回调
-                CacheRefreshScheduler.RefreshCallback<K, V> refreshCallback = (key, newValue) -> {
-                    cache.put(key, newValue);
-                    log.debug("Auto refreshed cache key: {} with new value", key);
-                };
+        try {
+            log.debug("Configuring refresh scheduler for cache: {}", cacheName);
 
-                // 创建刷新调度器
-                CacheRefreshScheduler<K, V> refreshScheduler = new CacheRefreshScheduler<>(
-                        refreshCallback, cacheLoader, refreshInterval);
+            CacheRefreshScheduler.RefreshCallback<K, V> refreshCallback = (key, newValue) -> {
+                cache.put(key, newValue);
+                log.debug("Auto refreshed cache key: '{}' for cache: '{}'", key, cacheName);
+            };
 
-                // 设置到缓存中
-                cache.setRefreshScheduler(refreshScheduler);
+            CacheRefreshScheduler<K, V> refreshScheduler = new CacheRefreshScheduler<>(
+                    refreshCallback, cacheLoader, refreshInterval);
 
-                log.info("Configured auto refresh for cache: {}, interval: {}", cacheName, refreshInterval.toSeconds());
-            } catch (Exception e) {
-                log.warn("Failed to configure auto refresh for cache: {}, error: {}", cacheName, e.getMessage());
-            }
+            cache.setRefreshScheduler(refreshScheduler);
+            log.info("Successfully configured auto refresh for cache: '{}' with interval: {}s",
+                    cacheName, refreshInterval.toSeconds());
+        } catch (Exception e) {
+            log.error("Failed to configure auto refresh for cache: {}: {}", cacheName, e.getMessage(), e);
+            // 不抛出异常，允许缓存在没有自动刷新的情况下工作
+            log.warn("Cache '{}' will work without auto refresh", cacheName);
         }
-
-        log.info("Built unified cache: {}, L1={}, L2={}, protection={}, sync={}, autoRefresh={}",
-                cacheName, enableL1, enableL2, enableProtection, enableSync, enableAutoRefresh);
-
-        return cache;
     }
 
     // ==================== 私有方法 ====================
@@ -542,14 +669,115 @@ public class UnifiedCacheBuilder<K, V> {
      * 验证配置
      */
     private void validateConfig() {
+        log.debug("Validating configuration for cache: {}", cacheName);
+
+        validateCacheName();
+        validateTierConfiguration();
+        validateRedisConfiguration();
+        validateProtectionConfiguration();
+        validateSyncConfiguration();
+        validateRefreshConfiguration();
+
+        log.debug("Configuration validation completed for cache: {}", cacheName);
+    }
+
+    private void validateCacheName() {
         if (cacheName == null || cacheName.trim().isEmpty()) {
             throw new IllegalArgumentException("Cache name cannot be null or empty");
         }
-        if (!enableL1 && !enableL2) {
-            throw new IllegalStateException("At least one cache tier must be enabled");
+
+        // 验证缓存名称格式
+        if (!cacheName.matches("^[a-zA-Z0-9_\\-.:]+$")) {
+            throw new IllegalArgumentException(
+                    "Invalid cache name format: '" + cacheName + "'. Only alphanumeric characters, underscore, hyphen, dot and colon are allowed");
         }
+    }
+
+    private void validateTierConfiguration() {
+        if (!enableL1 && !enableL2) {
+            throw new IllegalStateException("At least one cache tier (L1 or L2) must be enabled for cache: " + cacheName);
+        }
+
+        if (enableL1) {
+            validateL1Configuration();
+        }
+
+        if (enableL2) {
+            validateL2Configuration();
+        }
+    }
+
+    private void validateL1Configuration() {
+        if (l1Config.getMaximumSize() <= 0) {
+            throw new IllegalArgumentException("L1 cache maximum size must be positive for cache: " + cacheName);
+        }
+
+        if (l1Config.getExpireAfterWrite() != null && l1Config.getExpireAfterWrite().isNegative()) {
+            throw new IllegalArgumentException("L1 cache expireAfterWrite duration cannot be negative for cache: " + cacheName);
+        }
+
+        if (l1Config.getExpireAfterAccess() != null && l1Config.getExpireAfterAccess().isNegative()) {
+            throw new IllegalArgumentException("L1 cache expireAfterAccess duration cannot be negative for cache: " + cacheName);
+        }
+    }
+
+    private void validateL2Configuration() {
+        if (l2Config.getDefaultTtl() != null && l2Config.getDefaultTtl().isNegative()) {
+            throw new IllegalArgumentException("L2 cache default TTL cannot be negative for cache: " + cacheName);
+        }
+
+        if (l2Config.getBatchSize() <= 0) {
+            throw new IllegalArgumentException("L2 cache batch size must be positive for cache: " + cacheName);
+        }
+    }
+
+    private void validateRedisConfiguration() {
         if (enableL2 && redissonClient == null) {
-            throw new IllegalStateException("RedissonClient is required for L2 cache");
+            throw new IllegalStateException("RedissonClient is required for L2 cache: " + cacheName);
+        }
+    }
+
+    private void validateProtectionConfiguration() {
+        if (enableProtection) {
+            if (bloomFilter != null && redissonClient == null) {
+                log.warn("Bloom filter protection requires RedissonClient for cache: {}", cacheName);
+            }
+
+            if (distributedLock != null && redissonClient == null) {
+                log.warn("Distributed lock protection requires RedissonClient for cache: {}", cacheName);
+            }
+        }
+    }
+
+    private void validateSyncConfiguration() {
+        if (enableSync) {
+            if (redissonClient == null) {
+                log.warn("Distributed sync requires RedissonClient for cache: {}", cacheName);
+            }
+
+            if (syncTimeout != null && syncTimeout.isNegative()) {
+                throw new IllegalArgumentException("Sync timeout cannot be negative for cache: " + cacheName);
+            }
+
+            if (syncTopic == null || syncTopic.trim().isEmpty()) {
+                throw new IllegalArgumentException("Sync topic cannot be null or empty for cache: " + cacheName);
+            }
+        }
+    }
+
+    private void validateRefreshConfiguration() {
+        if (enableAutoRefresh) {
+            if (cacheLoader == null && !autoDiscoverLoader) {
+                log.warn("Auto refresh requires CacheLoader for cache: {}", cacheName);
+            }
+
+            if (refreshInterval != null && refreshInterval.isNegative()) {
+                throw new IllegalArgumentException("Refresh interval cannot be negative for cache: " + cacheName);
+            }
+
+            if (refreshInterval != null && refreshInterval.toMillis() < 1000) {
+                log.warn("Refresh interval is less than 1 second for cache: {}, this may cause performance issues", cacheName);
+            }
         }
     }
 
@@ -590,92 +818,124 @@ public class UnifiedCacheBuilder<K, V> {
      * 从CascadeCacheConfiguration应用配置
      */
     private void applyConfiguration(CascadeCacheConfiguration config) {
-        // 基础配置
-        if (config.getCommon() != null) {
-            var common = config.getCommon();
-            this.l1Config.setMaximumSize(common.getMaximumSize());
-            this.l1Config.setRecordStats(common.isRecordStats());
-            if (common.getExpireAfterWrite() != null) {
-                this.l1Config.setExpireAfterWrite(common.getExpireAfterWrite());
-            }
-            if (common.getExpireAfterAccess() != null) {
-                this.l1Config.setExpireAfterAccess(common.getExpireAfterAccess());
-            }
-            if (common.getRefreshAfterWrite() != null) {
-                this.l1Config.setRefreshAfterWrite(common.getRefreshAfterWrite());
-            }
-            if (common.getExecutor() != null) {
-                executor(common.getExecutor());
-            }
-        }
+        log.debug("Applying configuration for cache: {}", cacheName);
 
-        // L1配置
-        if (config.getL1() != null && config.getL1().isEnabled()) {
-            var l1 = config.getL1();
-            enableL1(true);
+        try {
+            applyCommonConfig(config);
+            applyL1Config(config);
+            applyL2Config(config);
+            applySyncConfig(config);
+            applyProtectionConfig(config);
+
+            log.debug("Configuration applied successfully for cache: {}", cacheName);
+        } catch (Exception e) {
+            log.error("Failed to apply configuration for cache: {}: {}", cacheName, e.getMessage(), e);
+            throw new RuntimeException("Configuration application failed", e);
+        }
+    }
+
+    private void applyCommonConfig(CascadeCacheConfiguration config) {
+        if (config.getCommon() == null) return;
+
+        var common = config.getCommon();
+        CascadeCacheConfiguration.L1Config l1 = config.getL1();
+        if (l1.getMaximumSize() != 0) {
             this.l1Config.setMaximumSize(l1.getMaximumSize());
-            if (l1.getExpireAfterWrite() != null) {
-                this.l1Config.setExpireAfterWrite(l1.getExpireAfterWrite());
-            }
-            if (l1.getExpireAfterAccess() != null) {
-                this.l1Config.setExpireAfterAccess(l1.getExpireAfterAccess());
-            }
-            this.l1Config.setRecordStats(l1.isRecordStats());
-            // 其他L1特定配置...
+        } else {
+            this.l1Config.setMaximumSize(common.getMaximumSize());
         }
+        this.l1Config.setRecordStats(common.isRecordStats());
 
-        // L2配置
-        if (config.getL2() != null && config.getL2().isEnabled()) {
-            CascadeCacheConfiguration.L2Config l2 = config.getL2();
-            enableL2(true);
-            keyPrefix(l2.getKeyPrefix());
-            if (l2.getDefaultTtl() != null) {
-                this.l2Config.setDefaultTtl(l2.getDefaultTtl());
-            }
-            // L2序列化器和客户端配置
-            if (l2.getRedissonClient() != null) {
-                withRedis(l2.getRedissonClient());
-            }
-            // 其他L2特定配置...
+        if (common.getExpireAfterWrite() != null) {
+            this.l1Config.setExpireAfterWrite(common.getExpireAfterWrite());
         }
-
-        // 同步配置
-        if (config.getSync() != null && config.getSync().isEnabled()) {
-            var sync = config.getSync();
-            enableSync(true);
-            syncTopic(sync.getTopic());
-            if (sync.getTimeout() != null) {
-                syncTimeout(sync.getTimeout());
-            }
-            asyncSync(sync.isAsync());
+        if (common.getExpireAfterAccess() != null) {
+            this.l1Config.setExpireAfterAccess(common.getExpireAfterAccess());
         }
+        if (common.getRefreshAfterWrite() != null) {
+            this.l1Config.setRefreshAfterWrite(common.getRefreshAfterWrite());
+        }
+        if (common.getExecutor() != null) {
+            executor(common.getExecutor());
+        }
+    }
 
-        // 防护配置
-        if (config.getProtection() != null && config.getProtection().isEnabled()) {
-            var protection = config.getProtection();
-            enableProtection(true);
+    private void applyL1Config(CascadeCacheConfiguration config) {
+        if (config.getL1() == null || !config.getL1().isEnabled()) return;
 
-            // 布隆过滤器配置
-            var bloomFilterConfig = protection.getBloomFilter();
-            if (bloomFilterConfig != null && bloomFilterConfig.isEnabled()) {
-                bloomFilter(bloomFilterConfig.getExpectedElements(), bloomFilterConfig.getFalsePositiveRate());
-            }
+        var l1 = config.getL1();
+        enableL1(true);
+        if (l1.getMaximumSize() != 0) {
+            this.l1Config.setMaximumSize(l1.getMaximumSize());
+        }
+        this.l1Config.setRecordStats(l1.isRecordStats());
 
-            // 随机TTL配置
-            var randomTtlConfig = protection.getRandomTtl();
-            if (randomTtlConfig != null && randomTtlConfig.isEnabled()) {
-                Duration baseTtl = randomTtlConfig.getBaseTtl() != null ?
-                        randomTtlConfig.getBaseTtl() : Duration.ofMinutes(30);
-                randomTtl(baseTtl, randomTtlConfig.getJitterRatio());
-            }
+        if (l1.getExpireAfterWrite() != null) {
+            this.l1Config.setExpireAfterWrite(l1.getExpireAfterWrite());
+        }
+        if (l1.getExpireAfterAccess() != null) {
+            this.l1Config.setExpireAfterAccess(l1.getExpireAfterAccess());
+        }
+    }
 
-            // 分布式锁配置
-            var distributedLockConfig = protection.getDistributedLock();
-            if (distributedLockConfig != null && distributedLockConfig.isEnabled()) {
-                Duration lockTimeout = distributedLockConfig.getLockTimeout() != null ?
-                        distributedLockConfig.getLockTimeout() : Duration.ofSeconds(30);
-                distributedLock(lockTimeout);
-            }
+    private void applyL2Config(CascadeCacheConfiguration config) {
+        if (config.getL2() == null || !config.getL2().isEnabled()) return;
+
+        var l2 = config.getL2();
+        enableL2(true);
+        keyPrefix(l2.getKeyPrefix());
+
+        if (l2.getDefaultTtl() != null) {
+            this.l2Config.setDefaultTtl(l2.getDefaultTtl());
+        }
+        if (l2.getRedissonClient() != null) {
+            withRedis(l2.getRedissonClient());
+        }
+    }
+
+    private void applySyncConfig(CascadeCacheConfiguration config) {
+        if (config.getSync() == null || !config.getSync().isEnabled()) return;
+
+        var sync = config.getSync();
+        enableSync(true);
+        syncTopic(sync.getTopic());
+        asyncSync(sync.isAsync());
+
+        if (sync.getTimeout() != null) {
+            syncTimeout(sync.getTimeout());
+        }
+    }
+
+    private void applyProtectionConfig(CascadeCacheConfiguration config) {
+        if (config.getProtection() == null || !config.getProtection().isEnabled()) return;
+
+        var protection = config.getProtection();
+        enableProtection(true);
+
+        applyBloomFilterConfig(protection.getBloomFilter());
+        applyRandomTtlConfig(protection.getRandomTtl());
+        applyDistributedLockConfig(protection.getDistributedLock());
+    }
+
+    private void applyBloomFilterConfig(CascadeCacheConfiguration.ProtectionConfig.BloomFilterConfig bloomConfig) {
+        if (bloomConfig != null && bloomConfig.isEnabled()) {
+            bloomFilter(bloomConfig.getExpectedElements(), bloomConfig.getFalsePositiveRate());
+        }
+    }
+
+    private void applyRandomTtlConfig(CascadeCacheConfiguration.ProtectionConfig.RandomTtlConfig randomTtlConfig) {
+        if (randomTtlConfig != null && randomTtlConfig.isEnabled()) {
+            Duration baseTtl = randomTtlConfig.getBaseTtl() != null ?
+                    randomTtlConfig.getBaseTtl() : Duration.ofMinutes(30);
+            randomTtl(baseTtl, randomTtlConfig.getJitterRatio());
+        }
+    }
+
+    private void applyDistributedLockConfig(CascadeCacheConfiguration.ProtectionConfig.DistributedLockConfig lockConfig) {
+        if (lockConfig != null && lockConfig.isEnabled()) {
+            Duration lockTimeout = lockConfig.getLockTimeout() != null ?
+                    lockConfig.getLockTimeout() : Duration.ofSeconds(30);
+            distributedLock(lockTimeout);
         }
     }
 
