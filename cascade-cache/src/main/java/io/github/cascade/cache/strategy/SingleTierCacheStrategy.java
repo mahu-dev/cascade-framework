@@ -1,9 +1,12 @@
 package io.github.cascade.cache.strategy;
 
 import io.github.cascade.cache.api.CacheLoader;
+import io.github.cascade.cache.api.CacheStats;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import io.github.cascade.cache.core.unified.CacheEngine;
+import io.github.cascade.cache.metrics.CacheMetrics;
 import io.github.cascade.cache.metrics.CachePerformanceMonitor;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
@@ -13,20 +16,22 @@ import java.util.Set;
 /**
  * 单级缓存操作策略
  * 负责处理单级缓存的读写逻辑
- * 
+ *
  * @author cascade
  */
 @Slf4j
-public class SingleTierCacheStrategy<K, V> {
-    
+public class SingleTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
+
     private final String cacheName;
     private final CacheEngine<K, V> engine;
     private final CachePerformanceMonitor performanceMonitor;
-    
+
     // 配置相关
+    @Setter
     private CascadeCacheConfiguration cacheConfiguration;
+    @Setter
     private CacheLoader<K, V> cacheLoader;
-    
+
     public SingleTierCacheStrategy(String cacheName,
                                    CacheEngine<K, V> engine,
                                    CachePerformanceMonitor performanceMonitor) {
@@ -34,23 +39,15 @@ public class SingleTierCacheStrategy<K, V> {
         this.engine = engine;
         this.performanceMonitor = performanceMonitor;
     }
-    
-    public void setCacheConfiguration(CascadeCacheConfiguration cacheConfiguration) {
-        this.cacheConfiguration = cacheConfiguration;
-    }
-    
-    public void setCacheLoader(CacheLoader<K, V> cacheLoader) {
-        this.cacheLoader = cacheLoader;
-    }
-    
+
     // ==================== 核心查询策略 ====================
-    
+
     /**
      * 从单级缓存获取值
      */
     public V getFromCache(K key) {
         long startTime = System.nanoTime();
-        
+
         try {
             // 1. 缓存查询
             V value = engine.get(key);
@@ -70,7 +67,7 @@ public class SingleTierCacheStrategy<K, V> {
             performanceMonitor.recordMiss();
             log.debug("Cache miss: key={}", key);
             return null;
-            
+
         } finally {
             // 性能监控
             long duration = System.nanoTime() - startTime;
@@ -79,16 +76,16 @@ public class SingleTierCacheStrategy<K, V> {
             }
         }
     }
-    
+
     /**
      * 批量获取
      */
     public Map<K, V> getAllFromCache(Set<K> keys) {
         return engine.getAll(keys);
     }
-    
+
     // ==================== 数据加载策略 ====================
-    
+
     /**
      * 从数据源加载数据
      */
@@ -97,25 +94,25 @@ public class SingleTierCacheStrategy<K, V> {
         if (!shouldLoadFromSource()) {
             return null;
         }
-        
+
         try {
             log.debug("Loading from source: key={}", key);
             V value = cacheLoader.load(key);
-            
+
             if (value != null) {
                 // 加载成功，存储到缓存
                 engine.put(key, value, getDefaultTtl());
                 log.debug("Successfully loaded and cached: key={}", key);
                 return value;
             }
-            
+
         } catch (Exception e) {
             log.error("Failed to load from source: key={}, error: {}", key, e.getMessage(), e);
         }
-        
+
         return null;
     }
-    
+
     /**
      * 判断是否应该从数据源加载
      */
@@ -124,17 +121,17 @@ public class SingleTierCacheStrategy<K, V> {
         if (cacheLoader == null) {
             return false;
         }
-        
+
         // 必须有配置且刷新未启用（避免重复加载）
         if (cacheConfiguration == null) {
             return true; // 默认允许加载
         }
-        
+
         return !cacheConfiguration.getRefresh().isEnabled();
     }
-    
+
     // ==================== 写入策略 ====================
-    
+
     /**
      * 写入缓存
      */
@@ -146,13 +143,13 @@ public class SingleTierCacheStrategy<K, V> {
             throw e;
         }
     }
-    
+
     /**
      * 批量写入缓存
      */
     public void putAllToCache(Map<K, V> map) {
         if (map == null || map.isEmpty()) return;
-        
+
         try {
             engine.putAll(map);
         } catch (Exception e) {
@@ -160,9 +157,105 @@ public class SingleTierCacheStrategy<K, V> {
             throw e;
         }
     }
-    
+
+    // ==================== CacheStrategy接口实现 ====================
+
+    @Override
+    public V get(K key) {
+        return getFromCache(key);
+    }
+
+    @Override
+    public Map<K, V> getAll(Set<K> keys) {
+        return getAllFromCache(keys);
+    }
+
+    @Override
+    public void put(K key, V value) {
+        putToCache(key, value, getDefaultTtl());
+    }
+
+    @Override
+    public void put(K key, V value, Duration ttl) {
+        putToCache(key, value, ttl);
+    }
+
+    @Override
+    public void putAll(Map<K, V> map) {
+        putAllToCache(map);
+    }
+
+    @Override
+    public void evict(K key) {
+        if (key == null) return;
+
+        engine.evict(key);
+        log.debug("Single-tier cache evict: key={}", key);
+    }
+
+    @Override
+    public void evictAll(Set<K> keys) {
+        if (keys == null || keys.isEmpty()) return;
+
+        engine.evictAll(keys);
+        log.debug("Single-tier cache evictAll: size={}", keys.size());
+    }
+
+    @Override
+    public void clear() {
+        engine.clear();
+        log.debug("Single-tier cache cleared: {}", cacheName);
+    }
+
+    @Override
+    public boolean containsKey(K key) {
+        if (key == null) return false;
+
+        return engine.containsKey(key);
+    }
+
+    @Override
+    public long size() {
+        return engine.size();
+    }
+
+    @Override
+    public CacheStats getStats() {
+        return engine.getStats();
+    }
+
+    @Override
+    public void cleanUp() {
+        engine.cleanUp();
+    }
+
+    @Override
+    public CacheMetrics.DetailedCacheMetrics getDetailedMetrics() {
+        return performanceMonitor.getDetailedMetrics();
+    }
+
+    @Override
+    public CacheMetrics.CacheHealthStatus getHealthStatus() {
+        return performanceMonitor.getHealthStatus();
+    }
+
+    @Override
+    public void resetPerformanceStats() {
+        performanceMonitor.resetPerformanceStats();
+    }
+
+    @Override
+    public boolean isMultiTier() {
+        return false; // 单级缓存策略始终为false
+    }
+
+    @Override
+    public String getStrategyName() {
+        return "SingleTierCacheStrategy[" + cacheName + "]";
+    }
+
     // ==================== 辅助方法 ====================
-    
+
     /**
      * 获取默认TTL
      */

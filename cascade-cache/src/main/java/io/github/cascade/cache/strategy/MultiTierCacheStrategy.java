@@ -1,8 +1,10 @@
 package io.github.cascade.cache.strategy;
 
 import io.github.cascade.cache.api.CacheLoader;
+import io.github.cascade.cache.api.CacheStats;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import io.github.cascade.cache.core.unified.CacheEngine;
+import io.github.cascade.cache.metrics.CacheMetrics;
 import io.github.cascade.cache.metrics.CachePerformanceMonitor;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
@@ -23,7 +25,7 @@ import java.util.concurrent.TimeUnit;
  * @author cascade
  */
 @Slf4j
-public class MultiTierCacheStrategy<K, V> {
+public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
 
     private final String cacheName;
     private final CacheEngine<K, V> l1Engine;
@@ -316,6 +318,110 @@ public class MultiTierCacheStrategy<K, V> {
         }
     }
 
+    // ==================== CacheStrategy接口实现 ====================
+
+    @Override
+    public V get(K key) {
+        return getFromTiers(key);
+    }
+
+    @Override
+    public Map<K, V> getAll(Set<K> keys) {
+        return getAllFromTiers(keys);
+    }
+
+    @Override
+    public void put(K key, V value) {
+        putToAllTiers(key, value, getDefaultTtl());
+    }
+
+    @Override
+    public void put(K key, V value, Duration ttl) {
+        putToAllTiers(key, value, ttl);
+    }
+
+    @Override
+    public void putAll(Map<K, V> map) {
+        putAllToTiers(map);
+    }
+
+    @Override
+    public void evict(K key) {
+        if (key == null) return;
+
+        l1Engine.evict(key);
+        l2Engine.evict(key);
+        
+        log.debug("Multi-tier cache evict: key={}", key);
+    }
+
+    @Override
+    public void evictAll(Set<K> keys) {
+        if (keys == null || keys.isEmpty()) return;
+
+        l1Engine.evictAll(keys);
+        l2Engine.evictAll(keys);
+        
+        log.debug("Multi-tier cache evictAll: size={}", keys.size());
+    }
+
+    @Override
+    public void clear() {
+        l1Engine.clear();
+        l2Engine.clear();
+        
+        log.debug("Multi-tier cache cleared: {}", cacheName);
+    }
+
+    @Override
+    public boolean containsKey(K key) {
+        if (key == null) return false;
+        
+        return l1Engine.containsKey(key) || l2Engine.containsKey(key);
+    }
+
+    @Override
+    public long size() {
+        // 以L2为准（多级缓存的总大小）
+        return l2Engine.size();
+    }
+
+    @Override
+    public CacheStats getStats() {
+        return new MultiTierStats(l1Engine.getStats(), l2Engine.getStats());
+    }
+
+    @Override
+    public void cleanUp() {
+        l1Engine.cleanUp();
+        l2Engine.cleanUp();
+    }
+
+    @Override
+    public CacheMetrics.DetailedCacheMetrics getDetailedMetrics() {
+        return performanceMonitor.getDetailedMetrics();
+    }
+
+    @Override
+    public CacheMetrics.CacheHealthStatus getHealthStatus() {
+        return performanceMonitor.getHealthStatus();
+    }
+
+    @Override
+    public void resetPerformanceStats() {
+        performanceMonitor.resetPerformanceStats();
+    }
+
+    @Override
+    public boolean isMultiTier() {
+        return true; // 多级缓存策略始终为true
+    }
+
+    @Override
+    public String getStrategyName() {
+        return "MultiTierCacheStrategy[" + cacheName + "]";
+    }
+
     // ==================== 辅助方法 ====================
 
     /**
@@ -326,5 +432,83 @@ public class MultiTierCacheStrategy<K, V> {
             return cacheConfiguration.getL2().getDefaultTtl();
         }
         return Duration.ofHours(1); // 默认1小时
+    }
+
+    // ==================== 内部类 ====================
+
+    /**
+     * 多级缓存统计信息
+     */
+    private static class MultiTierStats implements CacheStats {
+        private final CacheStats l1Stats;
+        private final CacheStats l2Stats;
+
+        public MultiTierStats(CacheStats l1Stats, CacheStats l2Stats) {
+            this.l1Stats = l1Stats;
+            this.l2Stats = l2Stats;
+        }
+
+        @Override
+        public long hitCount() {
+            return l1Stats.hitCount() + l2Stats.hitCount();
+        }
+
+        @Override
+        public long missCount() {
+            return l1Stats.missCount() + l2Stats.missCount();
+        }
+
+        @Override
+        public double hitRate() {
+            long hits = hitCount();
+            long total = hits + missCount();
+            return total == 0 ? 0.0 : (double) hits / total;
+        }
+
+        @Override
+        public double missRate() {
+            return 1.0 - hitRate();
+        }
+
+        @Override
+        public long loadCount() {
+            return l1Stats.loadCount() + l2Stats.loadCount();
+        }
+
+        @Override
+        public double averageLoadPenalty() {
+            return (l1Stats.averageLoadPenalty() + l2Stats.averageLoadPenalty()) / 2;
+        }
+
+        @Override
+        public long evictionCount() {
+            return l1Stats.evictionCount() + l2Stats.evictionCount();
+        }
+
+        @Override
+        public long evictionWeight() {
+            return l1Stats.evictionWeight() + l2Stats.evictionWeight();
+        }
+
+        @Override
+        public long requestCount() {
+            return l1Stats.requestCount() + l2Stats.requestCount();
+        }
+
+        @Override
+        public long loadExceptionCount() {
+            return l1Stats.loadExceptionCount() + l2Stats.loadExceptionCount();
+        }
+
+        @Override
+        public long totalLoadTime() {
+            return l1Stats.totalLoadTime() + l2Stats.totalLoadTime();
+        }
+
+        @Override
+        public void reset() {
+            l1Stats.reset();
+            l2Stats.reset();
+        }
     }
 }

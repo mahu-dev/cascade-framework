@@ -6,6 +6,7 @@ import io.github.cascade.cache.api.CacheTier;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import io.github.cascade.cache.metrics.CacheMetrics;
 import io.github.cascade.cache.metrics.CachePerformanceMonitor;
+import io.github.cascade.cache.strategy.CacheStrategy;
 import io.github.cascade.cache.strategy.MultiTierCacheStrategy;
 import io.github.cascade.cache.strategy.SingleTierCacheStrategy;
 import lombok.Getter;
@@ -38,9 +39,8 @@ public class CacheCore<K, V> {
     @Getter
     private final boolean isMultiTier;
 
-    // 策略模式：将复杂的逻辑委托给专门的策略类
-    private final MultiTierCacheStrategy<K, V> multiTierStrategy;
-    private final SingleTierCacheStrategy<K, V> singleTierStrategy;
+    // 统一策略模式：消除硬编码条件判断
+    private final CacheStrategy<K, V> strategy;
 
     // 性能监控
     private final CachePerformanceMonitor performanceMonitor;
@@ -61,34 +61,22 @@ public class CacheCore<K, V> {
         // 初始化性能监控
         this.performanceMonitor = new CachePerformanceMonitor(name, isMultiTier);
 
-        // 初始化策略
-        if (isMultiTier) {
-            this.multiTierStrategy = new MultiTierCacheStrategy<>(name, l1Engine, l2Engine, performanceMonitor, executor);
-            this.singleTierStrategy = null;
-        } else {
-            this.multiTierStrategy = null;
-            this.singleTierStrategy = new SingleTierCacheStrategy<>(name, l1Engine, performanceMonitor);
-        }
+        // 初始化统一策略
+        this.strategy = isMultiTier 
+            ? new MultiTierCacheStrategy<>(name, l1Engine, l2Engine, performanceMonitor, executor)
+            : new SingleTierCacheStrategy<>(name, l1Engine, performanceMonitor);
     }
 
     // ==================== 配置设置 ====================
 
     public void setCacheLoader(CacheLoader<K, V> cacheLoader) {
         this.cacheLoader = cacheLoader;
-        if (isMultiTier) {
-            multiTierStrategy.setCacheLoader(cacheLoader);
-        } else {
-            singleTierStrategy.setCacheLoader(cacheLoader);
-        }
+        strategy.setCacheLoader(cacheLoader);
     }
 
     public void setCacheConfiguration(CascadeCacheConfiguration cacheConfiguration) {
         this.cacheConfiguration = cacheConfiguration;
-        if (isMultiTier) {
-            multiTierStrategy.setCacheConfiguration(cacheConfiguration);
-        } else {
-            singleTierStrategy.setCacheConfiguration(cacheConfiguration);
-        }
+        strategy.setCacheConfiguration(cacheConfiguration);
     }
 
     // ==================== 基础缓存操作 ====================
@@ -97,59 +85,37 @@ public class CacheCore<K, V> {
      * 获取缓存值
      */
     public V get(K key) {
-        if (key == null) return null;
-
-        return isMultiTier ?
-                multiTierStrategy.getFromTiers(key) :
-                singleTierStrategy.getFromCache(key);
+        return strategy.get(key);
     }
 
     /**
      * 批量获取缓存值
      */
     public Map<K, V> getAll(Set<K> keys) {
-        if (keys == null || keys.isEmpty()) return Map.of();
-
-        return isMultiTier ?
-                multiTierStrategy.getAllFromTiers(keys) :
-                singleTierStrategy.getAllFromCache(keys);
+        return strategy.getAll(keys);
     }
 
     /**
      * 存储缓存值
      */
     public void put(K key, V value) {
-        putWithTtl(key, value, getDefaultTtl());
+        strategy.put(key, value);
     }
 
     /**
      * 带TTL存储缓存值
      */
     public void putWithTtl(K key, V value, Duration ttl) {
-        if (key == null || value == null) return;
-
-        if (isMultiTier) {
-            multiTierStrategy.putToAllTiers(key, value, ttl);
-        } else {
-            singleTierStrategy.putToCache(key, value, ttl);
-        }
-
-        log.debug("Cache put: key={}, tiers={}", key, isMultiTier ? "L1+L2" : "L1");
+        strategy.put(key, value, ttl);
+        log.debug("Cache put: key={}, strategy={}", key, strategy.getStrategyName());
     }
 
     /**
      * 批量存储缓存值
      */
     public void putAll(Map<K, V> map) {
-        if (map == null || map.isEmpty()) return;
-
-        if (isMultiTier) {
-            multiTierStrategy.putAllToTiers(map);
-        } else {
-            singleTierStrategy.putAllToCache(map);
-        }
-
-        log.debug("Cache putAll: size={}, tiers={}", map.size(), isMultiTier ? "L1+L2" : "L1");
+        strategy.putAll(map);
+        log.debug("Cache putAll: size={}, strategy={}", map.size(), strategy.getStrategyName());
     }
 
     /**
@@ -170,78 +136,49 @@ public class CacheCore<K, V> {
      * 删除缓存项
      */
     public void evict(K key) {
-        if (key == null) return;
-
-        l1Engine.evict(key);
-        if (isMultiTier) {
-            l2Engine.evict(key);
-        }
-
-        log.debug("Cache evict: key={}, tiers={}", key, isMultiTier ? "L1+L2" : "L1");
+        strategy.evict(key);
     }
 
     /**
      * 批量删除缓存项
      */
     public void evictAll(Set<K> keys) {
-        if (keys == null || keys.isEmpty()) return;
-
-        l1Engine.evictAll(keys);
-        if (isMultiTier) {
-            l2Engine.evictAll(keys);
-        }
-
-        log.debug("Cache evictAll: size={}, tiers={}", keys.size(), isMultiTier ? "L1+L2" : "L1");
+        strategy.evictAll(keys);
     }
 
     /**
      * 清空所有缓存
      */
     public void clear() {
-        l1Engine.clear();
-        if (isMultiTier) {
-            l2Engine.clear();
-        }
-
-        log.debug("Cache cleared: {}, tiers={}", name, isMultiTier ? "L1+L2" : "L1");
+        strategy.clear();
     }
 
     /**
      * 检查是否包含键
      */
     public boolean containsKey(K key) {
-        if (key == null) return false;
-
-        return l1Engine.containsKey(key) ||
-                (isMultiTier && l2Engine.containsKey(key));
+        return strategy.containsKey(key);
     }
 
     /**
      * 获取缓存大小
      */
     public long size() {
-        return isMultiTier ? l2Engine.size() : l1Engine.size();
+        return strategy.size();
     }
 
     /**
      * 获取统计信息
      */
     public CacheStats getStats() {
-        if (isMultiTier) {
-            return new MultiTierStats(l1Engine.getStats(), l2Engine.getStats());
-        } else {
-            return l1Engine.getStats();
-        }
+        return strategy.getStats();
     }
 
     /**
      * 清理缓存
      */
     public void cleanUp() {
-        l1Engine.cleanUp();
-        if (isMultiTier) {
-            l2Engine.cleanUp();
-        }
+        strategy.cleanUp();
     }
 
     // ==================== 分层缓存操作 ====================
