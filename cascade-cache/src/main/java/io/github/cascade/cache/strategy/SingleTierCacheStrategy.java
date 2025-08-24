@@ -4,6 +4,7 @@ import io.github.cascade.cache.api.CacheLoader;
 import io.github.cascade.cache.api.CacheStats;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import io.github.cascade.cache.core.unified.CacheEngine;
+import io.github.cascade.cache.exception.CacheExceptionHandler;
 import io.github.cascade.cache.metrics.CacheMetrics;
 import io.github.cascade.cache.metrics.CachePerformanceMonitor;
 import lombok.Setter;
@@ -25,6 +26,7 @@ public class SingleTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
     private final String cacheName;
     private final CacheEngine<K, V> engine;
     private final CachePerformanceMonitor performanceMonitor;
+    private final CacheExceptionHandler exceptionHandler;
 
     // 配置相关
     @Setter
@@ -38,6 +40,7 @@ public class SingleTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
         this.cacheName = cacheName;
         this.engine = engine;
         this.performanceMonitor = performanceMonitor;
+        this.exceptionHandler = CacheExceptionHandler.getInstance();
     }
 
     // ==================== 核心查询策略 ====================
@@ -107,7 +110,9 @@ public class SingleTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
             }
 
         } catch (Exception e) {
-            log.error("Failed to load from source: key={}, error: {}", key, e.getMessage(), e);
+            // 数据源加载失败属于ERROR级别，这会影响业务数据获取
+            exceptionHandler.handleKnownException("cache-loader", e, 
+                CacheExceptionHandler.ErrorSeverity.ERROR, null);
         }
 
         return null;

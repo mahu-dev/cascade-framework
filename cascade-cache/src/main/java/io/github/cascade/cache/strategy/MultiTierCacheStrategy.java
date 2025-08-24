@@ -4,6 +4,7 @@ import io.github.cascade.cache.api.CacheLoader;
 import io.github.cascade.cache.api.CacheStats;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import io.github.cascade.cache.core.unified.CacheEngine;
+import io.github.cascade.cache.exception.CacheExceptionHandler;
 import io.github.cascade.cache.metrics.CacheMetrics;
 import io.github.cascade.cache.metrics.CachePerformanceMonitor;
 import lombok.Setter;
@@ -32,6 +33,7 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
     private final CacheEngine<K, V> l2Engine;
     private final CachePerformanceMonitor performanceMonitor;
     private final Executor executor;
+    private final CacheExceptionHandler exceptionHandler;
 
     // 配置相关
     @Setter
@@ -49,6 +51,7 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
         this.l2Engine = l2Engine;
         this.performanceMonitor = performanceMonitor;
         this.executor = executor;
+        this.exceptionHandler = CacheExceptionHandler.getInstance();
     }
 
     // ==================== 核心查询策略 ====================
@@ -217,7 +220,9 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
             }
 
         } catch (Exception e) {
-            log.error("Failed to load from source: key={}, error: {}", key, e.getMessage(), e);
+            // 数据源加载失败属于ERROR级别，这会影响业务数据获取
+            exceptionHandler.handleKnownException("cache-loader", e, 
+                CacheExceptionHandler.ErrorSeverity.ERROR, null);
         }
 
         return null;
@@ -272,8 +277,10 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
                     .orTimeout(5, TimeUnit.SECONDS)
                     .join();
         } catch (Exception e) {
-            log.warn("Parallel put timeout or failed: key={}", key, e);
+            // 使用新的异常处理策略 - 并行写入超时或失败属于WARN级别，记录日志但不中断业务流程
             performanceMonitor.recordSyncFailure();
+            exceptionHandler.handleKnownException("parallel-put", e, 
+                CacheExceptionHandler.ErrorSeverity.WARN, null);
         } finally {
             performanceMonitor.recordSyncEnd();
         }
@@ -311,8 +318,10 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
                     .orTimeout(10, java.util.concurrent.TimeUnit.SECONDS)  // 批量操作允许更长超时
                     .join();
         } catch (Exception e) {
-            log.warn("Parallel putAll timeout or failed: size={}", map.size(), e);
+            // 使用新的异常处理策略 - 并行批量写入超时或失败属于WARN级别
             performanceMonitor.recordSyncFailure();
+            exceptionHandler.handleKnownException("parallel-put-all", e, 
+                CacheExceptionHandler.ErrorSeverity.WARN, null);
         } finally {
             performanceMonitor.recordSyncEnd();
         }

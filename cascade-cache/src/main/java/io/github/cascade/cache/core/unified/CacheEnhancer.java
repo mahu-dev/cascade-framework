@@ -147,17 +147,17 @@ public class CacheEnhancer<K, V> {
      */
     public V enhanceLoad(Supplier<V> operation, K key) {
         V value = operation.get();
-        
+
         if (value != null && protectionManager != null) {
             RandomTtlProtection randomTtl = protectionManager.getRandomTtl();
             if (randomTtl != null) {
                 // 返回建议的TTL，由调用方使用
                 Duration suggestedTtl = randomTtl.calculateTtl(key);
-                log.debug("建议TTL: key={}, ttl={}", key, suggestedTtl);
+                log.debug("建议TTL: key={}, ttl={}", key, suggestedTtl.toSeconds());
                 // 这里可以通过上下文或回调的方式传递TTL信息
             }
         }
-        
+
         return value;
     }
 
@@ -184,7 +184,7 @@ public class CacheEnhancer<K, V> {
             if (value != null) {
                 // 这里需要回调到核心缓存进行实际的put操作
                 // 实际实现中可以通过回调函数或事件机制处理
-                
+
                 // 触发分布式同步（针对refresh操作）
                 if (synchronizer != null) {
                     synchronizer.notifyRefresh(key);
@@ -341,9 +341,9 @@ public class CacheEnhancer<K, V> {
      */
     public EnhancerStatus getStatus() {
         return new EnhancerStatus(
-            isProtectionEnabled(),
-            isSynchronizerEnabled(),
-            isRefreshSchedulerEnabled()
+                isProtectionEnabled(),
+                isSynchronizerEnabled(),
+                isRefreshSchedulerEnabled()
         );
     }
 
@@ -376,7 +376,7 @@ public class CacheEnhancer<K, V> {
         @Override
         public String toString() {
             return String.format("EnhancerStatus{protection=%s, sync=%s, refresh=%s}",
-                protectionEnabled, synchronizerEnabled, refreshSchedulerEnabled);
+                    protectionEnabled, synchronizerEnabled, refreshSchedulerEnabled);
         }
     }
 }

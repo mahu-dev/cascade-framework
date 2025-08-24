@@ -5,6 +5,7 @@ import io.github.cascade.cache.api.CacheStats;
 import io.github.cascade.cache.api.CacheTier;
 import io.github.cascade.cache.event.UnifiedCacheEvent;
 import io.github.cascade.cache.metrics.UnifiedMonitoringManager;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
@@ -511,7 +512,9 @@ public class CacheMonitor<K, V> {
     /**
      * 监控报告
      */
+    @Getter
     public static class MonitoringReport {
+        // Getters
         private final String cacheName;
         private final Instant timestamp;
         private final CacheStats overallStats;
@@ -528,31 +531,6 @@ public class CacheMonitor<K, V> {
             this.tieredStats = tieredStats;
             this.healthStatus = healthStatus;
             this.performanceMetrics = performanceMetrics;
-        }
-
-        // Getters
-        public String getCacheName() {
-            return cacheName;
-        }
-
-        public Instant getTimestamp() {
-            return timestamp;
-        }
-
-        public CacheStats getOverallStats() {
-            return overallStats;
-        }
-
-        public Map<CacheTier, CacheStats> getTieredStats() {
-            return tieredStats;
-        }
-
-        public HealthStatus getHealthStatus() {
-            return healthStatus;
-        }
-
-        public PerformanceMetrics getPerformanceMetrics() {
-            return performanceMetrics;
         }
 
         @Override

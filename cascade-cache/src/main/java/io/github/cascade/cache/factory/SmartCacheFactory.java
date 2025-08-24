@@ -49,11 +49,8 @@ public class SmartCacheFactory implements CacheFactory {
             // 1. 准备和验证配置
             config = prepareConfiguration(cacheName, config);
             
-            // 2. 创建并配置构建器
-            UnifiedCacheBuilder<K, V> builder = createConfiguredBuilder(cacheName, config, keyType, valueType);
-            
-            // 3. 构建缓存
-            Cache<K, V> cache = builder.build(config);
+            // 2. 创建缓存
+            Cache<K, V> cache = createConfiguredCache(cacheName, config, keyType, valueType);
             logger.debug("智能缓存 '{}' 创建成功", cacheName);
             return cache;
             
@@ -90,111 +87,34 @@ public class SmartCacheFactory implements CacheFactory {
     }
     
     /**
-     * 创建和配置缓存构建器
+     * 创建和配置缓存
      */
-    private <K, V> UnifiedCacheBuilder<K, V> createConfiguredBuilder(String cacheName,
-                                                                     CascadeCacheConfiguration cacheConfig,
-                                                                     Class<K> keyType,
-                                                                     Class<V> valueType) {
-        UnifiedCacheBuilder<K, V> builder = UnifiedCacheBuilder.newBuilder(cacheName, keyType, valueType);
-        
-        // 设置监控管理器
-        if (monitoringManager != null) {
-            builder = builder.withMonitoringManager(monitoringManager);
+    private <K, V> Cache<K, V> createConfiguredCache(String cacheName,
+                                                     CascadeCacheConfiguration cacheConfig,
+                                                     Class<K> keyType,
+                                                     Class<V> valueType) {
+        // 判断缓存层级配置并使用新的分段构建器
+        if (cacheConfig.getL1().isEnabled() && cacheConfig.getL2().isEnabled() && redissonClient != null) {
+            // L1 + L2 配置
+            return UnifiedCacheBuilder.forCache(cacheName, keyType, valueType)
+                    .withL1AndL2(cacheConfig.getL1(), cacheConfig.getL2(), redissonClient)
+                    .enableProtection(cacheConfig.getProtection())
+                    .enableCacheSync(cacheConfig.getSync())
+                    .enableAutoRefresh(cacheConfig.getRefresh())
+                    .build(cacheConfig);
+        } else if (cacheConfig.getL1().isEnabled()) {
+            // 仅L1配置
+            return UnifiedCacheBuilder.forCache(cacheName, keyType, valueType)
+                    .withL1Only(cacheConfig.getL1())
+                    .enableProtection(cacheConfig.getProtection())
+                    .enableCacheSync(cacheConfig.getSync())
+                    .enableAutoRefresh(cacheConfig.getRefresh())
+                    .build(cacheConfig);
+        } else {
+            throw new IllegalArgumentException("至少需要启用一个缓存层级（L1或L2）");
         }
-        
-        // 应用分层配置
-        builder = configureTiers(builder, cacheConfig);
-        
-        // 应用增强功能配置
-        builder = configureEnhancements(builder, cacheConfig);
-        
-        return builder;
     }
     
-    /**
-     * 配置缓存分层（L1/L2）
-     */
-    private <K, V> UnifiedCacheBuilder<K, V> configureTiers(UnifiedCacheBuilder<K, V> builder,
-                                                            CascadeCacheConfiguration cacheConfig) {
-        // L1配置
-        if (cacheConfig.getL1().isEnabled()) {
-            builder.configL1(cacheConfig.getL1());
-            logger.debug("已启用L1缓存层");
-        }
-        
-        // L2配置
-        if (cacheConfig.getL2().isEnabled() && redissonClient != null) {
-            builder = builder.withRedis(redissonClient);
-            builder.configL2(cacheConfig.getL2());
-            logger.debug("已启用L2缓存层");
-        }
-        return builder;
-    }
-    
-    /**
-     * 配置增强功能（防护、同步等）
-     */
-    private <K, V> UnifiedCacheBuilder<K, V> configureEnhancements(UnifiedCacheBuilder<K, V> builder,
-                                                                   CascadeCacheConfiguration cacheConfig) {
-        // 同步配置
-        if (cacheConfig.getSync().isEnabled()) {
-            builder = builder.withSync();
-            logger.debug("已启用缓存同步");
-        }
-        
-        // 防护配置
-        if (cacheConfig.getProtection().isEnabled()) {
-            builder = configureProtection(builder, cacheConfig.getProtection());
-        }
-        
-        // 自动刷新配置
-        if (cacheConfig.getRefresh().isEnabled()) {
-            builder = builder.withAutoRefresh(cacheConfig.getRefresh().getDefaultRefreshInterval());
-        }
-        
-        // CacheLoader自动发现配置
-        builder = builder.autoDiscoverLoader(true);
-        
-        return builder;
-    }
-    
-    /**
-     * 配置缓存防护功能
-     */
-    private <K, V> UnifiedCacheBuilder<K, V> configureProtection(UnifiedCacheBuilder<K, V> builder,
-                                                                 CascadeCacheConfiguration.ProtectionConfig protectionConfig) {
-        builder = builder.enableProtection(true);
-        logger.debug("已启用缓存防护");
-        
-        // 布隆过滤器
-        if (protectionConfig.getBloomFilter().isEnabled()) {
-            var bloomFilterConfig = protectionConfig.getBloomFilter();
-            builder = builder.bloomFilter(
-                    bloomFilterConfig.getExpectedElements(),
-                    bloomFilterConfig.getFalsePositiveRate()
-            );
-            logger.debug("已配置布隆过滤器: expectedElements={}, fpp={}",
-                    bloomFilterConfig.getExpectedElements(),
-                    bloomFilterConfig.getFalsePositiveRate());
-        }
-        
-        // 随机TTL
-        if (protectionConfig.getRandomTtl().isEnabled()) {
-            var randomTtlConfig = protectionConfig.getRandomTtl();
-            builder = builder.randomTtl(randomTtlConfig);
-            logger.debug("已配置随机TTL防护");
-        }
-        
-        // 分布式锁
-        if (protectionConfig.getDistributedLock().isEnabled()) {
-            var lockConfig = protectionConfig.getDistributedLock();
-            builder.distributedLock(lockConfig);
-            logger.debug("已配置分布式锁防护");
-        }
-        
-        return builder;
-    }
     
     /**
      * 验证缓存配置的合理性

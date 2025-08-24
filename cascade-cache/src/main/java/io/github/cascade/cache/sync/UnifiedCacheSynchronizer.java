@@ -3,6 +3,7 @@ package io.github.cascade.cache.sync;
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.event.UnifiedCacheEvent;
 import io.github.cascade.cache.event.UnifiedEventProcessor;
+import io.github.cascade.cache.exception.CacheExceptionHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,6 +29,7 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
     private final UnifiedEventProcessor eventProcessor;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final SyncStatsImpl stats = new SyncStatsImpl();
+    private final CacheExceptionHandler exceptionHandler;
 
     private Cache<K, V> cache;
 
@@ -36,6 +38,7 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
         this.cacheId = cacheId;
         this.syncManager = syncManager;
         this.eventProcessor = eventProcessor;
+        this.exceptionHandler = CacheExceptionHandler.getInstance();
     }
 
     @Override
@@ -175,8 +178,10 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
             }
 
         } catch (Exception e) {
-            log.error("Error handling sync event: {}", event, e);
+            // 同步事件处理失败属于WARN级别，不应中断整个同步流程
             stats.recordError();
+            exceptionHandler.handleKnownException("sync-event-handling", e, 
+                CacheExceptionHandler.ErrorSeverity.WARN, null);
         }
     }
 
@@ -268,8 +273,10 @@ public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V>, 
             syncManager.publishEvent(event);
             stats.recordSent(System.nanoTime() - startTime);
         } catch (Exception e) {
+            // 同步事件发布失败属于WARN级别，记录统计但不中断业务流程
             stats.recordError();
-            log.error("Failed to publish sync event: {}", event, e);
+            exceptionHandler.handleKnownException("sync-event-publish", e, 
+                CacheExceptionHandler.ErrorSeverity.WARN, null);
         }
     }
 

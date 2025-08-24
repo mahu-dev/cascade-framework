@@ -6,7 +6,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
-import org.springframework.stereotype.Component;
 
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
@@ -19,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * @author Cascade Framework
  */
-@Component
+//@Component
 public class CacheLoaderResolver implements ApplicationContextAware {
 
     private static final Logger log = LoggerFactory.getLogger(CacheLoaderResolver.class);

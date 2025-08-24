@@ -1,7 +1,7 @@
 package io.github.cascade.autoconfigure;
 
 import io.github.cascade.cache.api.CacheManager;
-import io.github.cascade.cache.config.CascadeCacheConfiguration;
+import io.github.cascade.cache.builder.TierConfigurationStep;
 import io.github.cascade.cache.core.unified.UnifiedCacheBuilder;
 import io.github.cascade.cache.manager.CascadeCacheManager;
 import lombok.Getter;
@@ -34,7 +34,6 @@ public class CascadeAutoConfiguration {
     public CascadeCacheManager cascadeCacheManager(CascadeCacheProperties properties,
                                                          ApplicationContext applicationContext) {
         // 从Spring Boot配置属性创建内部配置
-//        CascadeCacheConfiguration defaultConfig = createConfigurationFromProperties(properties);
 
         // 尝试获取RedissonClient
         RedissonClient redissonClient = null;
@@ -47,24 +46,6 @@ public class CascadeAutoConfiguration {
         return new CascadeCacheManager(redissonClient, properties);
     }
 
-    /**
-     * CacheManager Bean - 接口类型，指向CascadeCacheManager
-     */
-//    @Bean
-//    @Primary
-//    @ConditionalOnMissingBean(name = "cacheManager")
-//    public CacheManager cascadeCacheManager(CascadeCacheManager cascadeCacheManager) {
-//        return springBootCacheManager;
-//    }
-
-    /**
-     * 从Spring Boot配置属性转换为内部配置对象
-     */
-    private CascadeCacheConfiguration createConfigurationFromProperties(CascadeCacheProperties properties) {
-        // 使用新的统一配置转换方法
-        // 直接使用 Properties 的 toCascadeCacheConfiguration 方法
-        return properties.toCascadeCacheConfiguration(properties.getDefaultCacheName());
-    }
 
 
     /**
@@ -93,17 +74,31 @@ public class CascadeAutoConfiguration {
         }
 
         /**
-         * 创建缓存构建器
+         * 创建字符串键缓存构建器
          */
-        public <K, V> UnifiedCacheBuilder<K, V> createBuilder(String cacheName) {
-            return new UnifiedCacheBuilder<>(cacheName);
+        public <V> TierConfigurationStep<String, V> stringCache(String cacheName, Class<V> valueType) {
+            return UnifiedCacheBuilder.stringCache(cacheName, valueType);
         }
 
         /**
-         * 创建缓存构建器（使用自定义配置）
+         * 创建长整型键缓存构建器
          */
-        public <K, V> UnifiedCacheBuilder<K, V> createBuilder(String cacheName, CascadeCacheConfiguration config) {
-            return new UnifiedCacheBuilder<>(cacheName);
+        public <V> TierConfigurationStep<Long, V> longCache(String cacheName, Class<V> valueType) {
+            return UnifiedCacheBuilder.longCache(cacheName, valueType);
+        }
+
+        /**
+         * 创建整型键缓存构建器
+         */
+        public <V> TierConfigurationStep<Integer, V> intCache(String cacheName, Class<V> valueType) {
+            return UnifiedCacheBuilder.intCache(cacheName, valueType);
+        }
+
+        /**
+         * 创建通用缓存构建器
+         */
+        public <K, V> TierConfigurationStep<K, V> createBuilder(String cacheName, Class<K> keyType, Class<V> valueType) {
+            return UnifiedCacheBuilder.forCache(cacheName, keyType, valueType);
         }
 
     }
