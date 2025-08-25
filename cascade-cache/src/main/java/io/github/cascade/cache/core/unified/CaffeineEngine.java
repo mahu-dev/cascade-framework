@@ -128,6 +128,18 @@ public class CaffeineEngine<K, V> implements CacheEngine<K, V> {
     }
 
     @Override
+    public boolean putIfAbsent(K key, V value) {
+        if (key == null || value == null) return false;
+        
+        // 利用Caffeine的asMap()提供的原子操作
+        V existing = cache.asMap().putIfAbsent(key, value);
+        boolean inserted = existing == null;
+        
+        log.debug("Cache putIfAbsent: key={}, inserted={}", key, inserted);
+        return inserted;
+    }
+
+    @Override
     public void evict(K key) {
         if (key == null) return;
 

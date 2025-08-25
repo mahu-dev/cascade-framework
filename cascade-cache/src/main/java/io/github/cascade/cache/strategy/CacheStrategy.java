@@ -48,6 +48,16 @@ public interface CacheStrategy<K, V> {
     void putAll(Map<K, V> map);
     
     /**
+     * 如果不存在则存储（原子操作）
+     */
+    boolean putIfAbsent(K key, V value);
+    
+    /**
+     * 如果不存在则存储（原子操作，带TTL）
+     */
+    boolean putIfAbsent(K key, V value, Duration ttl);
+    
+    /**
      * 删除缓存项
      */
     void evict(K key);

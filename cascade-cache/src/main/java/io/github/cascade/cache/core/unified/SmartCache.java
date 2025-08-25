@@ -11,6 +11,7 @@ import io.github.cascade.cache.sync.UnifiedCacheSynchronizer;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -105,11 +106,13 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
     public Map<K, V> getAll(Set<K> keys, Function<Set<K>, Map<K, V>> loader) {
         if (keys == null || keys.isEmpty()) return Map.of();
 
-        Map<K, V> result = getAll(keys);
-        keys.removeAll(result.keySet());
+        // 创建副本避免修改原集合，确保线程安全
+        Set<K> keysCopy = new HashSet<>(keys);
+        Map<K, V> result = getAll(keysCopy);
+        keysCopy.removeAll(result.keySet());
 
-        if (!keys.isEmpty() && loader != null) {
-            Map<K, V> loaded = loader.apply(keys);
+        if (!keysCopy.isEmpty() && loader != null) {
+            Map<K, V> loaded = loader.apply(keysCopy);
             if (loaded != null && !loaded.isEmpty()) {
                 putAll(loaded);
                 result.putAll(loaded);
@@ -122,11 +125,15 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
     @Override
     public Map<K, V> getAllOrLoad(Set<K> keys) throws Exception {
         if (keys == null || keys.isEmpty()) return Map.of();
-        Map<K, V> result = getAll(keys);
-        keys.removeAll(result.keySet());
+        
+        // 创建副本避免修改原集合，确保线程安全
+        Set<K> keysCopy = new HashSet<>(keys);
+        Map<K, V> result = getAll(keysCopy);
+        keysCopy.removeAll(result.keySet());
+        
         CacheLoader<K, V> cacheLoader = core.getCacheLoader();
-        if (!keys.isEmpty() && cacheLoader != null) {
-            Map<K, V> kvMap = cacheLoader.loadAll(keys);
+        if (!keysCopy.isEmpty() && cacheLoader != null) {
+            Map<K, V> kvMap = cacheLoader.loadAll(keysCopy);
             if (kvMap != null && !kvMap.isEmpty()) {
                 putAll(kvMap);
                 result.putAll(kvMap);

@@ -183,6 +183,52 @@ public class RedisEngine<K, V> implements CacheEngine<K, V> {
     }
 
     @Override
+    public boolean putIfAbsent(K key, V value) {
+        if (key == null || value == null) return false;
+        
+        String redisKey = buildRedisKey(key);
+        RBucket<V> bucket = redisson.getBucket(redisKey);
+        
+        // 使用Redisson的trySet提供原子操作
+        boolean inserted;
+        if (config.defaultTtl != null && !config.defaultTtl.isZero()) {
+            inserted = bucket.trySet(value, config.defaultTtl.toMillis(), TimeUnit.MILLISECONDS);
+        } else {
+            inserted = bucket.trySet(value);
+        }
+        
+        if (inserted && config.refreshAfterWrite != null) {
+            writeTimestamps.put(key, Instant.now());
+        }
+        
+        log.debug("Redis putIfAbsent: key={}, inserted={}", key, inserted);
+        return inserted;
+    }
+
+    @Override
+    public boolean putIfAbsent(K key, V value, Duration ttl) {
+        if (key == null || value == null) return false;
+        
+        String redisKey = buildRedisKey(key);
+        RBucket<V> bucket = redisson.getBucket(redisKey);
+        
+        // 使用Redisson的trySet提供原子操作（带TTL）
+        boolean inserted;
+        if (ttl != null && !ttl.isZero()) {
+            inserted = bucket.trySet(value, ttl.toMillis(), TimeUnit.MILLISECONDS);
+        } else {
+            inserted = bucket.trySet(value);
+        }
+        
+        if (inserted && config.refreshAfterWrite != null) {
+            writeTimestamps.put(key, Instant.now());
+        }
+        
+        log.debug("Redis putIfAbsent with TTL: key={}, ttl={}, inserted={}", key, ttl, inserted);
+        return inserted;
+    }
+
+    @Override
     public void evict(K key) {
         if (key == null) return;
 

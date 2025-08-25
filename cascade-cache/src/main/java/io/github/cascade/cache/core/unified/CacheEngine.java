@@ -46,6 +46,28 @@ public interface CacheEngine<K, V> {
     void putAll(Map<K, V> map);
     
     /**
+     * 如果不存在则存储（原子操作）
+     * 
+     * @param key 键
+     * @param value 值
+     * @return true如果值被成功插入，false如果键已存在
+     */
+    boolean putIfAbsent(K key, V value);
+    
+    /**
+     * 如果不存在则存储（原子操作，带TTL）
+     * 
+     * @param key 键
+     * @param value 值
+     * @param ttl 生存时间
+     * @return true如果值被成功插入，false如果键已存在
+     */
+    default boolean putIfAbsent(K key, V value, Duration ttl) {
+        // 默认实现：忽略TTL，使用无TTL版本
+        return putIfAbsent(key, value);
+    }
+    
+    /**
      * 删除键
      */
     void evict(K key);

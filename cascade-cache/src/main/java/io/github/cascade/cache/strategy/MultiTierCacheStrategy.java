@@ -356,6 +356,60 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
     }
 
     @Override
+    public boolean putIfAbsent(K key, V value) {
+        if (key == null || value == null) return false;
+        
+        // 多级缓存的putIfAbsent策略：
+        // 1. 首先在L2层尝试原子插入（权威数据层）
+        // 2. 如果L2插入成功，则异步同步到L1层
+        boolean insertedInL2 = l2Engine.putIfAbsent(key, value);
+        
+        if (insertedInL2) {
+            // L2插入成功，异步同步到L1层（不影响原子性保证）
+            CompletableFuture.runAsync(() -> {
+                try {
+                    l1Engine.putIfAbsent(key, value); // L1也尝试原子插入
+                } catch (Exception e) {
+                    log.warn("Failed to sync putIfAbsent to L1: key={}", key, e);
+                }
+            }, executor);
+        }
+        
+        log.debug("Multi-tier cache putIfAbsent: key={}, inserted={}", key, insertedInL2);
+        return insertedInL2;
+    }
+
+    @Override
+    public boolean putIfAbsent(K key, V value, Duration ttl) {
+        if (key == null || value == null) return false;
+        
+        // 多级缓存的putIfAbsent策略（带TTL）：
+        // 1. 首先在L2层尝试原子插入（权威数据层）
+        // 2. 如果L2插入成功，则异步同步到L1层
+        boolean insertedInL2 = l2Engine.putIfAbsent(key, value, ttl);
+        
+        if (insertedInL2) {
+            // L2插入成功，异步同步到L1层
+            CompletableFuture.runAsync(() -> {
+                try {
+                    // L1层使用更短的TTL或相同的TTL
+                    Duration l1Ttl = getL1PromotionTtl();
+                    if (l1Ttl != null) {
+                        l1Engine.putIfAbsent(key, value, l1Ttl);
+                    } else {
+                        l1Engine.putIfAbsent(key, value, ttl);
+                    }
+                } catch (Exception e) {
+                    log.warn("Failed to sync putIfAbsent to L1: key={}, ttl={}", key, ttl, e);
+                }
+            }, executor);
+        }
+        
+        log.debug("Multi-tier cache putIfAbsent with TTL: key={}, ttl={}, inserted={}", key, ttl, insertedInL2);
+        return insertedInL2;
+    }
+
+    @Override
     public void evict(K key) {
         if (key == null) return;
 

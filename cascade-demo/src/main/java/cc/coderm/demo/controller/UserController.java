@@ -92,6 +92,11 @@ public class UserController {
 
     }
 
+    @GetMapping("test7")
+    public void test7() {
+        User byId = userService.findById("1");
+    }
+
 
     /**
      * 获取用户 - 测试缓存效果

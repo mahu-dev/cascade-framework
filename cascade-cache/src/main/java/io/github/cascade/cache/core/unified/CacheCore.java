@@ -120,17 +120,20 @@ public class CacheCore<K, V> {
     }
 
     /**
-     * 如果不存在则存储
+     * 如果不存在则存储（原子操作）
+     * 修复了原来的race condition问题
      */
     public boolean putIfAbsent(K key, V value) {
         if (key == null || value == null) return false;
+        return strategy.putIfAbsent(key, value);
+    }
 
-        V existing = get(key);
-        if (existing == null) {
-            put(key, value);
-            return true;
-        }
-        return false;
+    /**
+     * 如果不存在则存储（原子操作，带TTL）
+     */
+    public boolean putIfAbsent(K key, V value, Duration ttl) {
+        if (key == null || value == null) return false;
+        return strategy.putIfAbsent(key, value, ttl);
     }
 
     /**

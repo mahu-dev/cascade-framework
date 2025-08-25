@@ -1,6 +1,7 @@
 package cc.coderm.demo.service;
 
 import cc.coderm.demo.model.User;
+import io.github.cascade.cache.annotation.CascadeCacheable;
 import org.springframework.cache.annotation.CacheConfig;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
@@ -38,7 +39,8 @@ public class UserService {
     /**
      * 根据ID查询用户 - 会被缓存
      */
-//    @Cacheable(key = "#id")
+
+    @CascadeCacheable(value = "users", key = "#id")
     public User findById(String id) {
         System.out.println(">>> 从数据库查询用户: " + id);
         // 模拟数据库查询延迟

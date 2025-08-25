@@ -192,6 +192,24 @@ public class SingleTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
     }
 
     @Override
+    public boolean putIfAbsent(K key, V value) {
+        if (key == null || value == null) return false;
+        
+        boolean inserted = engine.putIfAbsent(key, value);
+        log.debug("Single-tier cache putIfAbsent: key={}, inserted={}", key, inserted);
+        return inserted;
+    }
+
+    @Override
+    public boolean putIfAbsent(K key, V value, Duration ttl) {
+        if (key == null || value == null) return false;
+        
+        boolean inserted = engine.putIfAbsent(key, value, ttl);
+        log.debug("Single-tier cache putIfAbsent with TTL: key={}, ttl={}, inserted={}", key, ttl, inserted);
+        return inserted;
+    }
+
+    @Override
     public void evict(K key) {
         if (key == null) return;
 
