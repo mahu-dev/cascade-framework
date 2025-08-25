@@ -6,7 +6,8 @@ import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import io.github.cascade.cache.core.unified.CacheEngine;
 import io.github.cascade.cache.exception.CacheExceptionHandler;
 import io.github.cascade.cache.metrics.CacheMetrics;
-import io.github.cascade.cache.metrics.CachePerformanceMonitor;
+import io.github.cascade.cache.metrics.CacheMetricsCollector;
+import io.github.cascade.cache.metrics.DetailedCacheMetrics;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 
@@ -25,7 +26,7 @@ public class SingleTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
 
     private final String cacheName;
     private final CacheEngine<K, V> engine;
-    private final CachePerformanceMonitor performanceMonitor;
+    private final CacheMetricsCollector metricsCollector;
     private final CacheExceptionHandler exceptionHandler;
 
     // 配置相关
@@ -36,10 +37,10 @@ public class SingleTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
 
     public SingleTierCacheStrategy(String cacheName,
                                    CacheEngine<K, V> engine,
-                                   CachePerformanceMonitor performanceMonitor) {
+                                   CacheMetricsCollector metricsCollector) {
         this.cacheName = cacheName;
         this.engine = engine;
-        this.performanceMonitor = performanceMonitor;
+        this.metricsCollector = metricsCollector;
         this.exceptionHandler = CacheExceptionHandler.getInstance();
     }
 
@@ -55,7 +56,7 @@ public class SingleTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
             // 1. 缓存查询
             V value = engine.get(key);
             if (value != null) {
-                performanceMonitor.recordL1Hit();
+                metricsCollector.recordL1Hit();
                 log.debug("Cache hit: key={}", key);
                 return value;
             }
@@ -67,7 +68,7 @@ public class SingleTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
             }
 
             // 3. 缓存未命中
-            performanceMonitor.recordMiss();
+            metricsCollector.recordMiss();
             log.debug("Cache miss: key={}", key);
             return null;
 
@@ -235,18 +236,18 @@ public class SingleTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
     }
 
     @Override
-    public CacheMetrics.DetailedCacheMetrics getDetailedMetrics() {
-        return performanceMonitor.getDetailedMetrics();
+    public DetailedCacheMetrics getDetailedMetrics() {
+        return metricsCollector.getStats();
     }
 
     @Override
     public CacheMetrics.CacheHealthStatus getHealthStatus() {
-        return performanceMonitor.getHealthStatus();
+        return metricsCollector.getHealthStatus();
     }
 
     @Override
     public void resetPerformanceStats() {
-        performanceMonitor.resetPerformanceStats();
+        metricsCollector.reset();
     }
 
     @Override

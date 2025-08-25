@@ -3,6 +3,7 @@ package io.github.cascade.cache.core.unified;
 import io.github.cascade.api.HealthStatus;
 import io.github.cascade.cache.api.*;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
+import io.github.cascade.cache.metrics.CacheMonitor;
 import io.github.cascade.cache.metrics.UnifiedMonitoringManager;
 import io.github.cascade.cache.protection.SimplifiedCacheProtectionManager;
 import io.github.cascade.cache.refresh.CacheRefreshScheduler;
@@ -475,6 +476,9 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
             V cachedValue = core.get(key);
             if (cachedValue != null) {
                 monitor.recordHit(key);
+                // 关键修改：无论数据来自L1还是L2，都要确保启用自动刷新
+                enhancer.enableAutoRefresh(key);
+                log.debug("缓存命中，已启用自动刷新: key={}", key);
                 return cachedValue;
             }
 

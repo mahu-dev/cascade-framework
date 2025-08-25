@@ -4,6 +4,7 @@ import io.github.cascade.cache.api.CacheLoader;
 import io.github.cascade.cache.api.CacheStats;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import io.github.cascade.cache.metrics.CacheMetrics;
+import io.github.cascade.cache.metrics.DetailedCacheMetrics;
 
 import java.time.Duration;
 import java.util.Map;
@@ -98,7 +99,7 @@ public interface CacheStrategy<K, V> {
     /**
      * 获取详细的缓存性能指标
      */
-    CacheMetrics.DetailedCacheMetrics getDetailedMetrics();
+    DetailedCacheMetrics getDetailedMetrics();
     
     /**
      * 获取缓存健康状态

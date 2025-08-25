@@ -1,10 +1,10 @@
-package io.github.cascade.cache.core.unified;
+package io.github.cascade.cache.metrics;
 
 import io.github.cascade.api.HealthStatus;
 import io.github.cascade.cache.api.CacheStats;
 import io.github.cascade.cache.api.CacheTier;
+import io.github.cascade.cache.core.unified.CacheCore;
 import io.github.cascade.cache.event.UnifiedCacheEvent;
-import io.github.cascade.cache.metrics.UnifiedMonitoringManager;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
@@ -33,17 +33,10 @@ public class CacheMonitor<K, V> {
     private final Executor executor;
     private final UnifiedMonitoringManager monitoringManager;
 
-    // 统计计数器
-    private final LongAdder hitCount = new LongAdder();
-    private final LongAdder missCount = new LongAdder();
-    private final LongAdder loadCount = new LongAdder();
-    private final LongAdder loadSuccessCount = new LongAdder();
-    private final LongAdder loadFailureCount = new LongAdder();
-    private final AtomicLong totalLoadTime = new AtomicLong(0);
-
-    // 操作统计
-    private final LongAdder putCount = new LongAdder();
-    private final LongAdder evictCount = new LongAdder();
+    // 核心指标收集器
+    private final CacheMetricsCollector metricsCollector;
+    
+    // 刷新统计（CacheMonitor 特有功能）
     private final LongAdder refreshCount = new LongAdder();
 
     // 健康状态相关
@@ -60,6 +53,7 @@ public class CacheMonitor<K, V> {
         this.cacheCore = cacheCore;
         this.executor = executor;
         this.monitoringManager = monitoringManager;
+        this.metricsCollector = new CacheMetricsCollector(cacheName, cacheCore.isMultiTier());
     }
 
     // ==================== 操作监控 ====================
@@ -68,7 +62,7 @@ public class CacheMonitor<K, V> {
      * 记录缓存命中
      */
     public void recordHit(K key) {
-        hitCount.increment();
+        metricsCollector.recordHit();
         log.trace("缓存命中: cache={}, key={}", cacheName, key);
 
         // 发布监控事件
@@ -79,7 +73,7 @@ public class CacheMonitor<K, V> {
      * 记录缓存未命中
      */
     public void recordMiss(K key) {
-        missCount.increment();
+        metricsCollector.recordMiss();
         log.trace("缓存未命中: cache={}, key={}", cacheName, key);
 
         // 发布监控事件
@@ -87,19 +81,10 @@ public class CacheMonitor<K, V> {
     }
 
     /**
-     * 记录数据加载开始
-     */
-    public void recordLoadStart(K key) {
-        loadCount.increment();
-        log.trace("开始加载数据: cache={}, key={}", cacheName, key);
-    }
-
-    /**
      * 记录数据加载成功
      */
     public void recordLoadSuccess(K key, Duration loadTime) {
-        loadSuccessCount.increment();
-        totalLoadTime.addAndGet(loadTime.toMillis());
+        metricsCollector.recordLoad(loadTime.toNanos(), true);
         log.trace("数据加载成功: cache={}, key={}, loadTime={}", cacheName, key, loadTime);
 
         // 发布监控事件
@@ -110,8 +95,7 @@ public class CacheMonitor<K, V> {
      * 记录数据加载失败
      */
     public void recordLoadFailure(K key, Duration loadTime, Throwable exception) {
-        loadFailureCount.increment();
-        totalLoadTime.addAndGet(loadTime.toMillis());
+        metricsCollector.recordLoad(loadTime.toNanos(), false);
         log.debug("数据加载失败: cache={}, key={}, loadTime={}, error={}",
                 cacheName, key, loadTime, exception.getMessage());
 
@@ -123,7 +107,7 @@ public class CacheMonitor<K, V> {
      * 记录缓存写入
      */
     public void recordPut(K key, V value) {
-        putCount.increment();
+        metricsCollector.recordPut();
         log.trace("缓存写入: cache={}, key={}", cacheName, key);
 
         // 发布监控事件
@@ -134,7 +118,7 @@ public class CacheMonitor<K, V> {
      * 记录缓存删除
      */
     public void recordEvict(K key) {
-        evictCount.increment();
+        metricsCollector.recordEviction();
         log.trace("缓存删除: cache={}, key={}", cacheName, key);
 
         // 发布监控事件
@@ -278,40 +262,37 @@ public class CacheMonitor<K, V> {
      * 获取命中率
      */
     public double getHitRate() {
-        long hits = hitCount.sum();
-        long misses = missCount.sum();
-        long total = hits + misses;
-        return total == 0 ? 0.0 : (double) hits / total;
+        DetailedCacheMetrics metrics = metricsCollector.getStats();
+        return metrics.getHitRate();
     }
 
     /**
      * 获取错误率
      */
     public double getErrorRate() {
-        long totalLoads = loadCount.sum();
-        long failures = loadFailureCount.sum();
-        return totalLoads == 0 ? 0.0 : (double) failures / totalLoads;
+        DetailedCacheMetrics metrics = metricsCollector.getStats();
+        return metrics.getLoadExceptionRate();
     }
 
     /**
      * 获取平均加载时间
      */
     public double getAverageLoadTime() {
-        long totalLoads = loadCount.sum();
-        long totalTime = totalLoadTime.get();
-        return totalLoads == 0 ? 0.0 : (double) totalTime / totalLoads;
+        DetailedCacheMetrics metrics = metricsCollector.getStats();
+        return metrics.getAverageLoadTimeMillis();
     }
 
     /**
      * 获取性能指标
      */
     public PerformanceMetrics getPerformanceMetrics() {
+        DetailedCacheMetrics metrics = metricsCollector.getStats();
         return new PerformanceMetrics(
-                getHitRate(),
-                getErrorRate(),
-                getAverageLoadTime(),
-                putCount.sum(),
-                evictCount.sum(),
+                metrics.getHitRate(),
+                metrics.getLoadExceptionRate(),
+                metrics.getAverageLoadTimeMillis(),
+                metrics.getPutCount(),
+                metrics.getEvictionCount(),
                 refreshCount.sum()
         );
     }
@@ -359,14 +340,7 @@ public class CacheMonitor<K, V> {
      * 重置所有统计信息
      */
     public void resetStats() {
-        hitCount.reset();
-        missCount.reset();
-        loadCount.reset();
-        loadSuccessCount.reset();
-        loadFailureCount.reset();
-        totalLoadTime.set(0);
-        putCount.reset();
-        evictCount.reset();
+        metricsCollector.reset();
         refreshCount.reset();
 
         log.info("统计信息已重置: cache={}", cacheName);
@@ -381,12 +355,14 @@ public class CacheMonitor<K, V> {
 
         @Override
         public long hitCount() {
-            return CacheMonitor.this.hitCount.sum();
+            DetailedCacheMetrics metrics = metricsCollector.getStats();
+            return metrics.getHitCount();
         }
 
         @Override
         public long missCount() {
-            return CacheMonitor.this.missCount.sum();
+            DetailedCacheMetrics metrics = metricsCollector.getStats();
+            return metrics.getMissCount();
         }
 
         @Override
@@ -401,7 +377,8 @@ public class CacheMonitor<K, V> {
 
         @Override
         public long loadCount() {
-            return CacheMonitor.this.loadCount.sum();
+            DetailedCacheMetrics metrics = metricsCollector.getStats();
+            return metrics.getLoadCount();
         }
 
         @Override
@@ -411,7 +388,8 @@ public class CacheMonitor<K, V> {
 
         @Override
         public long evictionCount() {
-            return CacheMonitor.this.evictCount.sum();
+            DetailedCacheMetrics metrics = metricsCollector.getStats();
+            return metrics.getEvictionCount();
         }
 
         @Override
@@ -427,12 +405,14 @@ public class CacheMonitor<K, V> {
 
         @Override
         public long loadExceptionCount() {
-            return CacheMonitor.this.loadFailureCount.sum();
+            DetailedCacheMetrics metrics = metricsCollector.getStats();
+            return metrics.getLoadExceptionCount();
         }
 
         @Override
         public long totalLoadTime() {
-            return CacheMonitor.this.totalLoadTime.get();
+            DetailedCacheMetrics metrics = metricsCollector.getStats();
+            return (long) (metrics.getTotalLoadTime() / 1_000_000); // 转换为毫秒
         }
 
         @Override

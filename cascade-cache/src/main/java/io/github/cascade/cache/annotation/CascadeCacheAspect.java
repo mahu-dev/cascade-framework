@@ -61,7 +61,8 @@ public class CascadeCacheAspect {
         }
 
         // 获取缓存
-        Cache<String, Object> cache = cacheManager.getCache(cacheNames[0]);
+//        Cache<String, Object> cache = cacheManager.getCache(cacheNames[0]);
+        Cache<String, Object> cache = cacheManager.getOrCreateCache(cacheNames[0], Object.class);
 
         // 尝试从缓存获取
         long startTime = System.currentTimeMillis();

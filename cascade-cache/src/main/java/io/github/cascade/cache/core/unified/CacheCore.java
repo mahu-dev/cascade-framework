@@ -5,7 +5,8 @@ import io.github.cascade.cache.api.CacheStats;
 import io.github.cascade.cache.api.CacheTier;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import io.github.cascade.cache.metrics.CacheMetrics;
-import io.github.cascade.cache.metrics.CachePerformanceMonitor;
+import io.github.cascade.cache.metrics.CacheMetricsCollector;
+import io.github.cascade.cache.metrics.DetailedCacheMetrics;
 import io.github.cascade.cache.strategy.CacheStrategy;
 import io.github.cascade.cache.strategy.MultiTierCacheStrategy;
 import io.github.cascade.cache.strategy.SingleTierCacheStrategy;
@@ -43,7 +44,7 @@ public class CacheCore<K, V> {
     private final CacheStrategy<K, V> strategy;
 
     // 性能监控
-    private final CachePerformanceMonitor performanceMonitor;
+    private final CacheMetricsCollector metricsCollector;
 
     @Getter
     @Setter
@@ -59,12 +60,12 @@ public class CacheCore<K, V> {
         this.isMultiTier = l2Engine != null;
 
         // 初始化性能监控
-        this.performanceMonitor = new CachePerformanceMonitor(name, isMultiTier);
+        this.metricsCollector = new CacheMetricsCollector(name, isMultiTier);
 
         // 初始化统一策略
         this.strategy = isMultiTier 
-            ? new MultiTierCacheStrategy<>(name, l1Engine, l2Engine, performanceMonitor, executor)
-            : new SingleTierCacheStrategy<>(name, l1Engine, performanceMonitor);
+            ? new MultiTierCacheStrategy<>(name, l1Engine, l2Engine, metricsCollector, executor)
+            : new SingleTierCacheStrategy<>(name, l1Engine, metricsCollector);
     }
 
     // ==================== 配置设置 ====================
@@ -319,22 +320,22 @@ public class CacheCore<K, V> {
     /**
      * 获取详细的缓存性能指标
      */
-    public CacheMetrics.DetailedCacheMetrics getDetailedMetrics() {
-        return performanceMonitor.getDetailedMetrics();
+    public DetailedCacheMetrics getDetailedMetrics() {
+        return metricsCollector.getStats();
     }
 
     /**
      * 获取缓存健康状态
      */
     public CacheMetrics.CacheHealthStatus getHealthStatus() {
-        return performanceMonitor.getHealthStatus();
+        return metricsCollector.getHealthStatus();
     }
 
     /**
      * 重置性能监控统计
      */
     public void resetPerformanceStats() {
-        performanceMonitor.resetPerformanceStats();
+        metricsCollector.reset();
     }
 
     // ==================== 辅助方法 ====================

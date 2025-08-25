@@ -102,29 +102,27 @@ public class CacheExceptionHandler {
     /**
      * 内部异常处理逻辑
      */
-    @SuppressWarnings("unchecked")
-    private <T> T handleExceptionInternal(String operation, Exception e, 
+    private <T> T handleExceptionInternal(String operation, Exception e,
                                          ErrorSeverity severity, T fallbackValue) {
-        switch (severity) {
-            case IGNORE:
+        return switch (severity) {
+            case IGNORE -> {
                 log.debug("Cache operation '{}' failed (ignored): {}", operation, e.getMessage());
-                return fallbackValue;
-                
-            case WARN:
+                yield fallbackValue;
+            }
+            case WARN -> {
                 log.warn("Cache operation '{}' failed: {}", operation, e.getMessage());
-                return fallbackValue;
-                
-            case ERROR:
+                yield fallbackValue;
+            }
+            case ERROR -> {
                 log.error("Cache operation '{}' failed: {}", operation, e.getMessage(), e);
                 throw new CacheOperationException(operation, e);
-                
-            case FATAL:
+            }
+            case FATAL -> {
                 log.error("Fatal error in cache operation '{}'", operation, e);
                 throw new CacheFatalException(operation, e);
-                
-            default:
-                throw new IllegalArgumentException("Unknown error severity: " + severity);
-        }
+            }
+            default -> throw new IllegalArgumentException("Unknown error severity: " + severity);
+        };
     }
 
     /**

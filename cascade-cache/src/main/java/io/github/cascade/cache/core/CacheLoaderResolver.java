@@ -18,7 +18,6 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * @author Cascade Framework
  */
-//@Component
 public class CacheLoaderResolver implements ApplicationContextAware {
 
     private static final Logger log = LoggerFactory.getLogger(CacheLoaderResolver.class);

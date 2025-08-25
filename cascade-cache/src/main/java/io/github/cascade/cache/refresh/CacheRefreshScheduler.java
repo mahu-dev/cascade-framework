@@ -113,6 +113,7 @@ public class CacheRefreshScheduler<K, V> {
                 refreshInterval.toMillis(),
                 TimeUnit.MILLISECONDS
         );
+        log.info("Scheduled refresh for key {} in {}", key, refreshInterval.toMillis());
 
         scheduledRefreshes.put(key, future);
 

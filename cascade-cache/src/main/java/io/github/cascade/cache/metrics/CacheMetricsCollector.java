@@ -3,6 +3,7 @@ package io.github.cascade.cache.metrics;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -10,16 +11,20 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
+import lombok.Getter;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * 缓存指标收集器
- * 收集和统计缓存的各种性能指标
+ * 收集和统计缓存的各种性能指标，包含多级缓存特性
  *
  * @author Cascade Framework
  */
+@Slf4j
 public class CacheMetricsCollector {
 
     private final String cacheName;
+    private final boolean isMultiTier;
     private final Set<MetricsListener> listeners;
     private final ReadWriteLock lock;
     
@@ -51,8 +56,28 @@ public class CacheMetricsCollector {
     // 启动时间
     private final Instant startTime;
 
+    // 多级缓存特有指标
+    private final AtomicLong l1HitCount = new AtomicLong(0);
+    private final AtomicLong l2HitCount = new AtomicLong(0);
+    private final AtomicLong promotionCount = new AtomicLong(0);
+    private final AtomicLong promotionFailureCount = new AtomicLong(0);
+    
+    // 并行同步统计
+    private final AtomicLong parallelSyncCount = new AtomicLong(0);
+    private final AtomicLong syncFailureCount = new AtomicLong(0);
+    private final AtomicInteger activeSyncTasks = new AtomicInteger(0);
+    
+    // 防重复提升机制
+    @Getter
+    private final ConcurrentHashMap<Object, Boolean> promotingKeys = new ConcurrentHashMap<>();
+
     public CacheMetricsCollector(String cacheName) {
+        this(cacheName, false);
+    }
+    
+    public CacheMetricsCollector(String cacheName, boolean isMultiTier) {
         this.cacheName = cacheName;
+        this.isMultiTier = isMultiTier;
         this.listeners = new CopyOnWriteArraySet<>();
         this.lock = new ReentrantReadWriteLock();
         
@@ -234,8 +259,138 @@ public class CacheMetricsCollector {
             
             tierMetrics.clear();
             timeWindowMetrics.reset();
+            
+            // 重置多级缓存特有指标
+            l1HitCount.set(0);
+            l2HitCount.set(0);
+            promotionCount.set(0);
+            promotionFailureCount.set(0);
+            parallelSyncCount.set(0);
+            syncFailureCount.set(0);
+            promotingKeys.clear();
+            // 不重置activeSyncTasks，因为它表示当前活跃任务数
         } finally {
             lock.writeLock().unlock();
+        }
+        log.info("Metrics reset for cache: {}", cacheName);
+    }
+    
+    // ==================== 多级缓存特有方法 ====================
+    
+    /**
+     * 记录L1缓存命中
+     */
+    public void recordL1Hit() {
+        l1HitCount.incrementAndGet();
+        recordHit(); // 同时记录总命中
+    }
+    
+    /**
+     * 记录L2缓存命中
+     */
+    public void recordL2Hit() {
+        l2HitCount.incrementAndGet();
+        recordHit(); // 同时记录总命中
+    }
+    
+    /**
+     * 记录数据提升成功
+     */
+    public void recordPromotionSuccess() {
+        promotionCount.incrementAndGet();
+    }
+    
+    /**
+     * 记录数据提升失败
+     */
+    public void recordPromotionFailure() {
+        promotionFailureCount.incrementAndGet();
+    }
+    
+    /**
+     * 记录并行同步开始
+     */
+    public void recordSyncStart() {
+        parallelSyncCount.incrementAndGet();
+        activeSyncTasks.incrementAndGet();
+    }
+    
+    /**
+     * 记录并行同步结束
+     */
+    public void recordSyncEnd() {
+        activeSyncTasks.decrementAndGet();
+    }
+    
+    /**
+     * 记录同步失败
+     */
+    public void recordSyncFailure() {
+        syncFailureCount.incrementAndGet();
+    }
+    
+    /**
+     * 尝试开始数据提升
+     */
+    public boolean tryStartPromotion(Object key) {
+        return promotingKeys.putIfAbsent(key, Boolean.TRUE) == null;
+    }
+    
+    /**
+     * 完成数据提升
+     */
+    public void finishPromotion(Object key) {
+        promotingKeys.remove(key);
+    }
+    
+    /**
+     * 获取并行同步统计信息
+     */
+    public CacheMetrics.ParallelSyncStats getParallelSyncStats() {
+        return new CacheMetrics.ParallelSyncStats(
+                parallelSyncCount.get(),
+                syncFailureCount.get(),
+                activeSyncTasks.get(),
+                isMultiTier
+        );
+    }
+    
+    /**
+     * 获取缓存健康状态
+     */
+    public CacheMetrics.CacheHealthStatus getHealthStatus() {
+        // 计算命中率
+        long totalRequests = l1HitCount.get() + l2HitCount.get() + missCount.sum();
+        double hitRate = totalRequests > 0 ? 
+                (double) (l1HitCount.get() + l2HitCount.get()) / totalRequests : 0.0;
+        
+        // 计算提升成功率
+        long totalPromotions = promotionCount.get() + promotionFailureCount.get();
+        double promotionSuccessRate = totalPromotions > 0 ? 
+                (double) promotionCount.get() / totalPromotions : 1.0;
+        
+        // 判断健康状态
+        CacheMetrics.CacheHealthLevel healthLevel = determineHealthLevel(hitRate, promotionSuccessRate);
+        
+        return new CacheMetrics.CacheHealthStatus(
+                cacheName,
+                healthLevel,
+                hitRate,
+                promotionSuccessRate,
+                activeSyncTasks.get(),
+                System.currentTimeMillis()
+        );
+    }
+    
+    private CacheMetrics.CacheHealthLevel determineHealthLevel(double hitRate, double promotionSuccessRate) {
+        if (hitRate >= 0.9 && promotionSuccessRate >= 0.95) {
+            return CacheMetrics.CacheHealthLevel.EXCELLENT;
+        } else if (hitRate >= 0.75 && promotionSuccessRate >= 0.85) {
+            return CacheMetrics.CacheHealthLevel.GOOD;
+        } else if (hitRate >= 0.5 && promotionSuccessRate >= 0.7) {
+            return CacheMetrics.CacheHealthLevel.FAIR;
+        } else {
+            return CacheMetrics.CacheHealthLevel.POOR;
         }
     }
 

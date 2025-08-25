@@ -9,63 +9,6 @@ import lombok.Getter;
  */
 public class CacheMetrics {
 
-    /**
-     * 详细的缓存性能指标
-     */
-    @Getter
-    public static class DetailedCacheMetrics {
-        private final String cacheName;
-        private final boolean multiTier;
-        private final long l1HitCount;
-        private final long l2HitCount;
-        private final long missCount;
-        private final long promotionCount;
-        private final long promotionFailureCount;
-        private final long syncFailureCount;
-        private final int activeSyncTasks;
-        private final long timestamp;
-
-        public DetailedCacheMetrics(String cacheName, boolean multiTier, long l1HitCount, 
-                                   long l2HitCount, long missCount, long promotionCount,
-                                   long promotionFailureCount, long syncFailureCount, 
-                                   int activeSyncTasks, long timestamp) {
-            this.cacheName = cacheName;
-            this.multiTier = multiTier;
-            this.l1HitCount = l1HitCount;
-            this.l2HitCount = l2HitCount;
-            this.missCount = missCount;
-            this.promotionCount = promotionCount;
-            this.promotionFailureCount = promotionFailureCount;
-            this.syncFailureCount = syncFailureCount;
-            this.activeSyncTasks = activeSyncTasks;
-            this.timestamp = timestamp;
-        }
-
-        public long getTotalRequests() {
-            return l1HitCount + l2HitCount + missCount;
-        }
-
-        public double getHitRate() {
-            long total = getTotalRequests();
-            return total > 0 ? (double) (l1HitCount + l2HitCount) / total : 0.0;
-        }
-
-        public double getPromotionSuccessRate() {
-            long totalPromotions = promotionCount + promotionFailureCount;
-            return totalPromotions > 0 ? (double) promotionCount / totalPromotions : 1.0;
-        }
-
-        @Override
-        public String toString() {
-            return String.format(
-                    "DetailedCacheMetrics{cache='%s', multiTier=%s, l1Hits=%d, l2Hits=%d, " +
-                            "misses=%d, hitRate=%.2f%%, promotions=%d/%d, syncFailures=%d, active=%d}",
-                    cacheName, multiTier, l1HitCount, l2HitCount, missCount, 
-                    getHitRate() * 100, promotionCount, promotionCount + promotionFailureCount,
-                    syncFailureCount, activeSyncTasks
-            );
-        }
-    }
 
     /**
      * 并行同步统计信息

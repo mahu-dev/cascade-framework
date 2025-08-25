@@ -6,7 +6,8 @@ import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import io.github.cascade.cache.core.unified.CacheEngine;
 import io.github.cascade.cache.exception.CacheExceptionHandler;
 import io.github.cascade.cache.metrics.CacheMetrics;
-import io.github.cascade.cache.metrics.CachePerformanceMonitor;
+import io.github.cascade.cache.metrics.CacheMetricsCollector;
+import io.github.cascade.cache.metrics.DetailedCacheMetrics;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 
@@ -31,7 +32,7 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
     private final String cacheName;
     private final CacheEngine<K, V> l1Engine;
     private final CacheEngine<K, V> l2Engine;
-    private final CachePerformanceMonitor performanceMonitor;
+    private final CacheMetricsCollector metricsCollector;
     private final Executor executor;
     private final CacheExceptionHandler exceptionHandler;
 
@@ -44,12 +45,12 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
     public MultiTierCacheStrategy(String cacheName,
                                   CacheEngine<K, V> l1Engine,
                                   CacheEngine<K, V> l2Engine,
-                                  CachePerformanceMonitor performanceMonitor,
+                                  CacheMetricsCollector metricsCollector,
                                   Executor executor) {
         this.cacheName = cacheName;
         this.l1Engine = l1Engine;
         this.l2Engine = l2Engine;
-        this.performanceMonitor = performanceMonitor;
+        this.metricsCollector = metricsCollector;
         this.executor = executor;
         this.exceptionHandler = CacheExceptionHandler.getInstance();
     }
@@ -66,7 +67,7 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
             // 1. L1缓存查询
             V value = l1Engine.get(key);
             if (value != null) {
-                performanceMonitor.recordL1Hit();
+                metricsCollector.recordL1Hit();
                 log.debug("Cache L1 hit: key={}", key);
                 return value;
             }
@@ -74,7 +75,7 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
             // 2. L2缓存查询
             value = l2Engine.get(key);
             if (value != null) {
-                performanceMonitor.recordL2Hit();
+                metricsCollector.recordL2Hit();
                 log.debug("Cache L2 hit: key={}", key);
 
                 // 智能异步提升到L1
@@ -90,7 +91,7 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
             }
 
             // 4. 缓存未命中
-            performanceMonitor.recordMiss();
+            metricsCollector.recordMiss();
             log.debug("Cache miss: key={}", key);
             return null;
 
@@ -128,7 +129,7 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
                         log.debug("Async batch promotion to L1 completed: size={}", l2Results.size());
                     } catch (Exception e) {
                         log.warn("Async batch promotion to L1 failed: size={}", l2Results.size(), e);
-                        performanceMonitor.recordSyncFailure();
+                        metricsCollector.recordSyncFailure();
                     }
                 }, executor);
             }
@@ -144,7 +145,7 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
      */
     private void tryPromoteToL1(K key, V value) {
         // 防重复提升检查
-        if (!performanceMonitor.tryStartPromotion(key)) {
+        if (!metricsCollector.tryStartPromotion(key)) {
             log.debug("Skipping promotion - already in progress: key={}", key);
             return;
         }
@@ -159,22 +160,22 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
                             l1Engine.put(key, finalValue);
                         }
 
-                        performanceMonitor.recordPromotionSuccess();
+                        metricsCollector.recordPromotionSuccess();
                         log.debug("Async promotion to L1 completed: key={}", key);
 
                     } catch (Exception e) {
-                        performanceMonitor.recordPromotionFailure();
-                        performanceMonitor.recordSyncFailure();
+                        metricsCollector.recordPromotionFailure();
+                        metricsCollector.recordSyncFailure();
                         log.warn("Async promotion to L1 failed: key={}, error: {}", key, e.getMessage());
 
                     } finally {
                         // 清理防重复提升标记
-                        performanceMonitor.finishPromotion(key);
+                        metricsCollector.finishPromotion(key);
                     }
                 }, executor).orTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
                 .exceptionally(throwable -> {
-                    performanceMonitor.finishPromotion(key);
-                    performanceMonitor.recordPromotionFailure();
+                    metricsCollector.finishPromotion(key);
+                    metricsCollector.recordPromotionFailure();
                     log.warn("Async promotion timeout for key: {}", key);
                     return null;
                 });
@@ -251,14 +252,14 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
      * 向所有层级写入数据
      */
     public void putToAllTiers(K key, V value, Duration ttl) {
-        performanceMonitor.recordSyncStart();
+        metricsCollector.recordSyncStart();
 
         CompletableFuture<Void> l1Future = CompletableFuture.runAsync(() -> {
             try {
                 l1Engine.put(key, value, ttl);
             } catch (Exception e) {
                 log.warn("L1 put failed: key={}", key, e);
-                performanceMonitor.recordSyncFailure();
+                metricsCollector.recordSyncFailure();
             }
         }, executor);
 
@@ -267,7 +268,7 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
                 l2Engine.put(key, value, ttl);
             } catch (Exception e) {
                 log.warn("L2 put failed: key={}", key, e);
-                performanceMonitor.recordSyncFailure();
+                metricsCollector.recordSyncFailure();
             }
         }, executor);
 
@@ -278,11 +279,11 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
                     .join();
         } catch (Exception e) {
             // 使用新的异常处理策略 - 并行写入超时或失败属于WARN级别，记录日志但不中断业务流程
-            performanceMonitor.recordSyncFailure();
+            metricsCollector.recordSyncFailure();
             exceptionHandler.handleKnownException("parallel-put", e, 
                 CacheExceptionHandler.ErrorSeverity.WARN, null);
         } finally {
-            performanceMonitor.recordSyncEnd();
+            metricsCollector.recordSyncEnd();
         }
     }
 
@@ -292,14 +293,14 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
     public void putAllToTiers(Map<K, V> map) {
         if (map == null || map.isEmpty()) return;
 
-        performanceMonitor.recordSyncStart();
+        metricsCollector.recordSyncStart();
 
         CompletableFuture<Void> l1Future = CompletableFuture.runAsync(() -> {
             try {
                 l1Engine.putAll(map);
             } catch (Exception e) {
                 log.warn("L1 putAll failed: size={}", map.size(), e);
-                performanceMonitor.recordSyncFailure();
+                metricsCollector.recordSyncFailure();
             }
         }, executor);
 
@@ -308,7 +309,7 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
                 l2Engine.putAll(map);
             } catch (Exception e) {
                 log.warn("L2 putAll failed: size={}", map.size(), e);
-                performanceMonitor.recordSyncFailure();
+                metricsCollector.recordSyncFailure();
             }
         }, executor);
 
@@ -319,11 +320,11 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
                     .join();
         } catch (Exception e) {
             // 使用新的异常处理策略 - 并行批量写入超时或失败属于WARN级别
-            performanceMonitor.recordSyncFailure();
+            metricsCollector.recordSyncFailure();
             exceptionHandler.handleKnownException("parallel-put-all", e, 
                 CacheExceptionHandler.ErrorSeverity.WARN, null);
         } finally {
-            performanceMonitor.recordSyncEnd();
+            metricsCollector.recordSyncEnd();
         }
     }
 
@@ -407,18 +408,18 @@ public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
     }
 
     @Override
-    public CacheMetrics.DetailedCacheMetrics getDetailedMetrics() {
-        return performanceMonitor.getDetailedMetrics();
+    public DetailedCacheMetrics getDetailedMetrics() {
+        return metricsCollector.getStats();
     }
 
     @Override
     public CacheMetrics.CacheHealthStatus getHealthStatus() {
-        return performanceMonitor.getHealthStatus();
+        return metricsCollector.getHealthStatus();
     }
 
     @Override
     public void resetPerformanceStats() {
-        performanceMonitor.resetPerformanceStats();
+        metricsCollector.reset();
     }
 
     @Override
