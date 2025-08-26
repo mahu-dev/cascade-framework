@@ -1,7 +1,6 @@
 package io.github.cascade.cache.annotation.processor;
 
 import io.github.cascade.cache.annotation.CascadeCacheRefresh;
-import io.github.cascade.cache.annotation.CascadeCacheable;
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheLoader;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
@@ -43,58 +42,9 @@ public class AnnotationRefreshSchedulerManager {
         this.loaderRegistry = loaderRegistry;
     }
     
-    /**
-     * 为带有刷新功能的缓存创建调度器
-     */
-    public void createRefreshScheduler(String cacheName, Cache<Object, Object> cache, 
-                                     CascadeCacheable annotation, Method method, Object[] args) {
-        if (!annotation.enableAutoRefresh()) {
-            return;
-        }
-        
-        try {
-            RefreshConfiguration config = buildRefreshConfiguration(annotation, method, args);
-            refreshConfigs.put(cacheName, config);
-            
-            CacheLoader<Object, Object> loader = resolveLoader(annotation, cacheName);
-            if (loader == null) {
-                log.warn("No cache loader found for cache '{}', skipping refresh scheduler creation", cacheName);
-                return;
-            }
-            
-            Duration refreshInterval = config.getRefreshInterval();
-            if (refreshInterval == null) {
-                log.warn("No refresh interval configured for cache '{}', using default 10 minutes", cacheName);
-                refreshInterval = Duration.ofMinutes(10);
-            }
-            
-            CacheRefreshScheduler.RefreshConfig schedulerConfig = buildSchedulerConfig(config);
-            
-            CacheRefreshScheduler<Object, Object> scheduler = new CacheRefreshScheduler<>(
-                    (key, value) -> {
-                        try {
-                            cache.put(key, value);
-                            log.debug("Refreshed cache value for key '{}' in cache '{}'", key, cacheName);
-                        } catch (Exception e) {
-                            log.warn("Failed to update cache '{}' with refreshed value for key '{}': {}", 
-                                    cacheName, key, e.getMessage());
-                        }
-                    },
-                    loader,
-                    refreshInterval,
-                    schedulerConfig
-            );
-            
-            schedulers.put(cacheName, scheduler);
-            log.info("Created refresh scheduler for cache '{}' with interval {}", cacheName, refreshInterval);
-            
-        } catch (Exception e) {
-            log.error("Failed to create refresh scheduler for cache '{}': {}", cacheName, e.getMessage(), e);
-        }
-    }
     
     /**
-     * 为@CascadeCacheRefresh注解创建专用刷新调度器
+     * 为@CascadeCacheRefresh注解创建刷新调度器
      */
     public void createRefreshScheduler(String cacheName, Cache<Object, Object> cache,
                                      CascadeCacheRefresh annotation, Method method, Object[] args) {
@@ -114,7 +64,7 @@ public class AnnotationRefreshSchedulerManager {
                 refreshInterval = parseSpelDuration(annotation.refreshInterval(), method, args);
             }
             
-            CacheRefreshScheduler.RefreshConfig schedulerConfig = buildSchedulerConfig(config);
+            CacheRefreshScheduler.RefreshConfig schedulerConfig = buildSchedulerConfig();
             
             CacheRefreshScheduler<Object, Object> scheduler = new CacheRefreshScheduler<>(
                     (key, value) -> {
@@ -189,55 +139,9 @@ public class AnnotationRefreshSchedulerManager {
         return schedulers.get(cacheName);
     }
     
-    /**
-     * 构建刷新配置（从@CascadeCacheable）
-     */
-    private RefreshConfiguration buildRefreshConfiguration(CascadeCacheable annotation, Method method, Object[] args) {
-        RefreshConfiguration config = new RefreshConfiguration();
-        
-        if (StringUtils.hasText(annotation.refreshInterval())) {
-            config.setRefreshInterval(parseSpelDuration(annotation.refreshInterval(), method, args));
-        }
-        
-        if (StringUtils.hasText(annotation.minRefreshInterval())) {
-            config.setMinRefreshInterval(parseSpelDuration(annotation.minRefreshInterval(), method, args));
-        }
-        
-        if (StringUtils.hasText(annotation.maxRefreshInterval())) {
-            config.setMaxRefreshInterval(parseSpelDuration(annotation.maxRefreshInterval(), method, args));
-        }
-        
-        config.setAllowConcurrentRefresh(annotation.allowConcurrentRefresh());
-        
-        if (StringUtils.hasText(annotation.refreshTimeout())) {
-            config.setRefreshTimeout(parseSpelDuration(annotation.refreshTimeout(), method, args));
-        }
-        
-        if (annotation.refreshMaxRetries() > 0) {
-            config.setMaxRetries(annotation.refreshMaxRetries());
-        }
-        
-        if (StringUtils.hasText(annotation.refreshRetryInterval())) {
-            config.setRetryInterval(parseSpelDuration(annotation.refreshRetryInterval(), method, args));
-        }
-        
-        config.setEnablePreload(annotation.enablePreload());
-        
-        if (annotation.preloadBatchSize() > 0) {
-            config.setPreloadBatchSize(annotation.preloadBatchSize());
-        }
-        
-        if (annotation.preloadConcurrency() > 0) {
-            config.setPreloadConcurrency(annotation.preloadConcurrency());
-        }
-        
-        config.setLoaderName(annotation.loader());
-        
-        return config;
-    }
     
     /**
-     * 构建刷新配置（从@CascadeCacheRefresh）
+     * 构建刷新配置
      */
     private RefreshConfiguration buildRefreshConfiguration(CascadeCacheRefresh annotation, Method method, Object[] args) {
         RefreshConfiguration config = new RefreshConfiguration();
@@ -277,40 +181,15 @@ public class AnnotationRefreshSchedulerManager {
     /**
      * 构建调度器配置
      */
-    private CacheRefreshScheduler.RefreshConfig buildSchedulerConfig(RefreshConfiguration config) {
-        CacheRefreshScheduler.RefreshConfig schedulerConfig = CacheRefreshScheduler.RefreshConfig.defaultConfig();
-        
+    private CacheRefreshScheduler.RefreshConfig buildSchedulerConfig() {
         // 可以在这里根据需要自定义调度器配置
         // 例如线程池大小、队列容量等
-        
-        return schedulerConfig;
+        return CacheRefreshScheduler.RefreshConfig.defaultConfig();
     }
     
-    /**
-     * 解析加载器（从@CascadeCacheable）
-     */
-    private CacheLoader<Object, Object> resolveLoader(CascadeCacheable annotation, String cacheName) {
-        if (StringUtils.hasText(annotation.loader())) {
-            // 优先使用指定的加载器
-            CacheLoader<Object, Object> loader = loaderRegistry.getLoader(annotation.loader());
-            if (loader != null) {
-                return loader;
-            }
-            
-            // 尝试从Spring容器获取
-            try {
-                return applicationContext.getBean(annotation.loader(), CacheLoader.class);
-            } catch (Exception e) {
-                log.warn("Failed to get loader bean '{}': {}", annotation.loader(), e.getMessage());
-            }
-        }
-        
-        // 尝试根据缓存名称查找
-        return loaderRegistry.getLoaderForCache(cacheName);
-    }
     
     /**
-     * 解析加载器（从@CascadeCacheRefresh）
+     * 解析加载器
      */
     private CacheLoader<Object, Object> resolveLoader(CascadeCacheRefresh annotation, String cacheName) {
         if (StringUtils.hasText(annotation.loader())) {
@@ -350,12 +229,12 @@ public class AnnotationRefreshSchedulerManager {
                 Expression spelExpression = parser.parseExpression(expression);
                 Object value = spelExpression.getValue(context);
                 
-                if (value instanceof Duration) {
-                    return (Duration) value;
-                } else if (value instanceof String) {
-                    return Duration.parse((String) value);
-                } else if (value instanceof Number) {
-                    return Duration.ofSeconds(((Number) value).longValue());
+                if (value instanceof Duration duration) {
+                    return duration;
+                } else if (value instanceof String string) {
+                    return Duration.parse(string);
+                } else if (value instanceof Number number) {
+                    return Duration.ofSeconds(number.longValue());
                 }
             } catch (Exception spelException) {
                 log.warn("Failed to parse duration expression '{}': {}", expression, spelException.getMessage());

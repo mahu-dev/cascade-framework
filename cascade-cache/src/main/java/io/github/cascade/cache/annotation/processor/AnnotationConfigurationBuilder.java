@@ -60,8 +60,7 @@ public class AnnotationConfigurationBuilder {
         // 构建监控配置
         buildMonitoringConfig(config, annotation, method, args);
         
-        // 构建刷新配置
-        buildRefreshConfig(config, annotation, method, args);
+        // 注意：刷新配置现在由@CascadeCacheRefresh注解单独处理
         
         log.debug("Built configuration for cache '{}' from annotation", cacheName);
         return config;
@@ -361,66 +360,6 @@ public class AnnotationConfigurationBuilder {
         }
     }
     
-    /**
-     * 构建刷新配置
-     */
-    private void buildRefreshConfig(CascadeCacheConfiguration config, CascadeCacheable annotation,
-                                  Method method, Object[] args) {
-        CascadeCacheConfiguration.RefreshConfig refreshConfig = config.getRefresh();
-        
-        refreshConfig.setEnabled(annotation.enableAutoRefresh());
-        
-        if (StringUtils.hasText(annotation.refreshInterval())) {
-            Duration interval = parseSpelDuration(annotation.refreshInterval(), method, args);
-            refreshConfig.setDefaultRefreshInterval(interval);
-        }
-        
-        if (StringUtils.hasText(annotation.minRefreshInterval())) {
-            Duration minInterval = parseSpelDuration(annotation.minRefreshInterval(), method, args);
-            refreshConfig.setMinRefreshInterval(minInterval);
-        }
-        
-        if (StringUtils.hasText(annotation.maxRefreshInterval())) {
-            Duration maxInterval = parseSpelDuration(annotation.maxRefreshInterval(), method, args);
-            refreshConfig.setMaxRefreshInterval(maxInterval);
-        }
-        
-        if (annotation.refreshThreadPoolSize() > 0) {
-            refreshConfig.setThreadPoolSize(annotation.refreshThreadPoolSize());
-        }
-        
-        if (annotation.refreshQueueCapacity() > 0) {
-            refreshConfig.setQueueCapacity(annotation.refreshQueueCapacity());
-        }
-        
-        refreshConfig.setAllowConcurrentRefresh(annotation.allowConcurrentRefresh());
-        
-        if (StringUtils.hasText(annotation.refreshTimeout())) {
-            Duration timeout = parseSpelDuration(annotation.refreshTimeout(), method, args);
-            refreshConfig.setRefreshTimeout(timeout);
-        }
-        
-        if (annotation.refreshMaxRetries() > 0) {
-            refreshConfig.setMaxRetries(annotation.refreshMaxRetries());
-        }
-        
-        if (StringUtils.hasText(annotation.refreshRetryInterval())) {
-            Duration retryInterval = parseSpelDuration(annotation.refreshRetryInterval(), method, args);
-            refreshConfig.setRetryInterval(retryInterval);
-        }
-        
-        // 预加载配置
-        CascadeCacheConfiguration.RefreshConfig.PreloadConfig preloadConfig = refreshConfig.getPreload();
-        preloadConfig.setEnabled(annotation.enablePreload());
-        
-        if (annotation.preloadBatchSize() > 0) {
-            preloadConfig.setBatchSize(annotation.preloadBatchSize());
-        }
-        
-        if (annotation.preloadConcurrency() > 0) {
-            preloadConfig.setConcurrency(annotation.preloadConcurrency());
-        }
-    }
     
     /**
      * 获取缓存名称

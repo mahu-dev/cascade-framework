@@ -1,7 +1,10 @@
 package cc.coderm.demo.service;
 
 import cc.coderm.demo.model.User;
+import io.github.cascade.cache.annotation.CascadeCachePut;
+import io.github.cascade.cache.annotation.CascadeCacheRefresh;
 import io.github.cascade.cache.annotation.CascadeCacheable;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.cache.annotation.CacheConfig;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
@@ -20,6 +23,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * Time: 11:27
  * =============================
  */
+@Slf4j
 @Service
 @CacheConfig(cacheNames = "users")  // 指定默认缓存名称
 public class UserService {
@@ -30,26 +34,50 @@ public class UserService {
 
     // 初始化一些测试数据
     public UserService() {
-        userDatabase.put("1", new User("张三", "zhangsan@example.com", 25));
-        userDatabase.put("2", new User("李四", "lisi@example.com", 30));
-        userDatabase.put("3", new User("王五", "wangwu@example.com", 28));
+        userDatabase.put("1", new User(1L, "张三", "zhangsan@example.com", 25));
+        userDatabase.put("2", new User(2L, "李四", "lisi@example.com", 30));
+        userDatabase.put("3", new User(3L, "王五", "wangwu@example.com", 28));
         nextId = 4L;
     }
 
     /**
      * 根据ID查询用户 - 会被缓存
      */
-
-    @CascadeCacheable(value = "users", key = "#id")
+    @CascadeCacheable(
+            value = "users",
+            key = "#id",
+            enableL1 = true,
+            enableL2 = true,
+            ttl = "PT30M",
+            loader = "userCacheLoader"
+    )
+    @CascadeCacheRefresh(
+            value = "users",
+            refreshInterval = "PT10M",
+            loader = "userCacheLoader"
+    )
     public User findById(String id) {
-        System.out.println(">>> 从数据库查询用户: " + id);
+        log.info(">>> 从数据库查询用户(缓存方法): {}", id);
+        return loadUserDirectFromDatabase(id);
+    }
+
+    /**
+     * 直接从数据库加载用户（不经过缓存）
+     * 供CacheLoader使用，避免循环调用
+     */
+    public User loadUserDirectFromDatabase(String id) {
+        log.info(">>> 直接从数据库加载用户: {}", id);
+
         // 模拟数据库查询延迟
         try {
             Thread.sleep(1000);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        return userDatabase.get(id);
+
+        User user = userDatabase.get(id);
+        log.info("<<< 从数据库返回用户: {}", user);
+        return user;
     }
 
     /**
@@ -132,5 +160,10 @@ public class UserService {
         //     .enableL2Cache(true, redissonClient)
         //     .enableProtection(true)
         //     .build();
+    }
+
+    @CascadeCachePut(value = "users", key = "#id")
+    public User updateById(String id) {
+        return userDatabase.get(id);
     }
 }

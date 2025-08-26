@@ -20,7 +20,11 @@
             <groupId>cc.coderm</groupId>
             <artifactId>cascade-core</artifactId>
         </dependency>
-        
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
         <!-- Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

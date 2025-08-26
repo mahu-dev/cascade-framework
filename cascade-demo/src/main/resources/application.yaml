@@ -58,27 +58,19 @@ cascade:
   # L2缓存配置（Redis缓存）
   l2:
     enabled: true
-    keyPrefix: "myapp:cache:"
-    defaultTtlSeconds: 600        # 1小时
-    refreshAfterWriteSeconds: 300 # 30分钟
+    keyPrefix: "cascade:cache:"
+    defaultTtlSeconds: 600        # 30分钟
+    refreshAfterWriteSeconds: 300   # 10分钟
     enableBatch: true
     batchSize: 50
     serializer: "json"
     timeoutSeconds: 10
-    redis:
-      host: "localhost"
-      port: 6379
-      password: "your_redis_password"
-      database: 2
-      timeoutSeconds: 5
-      maxTotal: 20
-      maxIdle: 10
-      minIdle: 2
+    # 使用Redisson配置，不需要重复配置Redis连接
 
   # 同步配置（多实例缓存同步）
   sync:
     enabled: true
-    topic: "myapp:cache:sync"
+    topic: "cascade:cache:sync"
     timeoutSeconds: 3
     async: true
 
@@ -100,7 +92,7 @@ cascade:
       waitTimeoutSeconds: 15
       maxRetries: 5
       retryDelayMillis: 200
-      keyPrefix: "myapp:lock:"
+      keyPrefix: "cascade:lock:"
 
   # 监控配置
   monitoring:

@@ -39,19 +39,22 @@ public class AnnotationTestExample {
     }
     
     /**
-     * 启用自动刷新的缓存
+     * 基本缓存功能测试（不含刷新）
      */
     @CascadeCacheable(
         value = "productCache",
         key = "#productId",
-        enableAutoRefresh = true,
-        refreshInterval = "PT10M",
-        allowConcurrentRefresh = false,
         loader = "productCacheLoader",
         enableL1 = true,
         enableL2 = true,
         l1MaximumSize = 1000,
         l2DefaultTtl = "PT1H"
+    )
+    @CascadeCacheRefresh(
+        value = "productCache",
+        refreshInterval = "PT10M",
+        allowConcurrentRefresh = false,
+        loader = "productCacheLoader"
     )
     public ProductInfo getProductInfo(String productId) {
         log.info("Loading product info for productId: {}", productId);

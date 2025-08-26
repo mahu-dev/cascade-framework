@@ -10,6 +10,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.experimental.Accessors;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.util.ObjectUtils;
 
 import java.time.Duration;
 import java.util.Map;
@@ -75,8 +76,9 @@ public class CaffeineEngine<K, V> implements CacheEngine<K, V> {
 
     @Override
     public V get(K key) {
-        if (key == null) return null;
-
+        if (ObjectUtils.isEmpty(key)) {
+            return null;
+        }
         V value;
         if (useLoadingCache) {
             // 使用LoadingCache的自动加载功能
@@ -130,11 +132,11 @@ public class CaffeineEngine<K, V> implements CacheEngine<K, V> {
     @Override
     public boolean putIfAbsent(K key, V value) {
         if (key == null || value == null) return false;
-        
+
         // 利用Caffeine的asMap()提供的原子操作
         V existing = cache.asMap().putIfAbsent(key, value);
         boolean inserted = existing == null;
-        
+
         log.debug("Cache putIfAbsent: key={}, inserted={}", key, inserted);
         return inserted;
     }

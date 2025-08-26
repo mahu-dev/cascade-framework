@@ -93,8 +93,15 @@ public class UserController {
     }
 
     @GetMapping("test7")
-    public void test7() {
+    public User test7() {
         User byId = userService.findById("1");
+        return byId;
+    }
+
+    @GetMapping("test8")
+    public User test8() {
+        User byId = userService.updateById("1");
+        return byId;
     }
 
 

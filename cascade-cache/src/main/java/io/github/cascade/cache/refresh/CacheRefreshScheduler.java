@@ -308,6 +308,17 @@ public class CacheRefreshScheduler<K, V> {
         try {
             ThreadPoolExecutor threadPool = dynamicExecutor;
 
+            // 检查最小调整间隔 - 防止频繁调整
+            Instant now = Instant.now();
+            Duration timeSinceLastAdjustment = Duration.between(lastAdjustment, now);
+            if (timeSinceLastAdjustment.compareTo(config.getMinAdjustmentInterval()) < 0) {
+                log.trace("Skipping thread pool adjustment - minimum interval not reached. " +
+                        "Time since last: {}s, Required: {}s", 
+                        timeSinceLastAdjustment.toSeconds(), 
+                        config.getMinAdjustmentInterval().toSeconds());
+                return;
+            }
+
             int currentCoreSize = threadPool.getCorePoolSize();
             int currentMaxSize = threadPool.getMaximumPoolSize();
             int activeThreads = threadPool.getActiveCount();
@@ -320,20 +331,33 @@ public class CacheRefreshScheduler<K, V> {
             double loadFactor = (double) (activeThreads + queueSize) / currentMaxSize;
 
             // 调整策略
-            int newCoreSize = calculateOptimalCoreSize(activeThreads, queueSize, loadFactor, successRate);
+            int newCoreSize = calculateOptimalCoreSize(activeThreads, loadFactor, successRate);
             int newMaxSize = calculateOptimalMaxSize(newCoreSize, loadFactor);
 
-            // 应用调整
-            if (newCoreSize != currentCoreSize || newMaxSize != currentMaxSize) {
-                threadPool.setCorePoolSize(newCoreSize);
-                threadPool.setMaximumPoolSize(newMaxSize);
+            // 应用调整 - 增加显著变化阈值检查
+            if (shouldAdjustThreadPool(currentCoreSize, newCoreSize, currentMaxSize, newMaxSize)) {
+                // 线程池调整需要注意顺序：先调整较大的值，避免违反 core <= max 的约束
+                if (newMaxSize > currentMaxSize) {
+                    // 增加最大线程数：先设置max，再设置core
+                    threadPool.setMaximumPoolSize(newMaxSize);
+                    threadPool.setCorePoolSize(newCoreSize);
+                } else {
+                    // 减少最大线程数：先设置core，再设置max
+                    threadPool.setCorePoolSize(newCoreSize);
+                    threadPool.setMaximumPoolSize(newMaxSize);
+                }
 
-                lastAdjustment = Instant.now();
+                lastAdjustment = now;
 
-                log.info("Adjusted thread pool size - Core: {} -> {}, Max: {} -> {}, " +
+                log.debug("Adjusted thread pool size - Core: {} -> {}, Max: {} -> {}, " +
                                 "Load: {}, Success Rate: {}%, Active: {}, Queue: {}",
                         currentCoreSize, newCoreSize, currentMaxSize, newMaxSize,
-                        loadFactor, successRate * 100, activeThreads, queueSize);
+                        String.format("%.2f", loadFactor), String.format("%.1f", successRate * 100), 
+                        activeThreads, queueSize);
+            } else {
+                log.trace("Thread pool adjustment skipped - change not significant enough. " +
+                        "Core: {} -> {}, Max: {} -> {}", 
+                        currentCoreSize, newCoreSize, currentMaxSize, newMaxSize);
             }
 
         } catch (Exception e) {
@@ -342,9 +366,31 @@ public class CacheRefreshScheduler<K, V> {
     }
 
     /**
+     * 检查是否应该调整线程池 - 只有显著变化时才调整
+     */
+    private boolean shouldAdjustThreadPool(int currentCore, int newCore, int currentMax, int newMax) {
+        // 核心线程数变化阈值
+        int coreChange = Math.abs(newCore - currentCore);
+        double coreChangeRatio = currentCore > 0 ? (double) coreChange / currentCore : 0;
+        
+        // 最大线程数变化阈值
+        int maxChange = Math.abs(newMax - currentMax);
+        double maxChangeRatio = currentMax > 0 ? (double) maxChange / currentMax : 0;
+        
+        // 只有在变化超过阈值时才调整
+        boolean significantCoreChange = coreChange >= config.getMinCorePoolSizeChange() || 
+                                       coreChangeRatio >= config.getMinCorePoolSizeChangeRatio();
+        
+        boolean significantMaxChange = maxChange >= config.getMinMaxPoolSizeChange() || 
+                                      maxChangeRatio >= config.getMinMaxPoolSizeChangeRatio();
+        
+        return significantCoreChange || significantMaxChange;
+    }
+
+    /**
      * 计算最优核心线程数
      */
-    private int calculateOptimalCoreSize(int activeThreads, int queueSize, double loadFactor, double successRate) {
+    private int calculateOptimalCoreSize(int activeThreads, double loadFactor, double successRate) {
         int currentCore = dynamicExecutor.getCorePoolSize();
 
         // 高负载且成功率高：增加核心线程
@@ -442,7 +488,7 @@ public class CacheRefreshScheduler<K, V> {
      */
     @Getter
     public static class RefreshConfig {
-        // Getters and setters
+        // 线程池基础配置
         private int corePoolSize = 2;
         private int maxPoolSize = 8;
         private int queueCapacity = 100;
@@ -453,6 +499,13 @@ public class CacheRefreshScheduler<K, V> {
         private double highLoadThreshold = 0.8;
         private double lowLoadThreshold = 0.3;
         private double successThreshold = 0.9;
+        
+        // 防止频繁调整的配置
+        private Duration minAdjustmentInterval = Duration.ofSeconds(30); // 最小调整间隔
+        private int minCorePoolSizeChange = 1; // 核心线程数最小变化值
+        private double minCorePoolSizeChangeRatio = 0.25; // 核心线程数最小变化比例 (25%)
+        private int minMaxPoolSizeChange = 1; // 最大线程数最小变化值  
+        private double minMaxPoolSizeChangeRatio = 0.20; // 最大线程数最小变化比例 (20%)
 
         public static RefreshConfig defaultConfig() {
             return new RefreshConfig();

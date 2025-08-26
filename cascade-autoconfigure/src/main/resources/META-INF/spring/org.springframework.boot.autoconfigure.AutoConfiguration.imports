@@ -2,3 +2,4 @@ io.github.cascade.autoconfigure.CascadeAutoConfiguration
 # Temporarily disabled due to missing dependencies:
 # io.github.cascade.autoconfigure.CascadeEventAutoConfiguration
 io.github.cascade.autoconfigure.loader.CacheLoaderResolverAutoConfiguration
+io.github.cascade.autoconfigure.annotation.CascadeCacheAnnotationAutoConfiguration

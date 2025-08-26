@@ -6,17 +6,20 @@ import io.github.cascade.cache.annotation.processor.CacheLoaderRegistry;
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheLoader;
 import io.github.cascade.cache.api.CacheManager;
-import io.github.cascade.cache.core.CacheLoaderResolver;
-import io.github.cascade.cache.core.unified.UnifiedCacheBuilder;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
+import io.github.cascade.cache.core.CacheLoaderResolver;
 import io.github.cascade.cache.core.unified.SmartCache;
+import io.github.cascade.cache.core.unified.UnifiedCacheBuilder;
 import io.github.cascade.cache.event.UnifiedCacheEvent;
 import io.github.cascade.cache.event.UnifiedEventProcessor;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
 import org.springframework.core.annotation.Order;
@@ -25,12 +28,10 @@ import org.springframework.expression.Expression;
 import org.springframework.expression.ExpressionParser;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
 import org.springframework.expression.spel.support.StandardEvaluationContext;
-import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
-import jakarta.annotation.PostConstruct;
-import jakarta.annotation.PreDestroy;
 import java.lang.reflect.Method;
+import java.lang.reflect.Parameter;
 import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -40,12 +41,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * - 基础缓存操作：@CascadeCacheable, @CascadeCacheEvict, @CascadeCachePut
  * - 高级功能：定时刷新、CacheLoader集成、多级缓存、防护机制
  * - 配置式功能对等：与配置式缓存提供完全一致的功能特性
- * 
+ *
  * @author cascade
  */
 @Slf4j
 @Aspect
-@Component
 @Order(0) // 确保在其他切面之前执行
 public class CascadeCacheAspect {
 
@@ -54,21 +54,21 @@ public class CascadeCacheAspect {
     private final UnifiedEventProcessor eventProcessor;
     private final CacheLoaderResolver cacheLoaderResolver;
     private final ExpressionParser parser = new SpelExpressionParser();
-    
+
     // 注解处理组件
     private AnnotationConfigurationBuilder configurationBuilder;
     private CacheLoaderRegistry loaderRegistry;
     private AnnotationRefreshSchedulerManager refreshSchedulerManager;
-    
+
     // 缓存实例管理
     private final ConcurrentHashMap<String, Cache<Object, Object>> annotationCaches = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, CascadeCacheConfiguration> cacheConfigurations = new ConcurrentHashMap<>();
 
     @Autowired
     public CascadeCacheAspect(ApplicationContext applicationContext,
-                             CacheManager cacheManager,
-                             UnifiedEventProcessor eventProcessor,
-                             CacheLoaderResolver cacheLoaderResolver) {
+                              CacheManager cacheManager,
+                              UnifiedEventProcessor eventProcessor,
+                              CacheLoaderResolver cacheLoaderResolver) {
         this.applicationContext = applicationContext;
         this.cacheManager = cacheManager;
         this.eventProcessor = eventProcessor;
@@ -78,26 +78,26 @@ public class CascadeCacheAspect {
     @PostConstruct
     public void initialize() {
         log.info("Initializing Cascade Cache Aspect");
-        
+
         // 初始化注解处理组件
         this.configurationBuilder = new AnnotationConfigurationBuilder(applicationContext);
         this.loaderRegistry = new CacheLoaderRegistry(applicationContext, cacheLoaderResolver);
         this.refreshSchedulerManager = new AnnotationRefreshSchedulerManager(applicationContext, loaderRegistry);
-        
+
         log.info("Cascade Cache Aspect initialized successfully");
     }
 
     @PreDestroy
     public void destroy() {
         log.info("Shutting down Cascade Cache Aspect");
-        
+
         if (refreshSchedulerManager != null) {
             refreshSchedulerManager.shutdown();
         }
-        
+
         annotationCaches.clear();
         cacheConfigurations.clear();
-        
+
         log.info("Cascade Cache Aspect shutdown completed");
     }
 
@@ -106,6 +106,7 @@ public class CascadeCacheAspect {
      */
     @Around("@annotation(cascadeCacheable)")
     public Object handleCacheable(ProceedingJoinPoint joinPoint, CascadeCacheable cascadeCacheable) throws Throwable {
+        log.info(">>> CascadeCacheAspect.handleCacheable 被调用: {}", joinPoint.getSignature());
         Method method = ((MethodSignature) joinPoint.getSignature()).getMethod();
         Object[] args = joinPoint.getArgs();
 
@@ -116,12 +117,12 @@ public class CascadeCacheAspect {
         }
 
         String primaryCacheName = cacheNames[0];
-        
+
         // 生成缓存键
         String cacheKey = generateKey(cascadeCacheable.key(), cascadeCacheable.keyGenerator(), method, args);
 
         // 检查条件
-        if (!evaluateCondition(cascadeCacheable.condition(), method, args, null)) {
+        if (evaluateCondition(cascadeCacheable.condition(), method, args, null)) {
             return joinPoint.proceed();
         }
 
@@ -129,9 +130,10 @@ public class CascadeCacheAspect {
         Cache<Object, Object> cache = getOrCreateEnhancedCache(primaryCacheName, cascadeCacheable, method, args);
 
         long startTime = System.currentTimeMillis();
-        
+
         // 尝试从缓存获取
         Object cachedValue = cache.get(cacheKey);
+        log.debug("从缓存 = {} 中获取 key =  {},结果 = {}", cache, cacheKey, cachedValue);
         long duration = System.currentTimeMillis() - startTime;
 
         if (cachedValue != null) {
@@ -139,14 +141,15 @@ public class CascadeCacheAspect {
             eventProcessor.publishEvent(UnifiedCacheEvent.hit(primaryCacheName, cacheKey, cachedValue, Duration.ofMillis(duration)));
 
             // 检查unless条件
-            if (!evaluateCondition(cascadeCacheable.unless(), method, args, cachedValue)) {
-                // 如果启用了刷新调度，则调度刷新任务
-                if (cascadeCacheable.enableAutoRefresh()) {
-                    refreshSchedulerManager.scheduleRefresh(primaryCacheName, cacheKey);
-                }
-                
-                log.debug("Cache hit for key '{}' in cache '{}'", cacheKey, primaryCacheName);
+            boolean unlessResult = evaluateCondition(cascadeCacheable.unless(), method, args, cachedValue);
+            log.debug("缓存命中后检查unless条件: unless='{}', 结果={}, 缓存值={}",
+                    cascadeCacheable.unless(), unlessResult, cachedValue);
+
+            if (!unlessResult) {
+                log.debug("Cache hit for key '{}' in cache '{}', 返回缓存值", cacheKey, primaryCacheName);
                 return cachedValue;
+            } else {
+                log.debug("缓存命中但unless条件为true，继续执行方法");
             }
         } else {
             // 缓存未命中
@@ -171,27 +174,21 @@ public class CascadeCacheAspect {
         // 缓存结果
         if (result != null && !evaluateCondition(cascadeCacheable.unless(), method, args, result)) {
             long putStartTime = System.currentTimeMillis();
-            
+
             try {
-                putToCache(cache, cacheKey, result, cascadeCacheable, method, args);
-                
+                putToCache(cache, cacheKey, result, cascadeCacheable);
+
                 long putDuration = System.currentTimeMillis() - putStartTime;
                 eventProcessor.publishEvent(UnifiedCacheEvent.builder(primaryCacheName, UnifiedCacheEvent.Type.PUT)
-                    .key(cacheKey)
-                    .value(result)
-                    .duration(Duration.ofMillis(putDuration))
-                    .success(true)
-                    .build());
+                        .key(cacheKey)
+                        .value(result)
+                        .duration(Duration.ofMillis(putDuration))
+                        .success(true)
+                        .build());
 
-                // 如果启用了刷新调度，则调度刷新任务
-                if (cascadeCacheable.enableAutoRefresh()) {
-                    refreshSchedulerManager.scheduleRefresh(primaryCacheName, cacheKey);
-                }
-                
                 log.debug("Cached result for key '{}' in cache '{}'", cacheKey, primaryCacheName);
-                
+
             } catch (Exception e) {
-                long putDuration = System.currentTimeMillis() - putStartTime;
                 eventProcessor.publishEvent(UnifiedCacheEvent.error(primaryCacheName, e));
                 log.warn("Failed to cache result for key '{}' in cache '{}': {}", cacheKey, primaryCacheName, e.getMessage());
                 // 不抛出异常，允许方法正常返回
@@ -216,20 +213,20 @@ public class CascadeCacheAspect {
         }
 
         String primaryCacheName = cacheNames[0];
-        
+
         // 检查条件
-        if (!evaluateCondition(cacheRefresh.condition(), method, args, null)) {
+        if (evaluateCondition(cacheRefresh.condition(), method, args, null)) {
             return joinPoint.proceed();
         }
 
         // 获取缓存
         Cache<Object, Object> cache = cacheManager.getOrCreateCache(primaryCacheName, Object.class, Object.class);
-        
+
         // 创建刷新调度器
         refreshSchedulerManager.createRefreshScheduler(primaryCacheName, cache, cacheRefresh, method, args);
-        
+
         log.info("Configured refresh scheduler for cache '{}'", primaryCacheName);
-        
+
         return joinPoint.proceed();
     }
 
@@ -248,7 +245,7 @@ public class CascadeCacheAspect {
         }
 
         // 检查条件
-        if (!evaluateCondition(cascadeCacheEvict.condition(), method, args, null)) {
+        if (evaluateCondition(cascadeCacheEvict.condition(), method, args, null)) {
             return joinPoint.proceed();
         }
 
@@ -280,6 +277,7 @@ public class CascadeCacheAspect {
      */
     @Around("@annotation(cascadeCachePut)")
     public Object handleCachePut(ProceedingJoinPoint joinPoint, CascadeCachePut cascadeCachePut) throws Throwable {
+        log.debug("处理@CascadeCachePut注解 - 增强版本");
         Method method = ((MethodSignature) joinPoint.getSignature()).getMethod();
         Object[] args = joinPoint.getArgs();
 
@@ -290,7 +288,7 @@ public class CascadeCacheAspect {
         }
 
         // 检查条件
-        if (!evaluateCondition(cascadeCachePut.condition(), method, args, null)) {
+        if (evaluateCondition(cascadeCachePut.condition(), method, args, null)) {
             return joinPoint.proceed();
         }
 
@@ -300,11 +298,12 @@ public class CascadeCacheAspect {
         // 更新缓存
         if (result != null && !evaluateCondition(cascadeCachePut.unless(), method, args, result)) {
             String cacheKey = generateKey(cascadeCachePut.key(), cascadeCachePut.keyGenerator(), method, args);
-
+            log.debug("生成缓存key{}", cacheKey);
             for (String cacheName : cacheNames) {
                 Cache<Object, Object> cache = getOrCreateCache(cacheName);
+                log.debug("获取到的缓存{}", cache);
                 long putStartTime = System.currentTimeMillis();
-                
+
                 try {
                     if (StringUtils.hasText(cascadeCachePut.ttl())) {
                         Duration ttl = parseDuration(cascadeCachePut.ttl());
@@ -312,19 +311,18 @@ public class CascadeCacheAspect {
                     } else {
                         cache.put(cacheKey, result);
                     }
-                    
+
                     long putDuration = System.currentTimeMillis() - putStartTime;
                     eventProcessor.publishEvent(UnifiedCacheEvent.builder(cacheName, UnifiedCacheEvent.Type.PUT)
-                        .key(cacheKey)
-                        .value(result)
-                        .duration(Duration.ofMillis(putDuration))
-                        .success(true)
-                        .build());
-                        
+                            .key(cacheKey)
+                            .value(result)
+                            .duration(Duration.ofMillis(putDuration))
+                            .success(true)
+                            .build());
+
                     log.debug("Updated cache '{}' with key '{}'", cacheName, cacheKey);
-                    
+
                 } catch (Exception e) {
-                    long putDuration = System.currentTimeMillis() - putStartTime;
                     eventProcessor.publishEvent(UnifiedCacheEvent.error(cacheName, e));
                     log.warn("Failed to update cache '{}' with key '{}': {}", cacheName, cacheKey, e.getMessage());
                 }
@@ -337,34 +335,59 @@ public class CascadeCacheAspect {
     /**
      * 获取或创建增强缓存
      */
-    private Cache<Object, Object> getOrCreateEnhancedCache(String cacheName, CascadeCacheable annotation, 
+    private Cache<Object, Object> getOrCreateEnhancedCache(String cacheName, CascadeCacheable annotation,
                                                            Method method, Object[] args) {
         return annotationCaches.computeIfAbsent(cacheName, name -> {
             try {
                 // 构建配置
                 CascadeCacheConfiguration config = configurationBuilder.buildConfiguration(annotation, method, args);
                 cacheConfigurations.put(cacheName, config);
-                
+
+                Class<?>[] parameterTypes = method.getParameterTypes();
+                Class<?> returnType = method.getReturnType();
+                Class<?> keyType = null;
+                if (parameterTypes.length > 0) {
+                    keyType = parameterTypes[0];
+                } else {
+                    keyType = Object.class;
+                }
+
                 // 创建增强缓存
-                UnifiedCacheBuilder.SegmentedBuilderImpl<Object, Object> builder = 
-                    (UnifiedCacheBuilder.SegmentedBuilderImpl<Object, Object>) UnifiedCacheBuilder.forCache(cacheName, Object.class, Object.class);
-                
+                UnifiedCacheBuilder.SegmentedBuilderImpl<Object, Object> builder =
+                        (UnifiedCacheBuilder.SegmentedBuilderImpl<Object, Object>) UnifiedCacheBuilder.forCache(cacheName, keyType, returnType);
+
+                // 根据注解配置缓存层级
+                if (annotation.enableL1() && annotation.enableL2()) {
+                    // 获取RedissonClient
+                    try {
+                        RedissonClient redissonClient = applicationContext.getBean(RedissonClient.class);
+                        log.debug("获取 redissonClient {}", redissonClient);
+                        builder.withL1AndL2(config.getL1(), config.getL2(), redissonClient);
+                        log.debug("Enabled L1+L2 cache for '{}' with RedissonClient", cacheName);
+                    } catch (Exception e) {
+                        log.warn("RedissonClient not available, falling back to L1 only for cache '{}': {}", cacheName, e.getMessage());
+                        builder.withL1Only(config.getL1());
+                    }
+                } else if (annotation.enableL1()) {
+                    builder.withL1Only(config.getL1());
+                } else {
+                    log.warn("No cache layers enabled for cache '{}', using default L1", cacheName);
+                    builder.withL1Only();
+                }
+
                 // 设置CacheLoader
                 CacheLoader<Object, Object> loader = resolveCacheLoader(annotation, cacheName);
                 if (loader != null) {
                     builder.withCacheLoader(loader);
                 }
-                
+
                 Cache<Object, Object> cache = builder.build(config);
-                
-                // 创建刷新调度器
-                if (annotation.enableAutoRefresh()) {
-                    refreshSchedulerManager.createRefreshScheduler(cacheName, cache, annotation, method, args);
-                }
-                
+
+                // 注意：刷新功能现在由@CascadeCacheRefresh注解单独处理
+
                 log.info("Created enhanced cache '{}' with configuration: {}", cacheName, config.getName());
                 return cache;
-                
+
             } catch (Exception e) {
                 log.error("Failed to create enhanced cache '{}': {}", cacheName, e.getMessage(), e);
                 // 降级到普通缓存
@@ -376,6 +399,7 @@ public class CascadeCacheAspect {
     /**
      * 解析CacheLoader
      */
+    @SuppressWarnings("unchecked")
     private CacheLoader<Object, Object> resolveCacheLoader(CascadeCacheable annotation, String cacheName) {
         if (StringUtils.hasText(annotation.loader())) {
             // 优先使用指定的加载器
@@ -383,7 +407,7 @@ public class CascadeCacheAspect {
             if (loader != null) {
                 return loader;
             }
-            
+
             // 尝试从Spring容器获取
             try {
                 return applicationContext.getBean(annotation.loader(), CacheLoader.class);
@@ -391,7 +415,7 @@ public class CascadeCacheAspect {
                 log.warn("Failed to get loader bean '{}': {}", annotation.loader(), e.getMessage());
             }
         }
-        
+
         // 尝试根据缓存名称查找
         return loaderRegistry.getLoaderForCache(cacheName);
     }
@@ -415,20 +439,19 @@ public class CascadeCacheAspect {
                 long clearStartTime = System.currentTimeMillis();
                 try {
                     cache.clear();
-                    
+
                     // 取消所有刷新任务
                     refreshSchedulerManager.cancelRefresh(cacheName, null);
-                    
+
                     long clearDuration = System.currentTimeMillis() - clearStartTime;
                     eventProcessor.publishEvent(UnifiedCacheEvent.builder(cacheName, UnifiedCacheEvent.Type.CLEAR)
-                        .duration(Duration.ofMillis(clearDuration))
-                        .success(true)
-                        .build());
-                        
+                            .duration(Duration.ofMillis(clearDuration))
+                            .success(true)
+                            .build());
+
                     log.debug("Cleared all entries from cache '{}'", cacheName);
-                    
+
                 } catch (Exception e) {
-                    long clearDuration = System.currentTimeMillis() - clearStartTime;
                     eventProcessor.publishEvent(UnifiedCacheEvent.error(cacheName, e));
                     log.warn("Failed to clear cache '{}': {}", cacheName, e.getMessage());
                 }
@@ -436,24 +459,23 @@ public class CascadeCacheAspect {
                 // 清除指定键
                 String cacheKey = generateKey(cascadeCacheEvict.key(), cascadeCacheEvict.keyGenerator(), method, args);
                 long evictStartTime = System.currentTimeMillis();
-                
+
                 try {
                     cache.evict(cacheKey);
-                    
+
                     // 取消该键的刷新任务
                     refreshSchedulerManager.cancelRefresh(cacheName, cacheKey);
-                    
+
                     long evictDuration = System.currentTimeMillis() - evictStartTime;
                     eventProcessor.publishEvent(UnifiedCacheEvent.builder(cacheName, UnifiedCacheEvent.Type.EVICT)
-                        .key(cacheKey)
-                        .duration(Duration.ofMillis(evictDuration))
-                        .success(true)
-                        .build());
-                        
+                            .key(cacheKey)
+                            .duration(Duration.ofMillis(evictDuration))
+                            .success(true)
+                            .build());
+
                     log.debug("Evicted key '{}' from cache '{}'", cacheKey, cacheName);
-                    
+
                 } catch (Exception e) {
-                    long evictDuration = System.currentTimeMillis() - evictStartTime;
                     eventProcessor.publishEvent(UnifiedCacheEvent.error(cacheName, e));
                     log.warn("Failed to evict key '{}' from cache '{}': {}", cacheKey, cacheName, e.getMessage());
                 }
@@ -464,8 +486,8 @@ public class CascadeCacheAspect {
     /**
      * 存储到缓存
      */
-    private void putToCache(Cache<Object, Object> cache, Object key, Object value, 
-                           CascadeCacheable annotation, Method method, Object[] args) {
+    private void putToCache(Cache<Object, Object> cache, Object key, Object value,
+                            CascadeCacheable annotation) {
         if (StringUtils.hasText(annotation.ttl())) {
             Duration ttl = parseDuration(annotation.ttl());
             putWithTtl(cache, key, value, ttl);
@@ -493,12 +515,14 @@ public class CascadeCacheAspect {
             EvaluationContext context = createEvaluationContext(method, args);
             Expression expression = parser.parseExpression(keyExpression);
             Object key = expression.getValue(context);
-            return key != null ? key.toString() : "null";
+            log.debug("生成缓存键: 表达式='{}', 解析结果='{}', 方法={}, 参数={}",
+                    keyExpression, key, method.getName(), java.util.Arrays.toString(args));
+            return key != null ? key.toString() : null;
         }
 
         if (StringUtils.hasText(keyGenerator)) {
-            // 使用自定义键生成器
             // TODO: 实现自定义键生成器逻辑
+            log.debug("Custom key generator '{}' not yet implemented", keyGenerator);
         }
 
         // 默认键生成策略
@@ -536,7 +560,7 @@ public class CascadeCacheAspect {
      */
     private boolean evaluateCondition(String condition, Method method, Object[] args, Object result) {
         if (!StringUtils.hasText(condition)) {
-            return true;
+            return false;  // 空条件表示不满足条件，对于unless来说意味着不跳过缓存
         }
 
         try {
@@ -546,10 +570,10 @@ public class CascadeCacheAspect {
             }
             Expression expression = parser.parseExpression(condition);
             Boolean value = expression.getValue(context, Boolean.class);
-            return value != null ? value : true;
+            return Boolean.TRUE.equals(value);
         } catch (Exception e) {
             log.debug("Failed to evaluate condition '{}': {}", condition, e.getMessage());
-            return true;
+            return false;  // 评估失败时默认为false，对于unless来说意味着不跳过缓存
         }
     }
 
@@ -560,10 +584,24 @@ public class CascadeCacheAspect {
         StandardEvaluationContext context = new StandardEvaluationContext();
 
         // 设置方法参数
-        if (args != null) {
+        if (args != null && args.length > 0) {
+            Parameter[] parameters = method.getParameters();
             for (int i = 0; i < args.length; i++) {
+                // 支持索引形式访问
                 context.setVariable("p" + i, args[i]);
                 context.setVariable("a" + i, args[i]);
+
+                // 支持参数名访问
+                if (i < parameters.length) {
+                    String paramName = parameters[i].getName();
+                    context.setVariable(paramName, args[i]);
+                    log.debug("Set SpEL variable '{}' = '{}' (parameter type: {})", paramName, args[i], parameters[i].getType().getSimpleName());
+
+                    // 如果参数名是arg0等，说明编译时没有保留参数名
+                    if (paramName.startsWith("arg")) {
+                        log.warn("检测到参数名为'{}'，可能编译时没有保留参数名。建议使用#p{}或#a{}", paramName, i, i);
+                    }
+                }
             }
         }
 

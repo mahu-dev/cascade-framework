@@ -81,10 +81,6 @@ public @interface CascadeCacheable {
      */
     boolean batchLoad() default false;
 
-    /**
-     * 预刷新时间比例（0.0-1.0）
-     */
-    double refreshAheadFactor() default 0.0;
     
     // ==================== 高级配置功能 ====================
     
@@ -261,72 +257,6 @@ public @interface CascadeCacheable {
      */
     String eventListenerBean() default "";
     
-    // ==================== 刷新配置 ====================
-    
-    /**
-     * 是否启用自动刷新
-     */
-    boolean enableAutoRefresh() default false;
-    
-    /**
-     * 刷新间隔
-     */
-    String refreshInterval() default "";
-    
-    /**
-     * 最小刷新间隔
-     */
-    String minRefreshInterval() default "";
-    
-    /**
-     * 最大刷新间隔
-     */
-    String maxRefreshInterval() default "";
-    
-    /**
-     * 刷新线程池大小
-     */
-    int refreshThreadPoolSize() default -1;
-    
-    /**
-     * 刷新队列容量
-     */
-    int refreshQueueCapacity() default -1;
-    
-    /**
-     * 是否允许并发刷新
-     */
-    boolean allowConcurrentRefresh() default false;
-    
-    /**
-     * 刷新超时时间
-     */
-    String refreshTimeout() default "";
-    
-    /**
-     * 刷新失败重试次数
-     */
-    int refreshMaxRetries() default -1;
-    
-    /**
-     * 刷新重试间隔
-     */
-    String refreshRetryInterval() default "";
-    
-    /**
-     * 是否启用预加载
-     */
-    boolean enablePreload() default false;
-    
-    /**
-     * 预加载批处理大小
-     */
-    int preloadBatchSize() default -1;
-    
-    /**
-     * 预加载并发度
-     */
-    int preloadConcurrency() default -1;
     
     // ==================== 执行器配置 ====================
     

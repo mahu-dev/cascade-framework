@@ -51,7 +51,6 @@ public class CascadeCacheManager implements CacheManager {
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
 
-
     public CascadeCacheManager(RedissonClient redissonClient) {
         this.redissonClient = redissonClient;
         this.cachePropertiesProvider = null;
@@ -115,6 +114,7 @@ public class CascadeCacheManager implements CacheManager {
         }
         @SuppressWarnings("unchecked")
         Cache<K, V> cache = (Cache<K, V>) caches.get(cacheName);
+        logger.debug("从缓存 caches {} 中获取 缓存 {}", caches, cacheName);
         return cache;
     }
 

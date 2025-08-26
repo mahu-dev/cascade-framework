@@ -25,18 +25,19 @@ public class UserCacheLoader implements CacheLoader<String, User> {
 
     @Override
     public User load(String userId) throws Exception {
-        log.info("Loading user from UserService: {}", userId);
+        log.info("Loading user directly from database: {}", userId);
         
         // 模拟数据库查询延迟
         Thread.sleep(100);
         
-        User user = userService.findById(userId);
+        // 直接从数据库加载，避免循环调用
+        User user = userService.loadUserDirectFromDatabase(userId);
         if (user == null) {
-            log.warn("User not found: {}", userId);
+            log.warn("User not found in database: {}", userId);
             return null;
         }
         
-        log.info("Successfully loaded user: {}", user);
+        log.info("Successfully loaded user from database: {}", user);
         return user;
     }
 

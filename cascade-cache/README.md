@@ -1,5 +1,10 @@
 # Cascade Cache Event System
 
+相关文档
+
+- 架构与功能设计: [ARCHITECTURE_AND_FUNCTIONAL_DESIGN.md](./ARCHITECTURE_AND_FUNCTIONAL_DESIGN.md)
+- 类的引用关系图: [Class Relations](./diagrams/class-relations.svg)
+
 缓存事件系统提供了一个强大的机制来监控和响应缓存操作。通过事件监听器，您可以收集统计信息、记录日志、实现自定义逻辑等。
 
 ## 核心组件
