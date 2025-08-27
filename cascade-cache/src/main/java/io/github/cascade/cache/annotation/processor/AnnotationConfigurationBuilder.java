@@ -62,34 +62,33 @@ public class AnnotationConfigurationBuilder {
         
         // 注意：刷新配置现在由@CascadeCacheRefresh注解单独处理
         
-        log.debug("Built configuration for cache '{}' from annotation", cacheName);
+        log.debug("从注解为缓存 '{}' 构建配置完成", cacheName);
         return config;
     }
     
     /**
      * 从@CascadeCacheRefresh注解构建刷新配置
      */
-    public CascadeCacheConfiguration.RefreshConfig buildRefreshConfiguration(CascadeCacheRefresh annotation,
-                                                                           Method method, Object[] args) {
+    public CascadeCacheConfiguration.RefreshConfig buildRefreshConfiguration(CascadeCacheRefresh annotation) {
         CascadeCacheConfiguration.RefreshConfig refreshConfig = new CascadeCacheConfiguration.RefreshConfig();
         
         refreshConfig.setEnabled(true);
         
         // 刷新间隔
-        if (StringUtils.hasText(annotation.refreshInterval())) {
-            Duration interval = parseSpelDuration(annotation.refreshInterval(), method, args);
+        if (annotation.refreshInterval() > 0) {
+            Duration interval = Duration.ofSeconds(annotation.refreshInterval());
             refreshConfig.setDefaultRefreshInterval(interval);
         }
         
         // 最小刷新间隔
-        if (StringUtils.hasText(annotation.minRefreshInterval())) {
-            Duration minInterval = parseSpelDuration(annotation.minRefreshInterval(), method, args);
+        if (annotation.minRefreshInterval() > 0) {
+            Duration minInterval = Duration.ofSeconds(annotation.minRefreshInterval());
             refreshConfig.setMinRefreshInterval(minInterval);
         }
         
         // 最大刷新间隔
-        if (StringUtils.hasText(annotation.maxRefreshInterval())) {
-            Duration maxInterval = parseSpelDuration(annotation.maxRefreshInterval(), method, args);
+        if (annotation.maxRefreshInterval() > 0) {
+            Duration maxInterval = Duration.ofSeconds(annotation.maxRefreshInterval());
             refreshConfig.setMaxRefreshInterval(maxInterval);
         }
         
@@ -97,8 +96,8 @@ public class AnnotationConfigurationBuilder {
         refreshConfig.setAllowConcurrentRefresh(annotation.allowConcurrentRefresh());
         
         // 刷新超时
-        if (StringUtils.hasText(annotation.refreshTimeout())) {
-            Duration timeout = parseSpelDuration(annotation.refreshTimeout(), method, args);
+        if (annotation.refreshTimeout() > 0) {
+            Duration timeout = Duration.ofSeconds(annotation.refreshTimeout());
             refreshConfig.setRefreshTimeout(timeout);
         }
         
@@ -107,8 +106,8 @@ public class AnnotationConfigurationBuilder {
             refreshConfig.setMaxRetries(annotation.maxRetries());
         }
         
-        if (StringUtils.hasText(annotation.retryInterval())) {
-            Duration retryInterval = parseSpelDuration(annotation.retryInterval(), method, args);
+        if (annotation.retryInterval() > 0) {
+            Duration retryInterval = Duration.ofSeconds(annotation.retryInterval());
             refreshConfig.setRetryInterval(retryInterval);
         }
         
@@ -153,7 +152,7 @@ public class AnnotationConfigurationBuilder {
                 Executor executor = applicationContext.getBean(annotation.executorBean(), Executor.class);
                 commonConfig.setExecutor(executor);
             } catch (Exception e) {
-                log.warn("Failed to get executor bean '{}': {}", annotation.executorBean(), e.getMessage());
+                log.warn("获取执行器Bean '{}' 失败: {}", annotation.executorBean(), e.getMessage());
             }
         }
     }
@@ -233,7 +232,7 @@ public class AnnotationConfigurationBuilder {
                 RedissonClient redissonClient = applicationContext.getBean(annotation.redisClientBean(), RedissonClient.class);
                 l2Config.setRedissonClient(redissonClient);
             } catch (Exception e) {
-                log.warn("Failed to get redis client bean '{}': {}", annotation.redisClientBean(), e.getMessage());
+                log.warn("获取Redis客户端Bean '{}' 失败: {}", annotation.redisClientBean(), e.getMessage());
             }
         }
     }
@@ -287,7 +286,7 @@ public class AnnotationConfigurationBuilder {
                 CascadeBloomFilter bloomFilter = applicationContext.getBean(annotation.bloomFilterBean(), CascadeBloomFilter.class);
                 bloomConfig.setCustomFilter(bloomFilter);
             } catch (Exception e) {
-                log.warn("Failed to get bloom filter bean '{}': {}", annotation.bloomFilterBean(), e.getMessage());
+                log.warn("获取布隆过滤器Bean '{}' 失败: {}", annotation.bloomFilterBean(), e.getMessage());
             }
         }
         
@@ -404,7 +403,7 @@ public class AnnotationConfigurationBuilder {
                     return Duration.ofSeconds(((Number) value).longValue());
                 }
             } catch (Exception spelException) {
-                log.warn("Failed to parse duration expression '{}': {}", expression, spelException.getMessage());
+                log.warn("解析持续时间表达式 '{}' 失败: {}", expression, spelException.getMessage());
             }
         }
         
@@ -425,7 +424,7 @@ public class AnnotationConfigurationBuilder {
             Object value = spelExpression.getValue(context);
             return value != null ? value.toString() : expression;
         } catch (Exception e) {
-            log.debug("Failed to parse string expression '{}': {}", expression, e.getMessage());
+            log.debug("解析字符串表达式 '{}' 失败: {}", expression, e.getMessage());
             return expression;
         }
     }

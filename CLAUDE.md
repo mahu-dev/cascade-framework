@@ -89,3 +89,5 @@ cascade-spring-boot-starter
 - Prometheus/Micrometer指标导出
 - OpenTelemetry链路追踪
 - 实时监控事件流
+- 添加代码注释的时候请使用中文
+- 添加日志的时候 除了一些标识符，日志的描述信息要用中文

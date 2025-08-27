@@ -73,6 +73,9 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
         // 创建核心组件
         this.core = new CacheCore<>(name, l1Engine, l2Engine, executor);
         this.enhancer = new CacheEnhancer<>(name, executor);
+//        this.enhancer.setSynchronizer();
+//        this.enhancer.setRefreshScheduler();
+//        this.enhancer.setProtectionManager(new SimplifiedCacheProtectionManager());
         this.monitor = new CacheMonitor<>(name, core, executor, monitoringManager);
 
         log.debug("Created {} smart cache: {}", core.isMultiTier() ? "multi-tier" : "single-tier", name);
@@ -125,12 +128,12 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
     @Override
     public Map<K, V> getAllOrLoad(Set<K> keys) throws Exception {
         if (keys == null || keys.isEmpty()) return Map.of();
-        
+
         // 创建副本避免修改原集合，确保线程安全
         Set<K> keysCopy = new HashSet<>(keys);
         Map<K, V> result = getAll(keysCopy);
         keysCopy.removeAll(result.keySet());
-        
+
         CacheLoader<K, V> cacheLoader = core.getCacheLoader();
         if (!keysCopy.isEmpty() && cacheLoader != null) {
             Map<K, V> kvMap = cacheLoader.loadAll(keysCopy);
@@ -146,7 +149,7 @@ public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCa
     public void put(K key, V value) {
         if (key == null || value == null) return;
 
-        log.debug("SmartCache.put调用: key={}, value={}", key, value != null ? "非null" : "null");
+        log.debug("SmartCache.put调用: key={}, value={}", key, value);
         enhancer.enhancePut(() -> {
             core.put(key, value);
             monitor.recordPut(key, value);

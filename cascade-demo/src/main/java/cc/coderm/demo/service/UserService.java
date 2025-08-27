@@ -53,7 +53,7 @@ public class UserService {
     )
     @CascadeCacheRefresh(
             value = "users",
-            refreshInterval = "PT10M",
+            refreshInterval = 10,  // 10分钟 = 600秒
             loader = "userCacheLoader"
     )
     public User findById(String id) {

@@ -7,7 +7,7 @@ import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheLoader;
 import io.github.cascade.cache.api.CacheManager;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
-import io.github.cascade.cache.core.CacheLoaderResolver;
+import io.github.cascade.cache.config.CachePropertiesProvider;
 import io.github.cascade.cache.core.unified.SmartCache;
 import io.github.cascade.cache.core.unified.UnifiedCacheBuilder;
 import io.github.cascade.cache.event.UnifiedCacheEvent;
@@ -52,12 +52,12 @@ public class CascadeCacheAspect {
     private final ApplicationContext applicationContext;
     private final CacheManager cacheManager;
     private final UnifiedEventProcessor eventProcessor;
-    private final CacheLoaderResolver cacheLoaderResolver;
+    private final CacheLoaderRegistry loaderRegistry;
+    private final CachePropertiesProvider cachePropertiesProvider;
     private final ExpressionParser parser = new SpelExpressionParser();
 
     // 注解处理组件
     private AnnotationConfigurationBuilder configurationBuilder;
-    private CacheLoaderRegistry loaderRegistry;
     private AnnotationRefreshSchedulerManager refreshSchedulerManager;
 
     // 缓存实例管理
@@ -68,11 +68,13 @@ public class CascadeCacheAspect {
     public CascadeCacheAspect(ApplicationContext applicationContext,
                               CacheManager cacheManager,
                               UnifiedEventProcessor eventProcessor,
-                              CacheLoaderResolver cacheLoaderResolver) {
+                              CacheLoaderRegistry loaderRegistry,
+                              CachePropertiesProvider cachePropertiesProvider) {
         this.applicationContext = applicationContext;
         this.cacheManager = cacheManager;
         this.eventProcessor = eventProcessor;
-        this.cacheLoaderResolver = cacheLoaderResolver;
+        this.loaderRegistry = loaderRegistry;
+        this.cachePropertiesProvider = cachePropertiesProvider;
     }
 
     @PostConstruct
@@ -81,7 +83,7 @@ public class CascadeCacheAspect {
 
         // 初始化注解处理组件
         this.configurationBuilder = new AnnotationConfigurationBuilder(applicationContext);
-        this.loaderRegistry = new CacheLoaderRegistry(applicationContext, cacheLoaderResolver);
+        // loaderRegistry现在通过构造器注入，不需要再创建
         this.refreshSchedulerManager = new AnnotationRefreshSchedulerManager(applicationContext, loaderRegistry);
 
         log.info("Cascade Cache Aspect initialized successfully");
@@ -219,13 +221,13 @@ public class CascadeCacheAspect {
             return joinPoint.proceed();
         }
 
-        // 获取缓存
-        Cache<Object, Object> cache = cacheManager.getOrCreateCache(primaryCacheName, Object.class, Object.class);
+        // 使用增强缓存，确保可以正确设置refreshScheduler
+        Cache<Object, Object> cache = getOrCreateCache(primaryCacheName);
 
         // 创建刷新调度器
         refreshSchedulerManager.createRefreshScheduler(primaryCacheName, cache, cacheRefresh, method, args);
 
-        log.info("Configured refresh scheduler for cache '{}'", primaryCacheName);
+        log.info("为增强缓存 '{}' 配置了刷新调度器", primaryCacheName);
 
         return joinPoint.proceed();
     }
@@ -298,7 +300,7 @@ public class CascadeCacheAspect {
         // 更新缓存
         if (result != null && !evaluateCondition(cascadeCachePut.unless(), method, args, result)) {
             String cacheKey = generateKey(cascadeCachePut.key(), cascadeCachePut.keyGenerator(), method, args);
-            log.debug("生成缓存key{}", cacheKey);
+            log.debug("生成缓存 key: {}", cacheKey);
             for (String cacheName : cacheNames) {
                 Cache<Object, Object> cache = getOrCreateCache(cacheName);
                 log.debug("获取到的缓存{}", cache);
@@ -334,6 +336,7 @@ public class CascadeCacheAspect {
 
     /**
      * 获取或创建增强缓存
+     * 此方法创建带有 cacheLoader 和 refreshScheduler 的完整功能缓存
      */
     private Cache<Object, Object> getOrCreateEnhancedCache(String cacheName, CascadeCacheable annotation,
                                                            Method method, Object[] args) {
@@ -390,7 +393,8 @@ public class CascadeCacheAspect {
 
             } catch (Exception e) {
                 log.error("Failed to create enhanced cache '{}': {}", cacheName, e.getMessage(), e);
-                // 降级到普通缓存
+                // 降级到普通缓存（注意：这个普通缓存没有 loader 和 scheduler）
+                log.warn("降级创建普通缓存 '{}'，功能可能不完整", cacheName);
                 return cacheManager.getOrCreateCache(cacheName, Object.class, Object.class);
             }
         });
@@ -421,10 +425,114 @@ public class CascadeCacheAspect {
     }
 
     /**
-     * 获取普通缓存
+     * 获取或创建缓存（智能增强版本）
+     * 优先返回已存在的增强缓存，否则创建具有基本增强功能的缓存
      */
     private Cache<Object, Object> getOrCreateCache(String cacheName) {
-        return cacheManager.getOrCreateCache(cacheName, Object.class, Object.class);
+        return annotationCaches.computeIfAbsent(cacheName, name -> {
+            try {
+                log.info("为@CascadeCachePut创建增强缓存: {}", cacheName);
+
+                // 优先从YAML配置获取缓存配置，如果没有则使用默认配置
+                CascadeCacheConfiguration config = getConfigurationFromYaml(cacheName);
+                if (config == null) {
+                    config = createDefaultCacheConfiguration(cacheName);
+                }
+                cacheConfigurations.put(cacheName, config);
+
+                // 创建增强缓存
+                UnifiedCacheBuilder.SegmentedBuilderImpl<Object, Object> builder =
+                        (UnifiedCacheBuilder.SegmentedBuilderImpl<Object, Object>) UnifiedCacheBuilder.forCache(cacheName, Object.class, Object.class);
+
+                // 配置缓存层级（默认L1+L2如果Redis可用）
+                try {
+                    RedissonClient redissonClient = applicationContext.getBean(RedissonClient.class);
+                    log.debug("获取 redissonClient {}", redissonClient);
+                    builder.withL1AndL2(config.getL1(), config.getL2(), redissonClient);
+                    log.debug("为缓存 '{}' 启用 L1+L2", cacheName);
+                } catch (Exception e) {
+                    log.warn("RedissonClient不可用，缓存 '{}' 降级为仅L1模式: {}", cacheName, e.getMessage());
+                    builder.withL1Only(config.getL1());
+                }
+
+                // 尝试设置CacheLoader（如果存在的话）
+                CacheLoader<Object, Object> loader = tryResolveCacheLoader(cacheName);
+                if (loader != null) {
+                    builder.withCacheLoader(loader);
+                    log.debug("为缓存 '{}' 设置了CacheLoader", cacheName);
+                }
+
+                Cache<Object, Object> cache = builder.build(config);
+                log.info("成功创建增强缓存 '{}' 用于@CascadeCachePut", cacheName);
+                return cache;
+
+            } catch (Exception e) {
+                log.error("创建增强缓存 '{}' 失败: {}", cacheName, e.getMessage(), e);
+                log.warn("降级创建基础缓存 '{}'", cacheName);
+                // 降级到基础缓存
+                return cacheManager.getOrCreateCache(cacheName, Object.class, Object.class);
+            }
+        });
+    }
+
+    /**
+     * 创建默认缓存配置
+     */
+    private CascadeCacheConfiguration createDefaultCacheConfiguration(String cacheName) {
+        CascadeCacheConfiguration config = new CascadeCacheConfiguration();
+        config.setName(cacheName).setEnabled(true);
+
+        // 默认L1配置
+        config.getL1().setEnabled(true)
+                .setMaximumSize(10000)
+                .setExpireAfterWrite(java.time.Duration.ofMinutes(30))
+                .setRecordStats(true);
+
+        // 默认L2配置（如果有Redis）
+        try {
+            RedissonClient redissonClient = applicationContext.getBean(RedissonClient.class);
+            if (redissonClient != null) {
+                config.getL2().setEnabled(true)
+                        .setDefaultTtl(java.time.Duration.ofHours(1));
+            }
+        } catch (Exception e) {
+            // Redis不可用，不启用L2
+            config.getL2().setEnabled(false);
+        }
+
+        return config;
+    }
+
+    /**
+     * 从YAML配置获取缓存配置
+     */
+    private CascadeCacheConfiguration getConfigurationFromYaml(String cacheName) {
+        try {
+            if (cachePropertiesProvider != null && cachePropertiesProvider.isEnabled()) {
+                CascadeCacheConfiguration config = cachePropertiesProvider.toCascadeCacheConfiguration(cacheName);
+                if (config != null) {
+                    log.debug("从YAML配置获取到缓存 '{}' 的配置", cacheName);
+                    return config;
+                }
+            }
+        } catch (Exception e) {
+            log.debug("从YAML配置获取缓存 '{}' 配置失败: {}", cacheName, e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * 尝试解析CacheLoader（容错版本）
+     */
+    @SuppressWarnings("unchecked")
+    private CacheLoader<Object, Object> tryResolveCacheLoader(String cacheName) {
+        try {
+            // 尝试根据缓存名称查找
+            return loaderRegistry.getLoaderForCache(cacheName);
+        } catch (Exception e) {
+            log.debug("无法为缓存 '{}' 解析CacheLoader: {}", cacheName, e.getMessage());
+            return null;
+        }
     }
 
     /**

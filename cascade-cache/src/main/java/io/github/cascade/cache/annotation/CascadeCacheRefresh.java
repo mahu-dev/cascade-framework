@@ -24,19 +24,19 @@ public @interface CascadeCacheRefresh {
     String[] cacheNames() default {};
     
     /**
-     * 刷新间隔（支持Spring表达式，如 "PT10M"、"600s"、"#{config.refreshInterval}"）
+     * 刷新间隔（单位：秒）
      */
-    String refreshInterval() default "PT10M";
+    long refreshInterval() default 600L;
     
     /**
-     * 最小刷新间隔
+     * 最小刷新间隔（单位：秒）
      */
-    String minRefreshInterval() default "PT1M";
+    long minRefreshInterval() default 60L;
     
     /**
-     * 最大刷新间隔  
+     * 最大刷新间隔（单位：秒）  
      */
-    String maxRefreshInterval() default "PT1H";
+    long maxRefreshInterval() default 3600L;
     
     /**
      * 刷新条件表达式
@@ -54,9 +54,9 @@ public @interface CascadeCacheRefresh {
     boolean allowConcurrentRefresh() default false;
     
     /**
-     * 刷新超时时间
+     * 刷新超时时间（单位：秒）
      */
-    String refreshTimeout() default "PT30S";
+    long refreshTimeout() default 30L;
     
     /**
      * 失败重试次数
@@ -64,9 +64,9 @@ public @interface CascadeCacheRefresh {
     int maxRetries() default 3;
     
     /**
-     * 重试间隔
+     * 重试间隔（单位：秒）
      */
-    String retryInterval() default "PT5S";
+    long retryInterval() default 5L;
     
     /**
      * 预刷新提前时间因子（0.0-1.0）

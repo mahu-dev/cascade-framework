@@ -31,13 +31,13 @@ public class CacheBuilderValidator {
      */
     public void validateCacheName() {
         if (cacheName == null || cacheName.trim().isEmpty()) {
-            throw new IllegalArgumentException("Cache name cannot be null or empty");
+            throw new IllegalArgumentException("缓存名称不能为空");
         }
 
         // 验证缓存名称格式
         if (!cacheName.matches("^[a-zA-Z0-9_\\-.:]+$")) {
             throw new IllegalArgumentException(
-                    "Invalid cache name format: '" + cacheName + "'. Only alphanumeric characters, underscore, hyphen, dot and colon are allowed");
+                    "无效的缓存名称格式: '" + cacheName + "'。只允许字母、数字、下划线、连字符、点和冒号");
         }
     }
     
@@ -48,7 +48,7 @@ public class CacheBuilderValidator {
      */
     public void validateTierConfiguration(boolean enableL1, boolean enableL2) {
         if (!enableL1 && !enableL2) {
-            throw new IllegalStateException("At least one cache tier (L1 or L2) must be enabled for cache: " + cacheName);
+            throw new IllegalStateException("缓存 '" + cacheName + "' 至少需要启用一个缓存层级（L1或L2）");
         }
     }
     
@@ -57,23 +57,23 @@ public class CacheBuilderValidator {
      */
     public void validateL1Configuration(CaffeineConfig<?, ?> l1Config) {
         if (l1Config == null) {
-            throw new IllegalArgumentException("L1 configuration cannot be null for cache: " + cacheName);
+            throw new IllegalArgumentException("缓存 '" + cacheName + "' 的L1配置不能为空");
         }
         
         if (l1Config.getMaximumSize() <= 0) {
-            throw new IllegalArgumentException("L1 cache maximum size must be positive for cache: " + cacheName);
+            throw new IllegalArgumentException("缓存 '" + cacheName + "' 的L1缓存最大容量必须为正数");
         }
 
         if (l1Config.getExpireAfterWrite() != null && l1Config.getExpireAfterWrite().isNegative()) {
-            throw new IllegalArgumentException("L1 cache expireAfterWrite duration cannot be negative for cache: " + cacheName);
+            throw new IllegalArgumentException("缓存 '" + cacheName + "' 的L1缓存写入后过期时间不能为负数");
         }
 
         if (l1Config.getExpireAfterAccess() != null && l1Config.getExpireAfterAccess().isNegative()) {
-            throw new IllegalArgumentException("L1 cache expireAfterAccess duration cannot be negative for cache: " + cacheName);
+            throw new IllegalArgumentException("缓存 '" + cacheName + "' 的L1缓存访问后过期时间不能为负数");
         }
         
         if (l1Config.getInitialCapacity() < 0) {
-            throw new IllegalArgumentException("L1 cache initial capacity cannot be negative for cache: " + cacheName);
+            throw new IllegalArgumentException("缓存 '" + cacheName + "' 的L1缓存初始容量不能为负数");
         }
     }
     
@@ -82,15 +82,15 @@ public class CacheBuilderValidator {
      */
     public void validateL2Configuration(RedisConfig l2Config) {
         if (l2Config == null) {
-            throw new IllegalArgumentException("L2 configuration cannot be null for cache: " + cacheName);
+            throw new IllegalArgumentException("缓存 '" + cacheName + "' 的L2配置不能为空");
         }
         
         if (l2Config.getDefaultTtl() != null && l2Config.getDefaultTtl().isNegative()) {
-            throw new IllegalArgumentException("L2 cache default TTL cannot be negative for cache: " + cacheName);
+            throw new IllegalArgumentException("缓存 '" + cacheName + "' 的L2缓存默认TTL不能为负数");
         }
 
         if (l2Config.getBatchSize() <= 0) {
-            throw new IllegalArgumentException("L2 cache batch size must be positive for cache: " + cacheName);
+            throw new IllegalArgumentException("缓存 '" + cacheName + "' 的L2缓存批处理大小必须为正数");
         }
     }
     
@@ -101,7 +101,7 @@ public class CacheBuilderValidator {
      */
     public void validateRedisConfiguration(boolean enableL2, RedissonClient redissonClient) {
         if (enableL2 && redissonClient == null) {
-            throw new IllegalStateException("RedissonClient is required for L2 cache: " + cacheName);
+            throw new IllegalStateException("缓存 '" + cacheName + "' 的L2缓存需要RedissonClient");
         }
     }
     
@@ -121,15 +121,15 @@ public class CacheBuilderValidator {
             var bloomConfig = protectionConfig.getBloomFilter();
             
             if (redissonClient == null) {
-                log.warn("Bloom filter protection requires RedissonClient for cache: {}", cacheName);
+                log.warn("缓存 '{}' 的布隆过滤器防护需要RedissonClient", cacheName);
             }
             
             if (bloomConfig.getExpectedElements() <= 0) {
-                throw new IllegalArgumentException("Bloom filter expected elements must be positive for cache: " + cacheName);
+                throw new IllegalArgumentException("缓存 '" + cacheName + "' 的布隆过滤器预期元素数量必须为正数");
             }
             
             if (bloomConfig.getFalsePositiveRate() <= 0 || bloomConfig.getFalsePositiveRate() >= 1) {
-                throw new IllegalArgumentException("Bloom filter false positive rate must be between 0 and 1 for cache: " + cacheName);
+                throw new IllegalArgumentException("缓存 '" + cacheName + "' 的布隆过滤器误判率必须在0和1之间");
             }
         }
         
@@ -138,11 +138,11 @@ public class CacheBuilderValidator {
             var randomTtlConfig = protectionConfig.getRandomTtl();
             
             if (randomTtlConfig.getBaseTtl() != null && randomTtlConfig.getBaseTtl().isNegative()) {
-                throw new IllegalArgumentException("Random TTL base duration cannot be negative for cache: " + cacheName);
+                throw new IllegalArgumentException("缓存 '" + cacheName + "' 的随机TTL基础时间不能为负数");
             }
             
             if (randomTtlConfig.getJitterRatio() < 0 || randomTtlConfig.getJitterRatio() > 1) {
-                throw new IllegalArgumentException("Random TTL jitter ratio must be between 0 and 1 for cache: " + cacheName);
+                throw new IllegalArgumentException("缓存 '" + cacheName + "' 的随机TTL抖动比例必须在0和1之间");
             }
         }
         
@@ -151,19 +151,19 @@ public class CacheBuilderValidator {
             var lockConfig = protectionConfig.getDistributedLock();
             
             if (redissonClient == null) {
-                log.warn("Distributed lock protection requires RedissonClient for cache: {}", cacheName);
+                log.warn("缓存 '{}' 的分布式锁防护需要RedissonClient", cacheName);
             }
             
             if (lockConfig.getLockTimeout() != null && lockConfig.getLockTimeout().isNegative()) {
-                throw new IllegalArgumentException("Distributed lock timeout cannot be negative for cache: " + cacheName);
+                throw new IllegalArgumentException("缓存 '" + cacheName + "' 的分布式锁超时时间不能为负数");
             }
             
             if (lockConfig.getWaitTimeout() != null && lockConfig.getWaitTimeout().isNegative()) {
-                throw new IllegalArgumentException("Distributed lock wait timeout cannot be negative for cache: " + cacheName);
+                throw new IllegalArgumentException("缓存 '" + cacheName + "' 的分布式锁等待超时时间不能为负数");
             }
             
             if (lockConfig.getMaxRetries() < 0) {
-                throw new IllegalArgumentException("Distributed lock max retries cannot be negative for cache: " + cacheName);
+                throw new IllegalArgumentException("缓存 '" + cacheName + "' 的分布式锁最大重试次数不能为负数");
             }
         }
     }
@@ -179,15 +179,15 @@ public class CacheBuilderValidator {
         }
         
         if (redissonClient == null) {
-            log.warn("Distributed sync requires RedissonClient for cache: {}", cacheName);
+            log.warn("缓存 '{}' 的分布式同步需要RedissonClient", cacheName);
         }
 
         if (syncConfig.getTimeout() != null && syncConfig.getTimeout().isNegative()) {
-            throw new IllegalArgumentException("Sync timeout cannot be negative for cache: " + cacheName);
+            throw new IllegalArgumentException("缓存 '" + cacheName + "' 的同步超时时间不能为负数");
         }
 
         if (syncConfig.getTopic() == null || syncConfig.getTopic().trim().isEmpty()) {
-            throw new IllegalArgumentException("Sync topic cannot be null or empty for cache: " + cacheName);
+            throw new IllegalArgumentException("缓存 '" + cacheName + "' 的同步主题不能为空");
         }
     }
     
@@ -204,7 +204,7 @@ public class CacheBuilderValidator {
         }
         
         if (cacheLoader == null && !autoDiscoverLoader) {
-            log.warn("Auto refresh requires CacheLoader for cache: {}", cacheName);
+            log.warn("缓存 '{}' 的自动刷新需要缓存加载器", cacheName);
         }
         
         // 注意：这里由于RefreshConfig的具体结构不确定，暂时不做详细验证
@@ -225,7 +225,7 @@ public class CacheBuilderValidator {
                                     CacheLoader<?, ?> cacheLoader,
                                     boolean autoDiscoverLoader) {
         
-        log.debug("Validating configuration for cache: {}", cacheName);
+        log.debug("正在验证缓存 '{}' 的配置", cacheName);
         
         // 基础验证
         validateCacheName();
@@ -247,6 +247,6 @@ public class CacheBuilderValidator {
         validateSyncConfiguration(syncConfig, redissonClient);
         validateRefreshConfiguration(refreshConfig, cacheLoader, autoDiscoverLoader);
         
-        log.debug("Configuration validation completed for cache: {}", cacheName);
+        log.debug("缓存 '{}' 的配置验证完成", cacheName);
     }
 }

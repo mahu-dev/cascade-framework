@@ -49,19 +49,19 @@ public class AnnotationRefreshSchedulerManager {
     public void createRefreshScheduler(String cacheName, Cache<Object, Object> cache,
                                      CascadeCacheRefresh annotation, Method method, Object[] args) {
         try {
-            RefreshConfiguration config = buildRefreshConfiguration(annotation, method, args);
+            RefreshConfiguration config = buildRefreshConfiguration(annotation);
             refreshConfigs.put(cacheName, config);
             
             CacheLoader<Object, Object> loader = resolveLoader(annotation, cacheName);
             if (loader == null) {
-                log.warn("No cache loader found for cache '{}', skipping refresh scheduler creation", cacheName);
+                log.warn("缓存 '{}' 没有找到缓存加载器，跳过创建刷新调度器", cacheName);
                 return;
             }
             
             Duration refreshInterval = config.getRefreshInterval();
             if (refreshInterval == null) {
-                log.warn("No refresh interval configured for cache '{}', using default from annotation", cacheName);
-                refreshInterval = parseSpelDuration(annotation.refreshInterval(), method, args);
+                log.warn("缓存 '{}' 没有配置刷新间隔，使用注解中的默认值", cacheName);
+                refreshInterval = Duration.ofSeconds(annotation.refreshInterval());
             }
             
             CacheRefreshScheduler.RefreshConfig schedulerConfig = buildSchedulerConfig();
@@ -70,9 +70,9 @@ public class AnnotationRefreshSchedulerManager {
                     (key, value) -> {
                         try {
                             cache.put(key, value);
-                            log.debug("Refreshed cache value for key '{}' in cache '{}'", key, cacheName);
+                            log.debug("已刷新缓存 '{}' 中键 '{}' 的值", cacheName, key);
                         } catch (Exception e) {
-                            log.warn("Failed to update cache '{}' with refreshed value for key '{}': {}", 
+                            log.warn("使用刷新值更新缓存 '{}' 中的键 '{}' 失败: {}", 
                                     cacheName, key, e.getMessage());
                         }
                     },
@@ -82,10 +82,10 @@ public class AnnotationRefreshSchedulerManager {
             );
             
             schedulers.put(cacheName, scheduler);
-            log.info("Created refresh scheduler for cache '{}' with interval {}", cacheName, refreshInterval);
+            log.info("为缓存 '{}' 创建了刷新调度器，刷新间隔为 {}", cacheName, refreshInterval);
             
         } catch (Exception e) {
-            log.error("Failed to create refresh scheduler for cache '{}': {}", cacheName, e.getMessage(), e);
+            log.error("为缓存 '{}' 创建刷新调度器失败: {}", cacheName, e.getMessage(), e);
         }
     }
     
@@ -96,9 +96,9 @@ public class AnnotationRefreshSchedulerManager {
         CacheRefreshScheduler<Object, Object> scheduler = schedulers.get(cacheName);
         if (scheduler != null) {
             scheduler.scheduleRefresh(key);
-            log.debug("Scheduled refresh for key '{}' in cache '{}'", key, cacheName);
+            log.debug("已为缓存 '{}' 中的键 '{}' 调度刷新任务", cacheName, key);
         } else {
-            log.debug("No refresh scheduler found for cache '{}'", cacheName);
+            log.debug("缓存 '{}' 没有找到刷新调度器", cacheName);
         }
     }
     
@@ -109,7 +109,7 @@ public class AnnotationRefreshSchedulerManager {
         CacheRefreshScheduler<Object, Object> scheduler = schedulers.get(cacheName);
         if (scheduler != null) {
             scheduler.cancelRefresh(key);
-            log.debug("Cancelled refresh for key '{}' in cache '{}'", key, cacheName);
+            log.debug("已取消缓存 '{}' 中键 '{}' 的刷新任务", cacheName, key);
         }
     }
     
@@ -117,14 +117,14 @@ public class AnnotationRefreshSchedulerManager {
      * 关闭所有调度器
      */
     public void shutdown() {
-        log.info("Shutting down {} refresh schedulers", schedulers.size());
+        log.info("正在关闭 {} 个刷新调度器", schedulers.size());
         
         schedulers.forEach((cacheName, scheduler) -> {
             try {
                 scheduler.shutdown();
-                log.debug("Shutdown refresh scheduler for cache '{}'", cacheName);
+                log.debug("已关闭缓存 '{}' 的刷新调度器", cacheName);
             } catch (Exception e) {
-                log.warn("Failed to shutdown refresh scheduler for cache '{}': {}", cacheName, e.getMessage());
+                log.warn("关闭缓存 '{}' 的刷新调度器失败: {}", cacheName, e.getMessage());
             }
         });
         
@@ -143,31 +143,31 @@ public class AnnotationRefreshSchedulerManager {
     /**
      * 构建刷新配置
      */
-    private RefreshConfiguration buildRefreshConfiguration(CascadeCacheRefresh annotation, Method method, Object[] args) {
+    private RefreshConfiguration buildRefreshConfiguration(CascadeCacheRefresh annotation) {
         RefreshConfiguration config = new RefreshConfiguration();
         
-        config.setRefreshInterval(parseSpelDuration(annotation.refreshInterval(), method, args));
+        config.setRefreshInterval(Duration.ofSeconds(annotation.refreshInterval()));
         
-        if (StringUtils.hasText(annotation.minRefreshInterval())) {
-            config.setMinRefreshInterval(parseSpelDuration(annotation.minRefreshInterval(), method, args));
+        if (annotation.minRefreshInterval() > 0) {
+            config.setMinRefreshInterval(Duration.ofSeconds(annotation.minRefreshInterval()));
         }
         
-        if (StringUtils.hasText(annotation.maxRefreshInterval())) {
-            config.setMaxRefreshInterval(parseSpelDuration(annotation.maxRefreshInterval(), method, args));
+        if (annotation.maxRefreshInterval() > 0) {
+            config.setMaxRefreshInterval(Duration.ofSeconds(annotation.maxRefreshInterval()));
         }
         
         config.setAllowConcurrentRefresh(annotation.allowConcurrentRefresh());
         
-        if (StringUtils.hasText(annotation.refreshTimeout())) {
-            config.setRefreshTimeout(parseSpelDuration(annotation.refreshTimeout(), method, args));
+        if (annotation.refreshTimeout() > 0) {
+            config.setRefreshTimeout(Duration.ofSeconds(annotation.refreshTimeout()));
         }
         
         if (annotation.maxRetries() > 0) {
             config.setMaxRetries(annotation.maxRetries());
         }
         
-        if (StringUtils.hasText(annotation.retryInterval())) {
-            config.setRetryInterval(parseSpelDuration(annotation.retryInterval(), method, args));
+        if (annotation.retryInterval() > 0) {
+            config.setRetryInterval(Duration.ofSeconds(annotation.retryInterval()));
         }
         
         config.setEnablePreload(annotation.enablePreload());
@@ -203,7 +203,7 @@ public class AnnotationRefreshSchedulerManager {
             try {
                 return applicationContext.getBean(annotation.loader(), CacheLoader.class);
             } catch (Exception e) {
-                log.warn("Failed to get loader bean '{}': {}", annotation.loader(), e.getMessage());
+                log.warn("获取加载器Bean '{}' 失败: {}", annotation.loader(), e.getMessage());
             }
         }
         
@@ -237,7 +237,7 @@ public class AnnotationRefreshSchedulerManager {
                     return Duration.ofSeconds(number.longValue());
                 }
             } catch (Exception spelException) {
-                log.warn("Failed to parse duration expression '{}': {}", expression, spelException.getMessage());
+                log.warn("解析持续时间表达式 '{}' 失败: {}", expression, spelException.getMessage());
             }
         }
         

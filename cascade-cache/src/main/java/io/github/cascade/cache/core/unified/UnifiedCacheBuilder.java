@@ -2,7 +2,10 @@ package io.github.cascade.cache.core.unified;
 
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheLoader;
-import io.github.cascade.cache.builder.*;
+import io.github.cascade.cache.builder.CacheBuilderValidator;
+import io.github.cascade.cache.builder.CacheConfigurationProcessor;
+import io.github.cascade.cache.builder.EnhancementConfigurationStep;
+import io.github.cascade.cache.builder.TierConfigurationStep;
 import io.github.cascade.cache.config.CascadeCacheConfiguration;
 import io.github.cascade.cache.core.unified.CaffeineEngine.CaffeineConfig;
 import io.github.cascade.cache.core.unified.RedisEngine.RedisConfig;
@@ -127,7 +130,7 @@ public class UnifiedCacheBuilder {
             this.enableL1 = true;
             this.enableL2 = true;
             this.redissonClient = redissonClient;
-            
+
             this.configProcessor.applyL1Config(createConfigWithL1(l1Config), this.l1Config);
             this.configProcessor.applyL2Config(createConfigWithL2(l2Config), this.l2Config);
             return this;
@@ -139,7 +142,7 @@ public class UnifiedCacheBuilder {
             this.enableL1 = true;
             this.enableL2 = true;
             this.redissonClient = redissonClient;
-            
+
             this.configProcessor.applyL2Config(createConfigWithL2(l2Config), this.l2Config);
             return this;
         }
@@ -161,7 +164,7 @@ public class UnifiedCacheBuilder {
             this.enableL1 = true;
             this.enableL2 = true;
             this.redissonClient = CacheConfigurationProcessor.getRedissonClientFromSpring();
-            
+
             // 设置默认L2配置
             this.l2Config.setKeyPrefix("cascade:cache:" + cacheName + ":");
             return this;
@@ -232,34 +235,43 @@ public class UnifiedCacheBuilder {
         @Override
         public Cache<K, V> build(CascadeCacheConfiguration cacheConfig) {
             long startTime = System.currentTimeMillis();
-            
+
             try {
-                log.debug("Building cache '{}' with segmented builder", cacheName);
-                
+                log.debug("正在使用分段构建器构建缓存 '{}'", cacheName);
+
                 // 验证配置
                 validateConfiguration();
-                
+
                 // 创建缓存引擎
                 CacheEngine<K, V> l1Engine = enableL1 ? new CaffeineEngine<>(cacheName, l1Config) : null;
                 CacheEngine<K, V> l2Engine = enableL2 ? new RedisEngine<>(cacheName, redissonClient, l2Config) : null;
-                
+
                 // 创建SmartCache
                 SmartCache<K, V> cache = new SmartCache<>(cacheName, l1Engine, l2Engine, executor, monitoringManager);
                 cache.setCacheConfiguration(cacheConfig);
-                
+
                 // 配置组件
+                if (cacheConfig.getProtection() != null) {
+                    this.protectionConfig = cacheConfig.getProtection();
+                }
+                if (cacheConfig.getSync() != null) {
+                    this.syncConfig = cacheConfig.getSync();
+                }
+                if (cacheConfig.getRefresh() != null) {
+                    this.refreshConfig = cacheConfig.getRefresh();
+                }
                 configureComponents(cache);
-                
+
                 long buildTime = System.currentTimeMillis() - startTime;
-                log.info("Successfully built cache '{}' in {}ms - L1={}, L2={}, features=[{}]", 
-                    cacheName, buildTime, enableL1, enableL2, getEnabledFeatures());
-                
+                log.info("已成功构建缓存 '{}'，耗时 {}ms - L1={}, L2={}, 功能=[{}]",
+                        cacheName, buildTime, enableL1, enableL2, getEnabledFeatures());
+
                 return cache;
-                
+
             } catch (Exception e) {
                 long buildTime = System.currentTimeMillis() - startTime;
-                log.error("Failed to build cache '{}' after {}ms: {}", cacheName, buildTime, e.getMessage(), e);
-                throw new RuntimeException("Cache build failed for: " + cacheName, e);
+                log.error("构建缓存 '{}' 失败，耗时 {}ms: {}", cacheName, buildTime, e.getMessage(), e);
+                throw new RuntimeException("缓存构建失败: " + cacheName, e);
             }
         }
 
@@ -267,44 +279,44 @@ public class UnifiedCacheBuilder {
 
         private void validateConfiguration() {
             validator.validateConfiguration(
-                enableL1, enableL2, l1Config, l2Config, redissonClient,
-                protectionConfig, syncConfig, refreshConfig, cacheLoader, true
+                    enableL1, enableL2, l1Config, l2Config, redissonClient,
+                    protectionConfig, syncConfig, refreshConfig, cacheLoader, true
             );
         }
 
         private void configureComponents(SmartCache<K, V> cache) {
             // 配置缓存加载器
             configProcessor.configureCacheLoader(cache, cacheLoader, true);
-            
+
             // 配置防护机制
             if (protectionConfig != null && protectionConfig.isEnabled()) {
-                SimplifiedCacheProtectionManager protectionManager = 
-                    configProcessor.configureProtection(protectionConfig, redissonClient);
+                SimplifiedCacheProtectionManager protectionManager =
+                        configProcessor.configureProtection(protectionConfig, redissonClient);
                 if (protectionManager != null) {
                     cache.setProtectionManager(protectionManager);
                 }
             }
-            
+
             // 配置同步器
             if (syncConfig != null && syncConfig.isEnabled()) {
-                UnifiedCacheSynchronizer<K, V> synchronizer = 
-                    configProcessor.configureSynchronizer(syncConfig, redissonClient);
+                UnifiedCacheSynchronizer<K, V> synchronizer =
+                        configProcessor.configureSynchronizer(syncConfig, redissonClient);
                 if (synchronizer != null) {
                     cache.setSynchronizer(synchronizer);
                 }
             }
-            
+
             // 配置刷新调度器 - 修复：使用已设置的 CacheLoader
             if (refreshConfig != null && refreshConfig.isEnabled()) {
                 // 获取已经设置到缓存中的 CacheLoader（可能是自动发现的）
                 CacheLoader<K, V> actualCacheLoader = cache.getLoader();
-                CacheRefreshScheduler<K, V> refreshScheduler = 
-                    configProcessor.configureRefreshScheduler(refreshConfig, actualCacheLoader, cache);
+                CacheRefreshScheduler<K, V> refreshScheduler =
+                        configProcessor.configureRefreshScheduler(refreshConfig, actualCacheLoader, cache);
                 if (refreshScheduler != null) {
                     cache.setRefreshScheduler(refreshScheduler);
-                    log.debug("Successfully configured refresh scheduler for cache: {}", cacheName);
+                    log.debug("已为缓存 '{}' 成功配置刷新调度器", cacheName);
                 } else {
-                    log.warn("Failed to configure refresh scheduler for cache: {} - CacheLoader not available", cacheName);
+                    log.warn("为缓存 '{}' 配置刷新调度器失败 - 缓存加载器不可用", cacheName);
                 }
             }
         }
@@ -339,21 +351,21 @@ public class UnifiedCacheBuilder {
         }
 
         private CascadeCacheConfiguration.ProtectionConfig createDefaultProtectionConfig() {
-            log.debug("Creating default protection config for cache: {}", cacheName);
+            log.debug("正在为缓存 '{}' 创建默认防护配置", cacheName);
             CascadeCacheConfiguration.ProtectionConfig config = new CascadeCacheConfiguration.ProtectionConfig();
             config.setEnabled(true);
             return config;
         }
 
         private CascadeCacheConfiguration.RefreshConfig createDefaultRefreshConfig() {
-            log.debug("Creating default refresh config for cache: {}", cacheName);
+            log.debug("正在为缓存 '{}' 创建默认刷新配置", cacheName);
             CascadeCacheConfiguration.RefreshConfig config = new CascadeCacheConfiguration.RefreshConfig();
             config.setEnabled(true);
             return config;
         }
 
         private CascadeCacheConfiguration.SyncConfig createDefaultSyncConfig() {
-            log.debug("Creating default sync config for cache: {}", cacheName);
+            log.debug("正在为缓存 '{}' 创建默认同步配置", cacheName);
             CascadeCacheConfiguration.SyncConfig config = new CascadeCacheConfiguration.SyncConfig();
             config.setEnabled(true).setTopic("cascade:cache:sync:" + cacheName);
             return config;

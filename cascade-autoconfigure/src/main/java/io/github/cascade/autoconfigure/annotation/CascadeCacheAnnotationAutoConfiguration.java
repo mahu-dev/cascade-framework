@@ -1,7 +1,9 @@
 package io.github.cascade.autoconfigure.annotation;
 
 import io.github.cascade.cache.annotation.CascadeCacheAspect;
+import io.github.cascade.cache.annotation.processor.CacheLoaderRegistry;
 import io.github.cascade.cache.api.CacheManager;
+import io.github.cascade.cache.config.CachePropertiesProvider;
 import io.github.cascade.cache.core.CacheLoaderResolver;
 import io.github.cascade.cache.event.UnifiedEventProcessor;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -32,8 +34,9 @@ public class CascadeCacheAnnotationAutoConfiguration {
     public CascadeCacheAspect cascadeCacheAspect(ApplicationContext applicationContext,
                                                CacheManager cacheManager,
                                                UnifiedEventProcessor eventProcessor,
-                                               CacheLoaderResolver cacheLoaderResolver) {
-        return new CascadeCacheAspect(applicationContext, cacheManager, eventProcessor, cacheLoaderResolver);
+                                               CacheLoaderRegistry cacheLoaderRegistry,
+                                               CachePropertiesProvider cachePropertiesProvider) {
+        return new CascadeCacheAspect(applicationContext, cacheManager, eventProcessor, cacheLoaderRegistry, cachePropertiesProvider);
     }
 
     /**
@@ -52,5 +55,16 @@ public class CascadeCacheAnnotationAutoConfiguration {
     @ConditionalOnMissingBean
     public CacheLoaderResolver cacheLoaderResolver() {
         return new CacheLoaderResolver();
+    }
+
+    /**
+     * 配置缓存加载器注册表
+     * 作为ApplicationListener，会在ContextRefreshedEvent时执行延迟初始化
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public CacheLoaderRegistry cacheLoaderRegistry(ApplicationContext applicationContext, 
+                                                   CacheLoaderResolver cacheLoaderResolver) {
+        return new CacheLoaderRegistry(applicationContext, cacheLoaderResolver);
     }
 }

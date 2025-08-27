@@ -64,7 +64,7 @@ public class CacheConfigurationProcessor<K, V> {
             l1Config.setInitialCapacity(l1.getInitialCapacity());
         }
 
-        log.debug("Applied L1 configuration for cache: {}", cacheName);
+        log.debug("已为缓存 '{}' 应用L1配置", cacheName);
     }
 
     /**
@@ -88,7 +88,7 @@ public class CacheConfigurationProcessor<K, V> {
             l2Config.setBatchSize(l2.getBatchSize());
         }
 
-        log.debug("Applied L2 configuration for cache: {}", cacheName);
+        log.debug("已为缓存 '{}' 应用L2配置", cacheName);
     }
 
     /**
@@ -100,7 +100,7 @@ public class CacheConfigurationProcessor<K, V> {
             return null;
         }
 
-        log.debug("Configuring protection mechanisms for cache: {}", cacheName);
+        log.debug("正在为缓存 '{}' 配置防护机制", cacheName);
         SimplifiedCacheProtectionManager.Builder builder = SimplifiedCacheProtectionManager.builder();
 
         // 配置布隆过滤器
@@ -113,7 +113,7 @@ public class CacheConfigurationProcessor<K, V> {
                         .falsePositiveRate(bloomConfig.getFalsePositiveRate())
                         .build();
                 builder.bloomFilter(bloomFilter);
-                log.debug("Added bloom filter protection for cache: {}", cacheName);
+                log.debug("已为缓存 '{}' 添加布隆过滤器防护", cacheName);
             }
         }
 
@@ -126,7 +126,7 @@ public class CacheConfigurationProcessor<K, V> {
             RandomTtlProtection randomTtl = new RandomTtlProtection(baseTtl, jitterRange,
                     RandomTtlProtection.JitterStrategy.UNIFORM);
             builder.randomTtl(randomTtl);
-            log.debug("Added random TTL protection for cache: {}", cacheName);
+            log.debug("已为缓存 '{}' 添加随机TTL防护", cacheName);
         }
 
         // 配置分布式锁
@@ -142,7 +142,7 @@ public class CacheConfigurationProcessor<K, V> {
                         lockConfig.getRetryDelay()
                 );
                 builder.redissonLock(distributedLock);
-                log.debug("Added distributed lock protection for cache: {}", cacheName);
+                log.debug("已为缓存 '{}' 添加分布式锁防护", cacheName);
             }
         }
 
@@ -155,7 +155,7 @@ public class CacheConfigurationProcessor<K, V> {
     public void configureCacheLoader(SmartCache<K, V> cache, CacheLoader<K, V> cacheLoader, boolean autoDiscoverLoader) {
         if (cacheLoader != null) {
             cache.setLoader(cacheLoader);
-            log.debug("Set explicit CacheLoader for cache: {}", cacheName);
+            log.debug("已为缓存 '{}' 设置显式缓存加载器", cacheName);
             return;
         }
 
@@ -164,15 +164,14 @@ public class CacheConfigurationProcessor<K, V> {
                 CacheLoader<K, V> discoveredLoader = cacheLoaderResolver.resolveCacheLoader(keyType, valueType);
                 if (discoveredLoader != null) {
                     cache.setLoader(discoveredLoader);
-                    log.info("Auto-discovered CacheLoader: {} for cache: {}",
-                            discoveredLoader.getClass().getSimpleName(), cacheName);
+                    log.info("已为缓存 '{}' 自动发现缓存加载器: {}", 
+                            cacheName, discoveredLoader.getClass().getSimpleName());
                 } else {
-                    log.debug("No compatible CacheLoader found for cache: {} with types <{}, {}>",
-                            cacheName, keyType.getSimpleName(),
-                            valueType.getSimpleName());
+                    log.debug("未为缓存 '{}' 找到兼容的缓存加载器，类型为 <{}, {}>",
+                            cacheName, keyType.getSimpleName(), valueType.getSimpleName());
                 }
             } catch (Exception e) {
-                log.warn("Failed to discover CacheLoader for cache: {}: {}", cacheName, e.getMessage());
+                log.warn("为缓存 '{}' 发现缓存加载器失败: {}", cacheName, e.getMessage());
             }
         }
     }
@@ -187,7 +186,7 @@ public class CacheConfigurationProcessor<K, V> {
         }
 
         try {
-            log.debug("Configuring synchronizer for cache: {}", cacheName);
+            log.debug("正在为缓存 '{}' 配置同步器", cacheName);
 
             String topic = syncConfig.getTopic() != null ? syncConfig.getTopic() : "cascade:cache:sync:" + cacheName;
             RedissonCacheSyncManager syncManager = new RedissonCacheSyncManager(redissonClient, topic);
@@ -195,7 +194,7 @@ public class CacheConfigurationProcessor<K, V> {
 
             return new UnifiedCacheSynchronizer<>(cacheName, syncManager, eventProcessor);
         } catch (Exception e) {
-            log.error("Failed to configure distributed sync for cache: {}: {}", cacheName, e.getMessage(), e);
+            log.error("为缓存 '{}' 配置分布式同步失败: {}", cacheName, e.getMessage(), e);
             return null;
         }
     }
@@ -207,7 +206,7 @@ public class CacheConfigurationProcessor<K, V> {
                                                                  CacheLoader<K, V> cacheLoader,
                                                                  SmartCache<K, V> cache) {
         if (refreshConfig == null || !refreshConfig.isEnabled()) {
-            log.debug("Refresh scheduler not configured: refreshConfig disabled for cache: {}", cacheName);
+            log.debug("缓存 '{}' 未配置刷新调度器: 刷新配置已禁用", cacheName);
             return null;
         }
 
@@ -217,12 +216,12 @@ public class CacheConfigurationProcessor<K, V> {
         }
 
         if (cacheLoader == null) {
-            log.warn("Cannot configure refresh scheduler for cache: {} - no CacheLoader available", cacheName);
+            log.warn("无法为缓存 '{}' 配置刷新调度器 - 没有可用的缓存加载器", cacheName);
             return null;
         }
 
         try {
-            log.debug("Configuring refresh scheduler for cache: {} with CacheLoader: {}",
+            log.debug("正在为缓存 '{}' 配置刷新调度器，使用缓存加载器: {}",
                     cacheName, cacheLoader.getClass().getSimpleName());
 
             // 使用配置中的刷新间隔，如果没有配置则使用默认值
@@ -231,12 +230,12 @@ public class CacheConfigurationProcessor<K, V> {
 
             CacheRefreshScheduler.RefreshCallback<K, V> refreshCallback = (key, newValue) -> {
                 cache.put(key, newValue);
-                log.debug("Auto refreshed cache key: '{}' for cache: '{}'", key, cacheName);
+                log.debug("已自动刷新缓存 '{}' 中的键: '{}'", cacheName, key);
             };
 
             return new CacheRefreshScheduler<>(refreshCallback, cacheLoader, interval);
         } catch (Exception e) {
-            log.error("Failed to configure auto refresh for cache: {}: {}", cacheName, e.getMessage(), e);
+            log.error("为缓存 '{}' 配置自动刷新失败: {}", cacheName, e.getMessage(), e);
             return null;
         }
     }
@@ -253,7 +252,7 @@ public class CacheConfigurationProcessor<K, V> {
         try {
             return applicationContext.getBean(RedissonClient.class);
         } catch (Exception e) {
-            log.debug("RedissonClient not found in Spring context: {}", e.getMessage());
+            log.debug("在Spring上下文中未找到RedissonClient: {}", e.getMessage());
             return null;
         }
     }

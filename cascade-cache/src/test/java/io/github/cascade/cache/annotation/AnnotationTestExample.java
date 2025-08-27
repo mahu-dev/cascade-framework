@@ -52,7 +52,7 @@ public class AnnotationTestExample {
     )
     @CascadeCacheRefresh(
         value = "productCache",
-        refreshInterval = "PT10M",
+        refreshInterval = 600L, // 10分钟
         allowConcurrentRefresh = false,
         loader = "productCacheLoader"
     )
@@ -180,10 +180,10 @@ public class AnnotationTestExample {
      */
     @CascadeCacheRefresh(
         value = "statsCache",
-        refreshInterval = "PT5M",
+        refreshInterval = 300L, // 5分钟
         allowConcurrentRefresh = true,
         maxRetries = 3,
-        retryInterval = "PT1M",
+        retryInterval = 60L, // 1分钟
         enablePreload = true,
         preloadBatchSize = 10,
         preloadConcurrency = 2,

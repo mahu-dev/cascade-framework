@@ -1,352 +1,150 @@
 package io.github.cascade.cache.annotation.processor;
 
-import io.github.cascade.cache.annotation.CacheLoaderMethod;
 import io.github.cascade.cache.api.CacheLoader;
 import io.github.cascade.cache.core.CacheLoaderResolver;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.aop.support.AopUtils;
-import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.context.ApplicationContext;
-import org.springframework.context.ConfigurableApplicationContext;
-import org.springframework.core.annotation.AnnotatedElementUtils;
-import org.springframework.util.ReflectionUtils;
-import org.springframework.util.StringUtils;
+import org.springframework.context.ApplicationListener;
+import org.springframework.context.event.ContextRefreshedEvent;
 
-import java.lang.reflect.Method;
-import java.time.Duration;
-import java.util.HashMap;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 基于注解的缓存加载器注册表
- * 扫描@CacheLoaderMethod注解并注册到Spring容器中
- * 与CacheLoaderResolver集成，避免重复的CacheLoader管理
- * 
+ * 缓存加载器注册表
+ * 自动发现并注册实现了CacheLoader接口的Spring Bean
+ * 与CacheLoaderResolver集成，提供统一的加载器管理
+ * <p>
+ * 使用延迟初始化策略避免循环依赖：
+ * - 构造器中不立即扫描Bean
+ * - 监听ContextRefreshedEvent，在容器完全初始化后执行扫描
+ *
  * @author cascade
  */
 @Slf4j
-public class CacheLoaderRegistry {
-    
+public class CacheLoaderRegistry implements ApplicationListener<ContextRefreshedEvent> {
+
     private final ApplicationContext applicationContext;
     private final CacheLoaderResolver cacheLoaderResolver;
-    
+    private volatile boolean initialized = false;
+    private final Map<String, CacheLoader<?, ?>> loaderRegistry = new ConcurrentHashMap<>();
+
     public CacheLoaderRegistry(ApplicationContext applicationContext, CacheLoaderResolver cacheLoaderResolver) {
         this.applicationContext = applicationContext;
         this.cacheLoaderResolver = cacheLoaderResolver;
-        scanAndRegisterCacheLoaderMethods();
+        // 不在构造器中立即扫描，避免循环依赖
+        log.debug("缓存加载器注册表已创建，将在上下文刷新后扫描CacheLoader实现");
     }
-    
+
     /**
-     * 扫描所有带有@CacheLoaderMethod注解的方法并注册到Spring容器
+     * 监听ContextRefreshedEvent，在Spring容器完全初始化后执行扫描
      */
-    private void scanAndRegisterCacheLoaderMethods() {
-        String[] beanNames = applicationContext.getBeanDefinitionNames();
+    @Override
+    public void onApplicationEvent(ContextRefreshedEvent event) {
+        // 确保只执行一次扫描
+        if (!initialized && event.getApplicationContext() == this.applicationContext) {
+            synchronized (this) {
+                if (!initialized) {
+                    log.info("上下文已刷新，开始扫描CacheLoader实现...");
+                    scanAndRegisterCacheLoaders();
+                    initialized = true;
+                    log.info("CacheLoader扫描完成，已注册 {} 个加载器", loaderRegistry.size());
+                }
+            }
+        }
+    }
+
+    /**
+     * 扫描所有实现了CacheLoader接口的Spring Bean并注册
+     */
+    private void scanAndRegisterCacheLoaders() {
+        @SuppressWarnings("unchecked")
+        Map<String, CacheLoader<?, ?>> loaderBeans = (Map<String, CacheLoader<?, ?>>) (Map<?, ?>) applicationContext.getBeansOfType(CacheLoader.class);
         
-        for (String beanName : beanNames) {
+        for (Map.Entry<String, CacheLoader<?, ?>> entry : loaderBeans.entrySet()) {
+            String beanName = entry.getKey();
+            CacheLoader<?, ?> loader = entry.getValue();
+            
             try {
-                Object bean = applicationContext.getBean(beanName);
-                Class<?> targetClass = AopUtils.getTargetClass(bean);
-                
-                ReflectionUtils.doWithMethods(targetClass, method -> {
-                    CacheLoaderMethod annotation = AnnotatedElementUtils.findMergedAnnotation(method, CacheLoaderMethod.class);
-                    if (annotation != null) {
-                        registerCacheLoaderMethodAsBean(beanName, bean, method, annotation);
-                    }
-                });
-                
+                registerCacheLoader(beanName, loader);
+                log.debug("已注册缓存加载器: {} -> {}", beanName, loader.getClass().getSimpleName());
             } catch (Exception e) {
-                log.warn("Failed to scan bean '{}' for cache loader methods: {}", beanName, e.getMessage());
+                log.warn("注册缓存加载器Bean '{}' 时失败: {}", beanName, e.getMessage());
             }
         }
-        
-        log.info("Scanned and registered cache loader methods from {} beans", beanNames.length);
+
+        log.info("从Spring容器中发现并注册了 {} 个CacheLoader实现", loaderBeans.size());
     }
-    
+
     /**
-     * 将缓存加载器方法注册为Spring Bean，供CacheLoaderResolver统一管理
+     * 注册缓存加载器到内部注册表
      */
-    private void registerCacheLoaderMethodAsBean(String beanName, Object bean, Method method, CacheLoaderMethod annotation) {
-        String loaderName = StringUtils.hasText(annotation.name()) ? annotation.name() : 
-                            beanName + "#" + method.getName();
+    private void registerCacheLoader(String beanName, CacheLoader<?, ?> loader) {
+        // 使用Bean名称注册
+        loaderRegistry.put(beanName, loader);
         
-        MethodBasedCacheLoader<Object, Object> loader = new MethodBasedCacheLoader<>(
-                bean, method, annotation, applicationContext);
-        
-        // 注册到Spring容器中，让CacheLoaderResolver能够发现
-        registerCacheLoaderBean(loaderName, loader);
-        
-        // 根据缓存名称也注册一份，支持按缓存名称查找
-        String[] cacheNames = getCacheNames(annotation);
-        for (String cacheName : cacheNames) {
-            String cacheLoaderBeanName = cacheName + "CacheLoader";
-            if (!isBeanAlreadyRegistered(cacheLoaderBeanName)) {
-                registerCacheLoaderBean(cacheLoaderBeanName, loader);
-                log.debug("Registered cache loader bean '{}' for cache '{}'", cacheLoaderBeanName, cacheName);
-            }
+        // 使用加载器自身的名称注册（如果不同的话）
+        String loaderName = loader.getName();
+        if (!beanName.equals(loaderName) && !loaderRegistry.containsKey(loaderName)) {
+            loaderRegistry.put(loaderName, loader);
+            log.debug("使用加载器名称 '{}' 额外注册了缓存加载器", loaderName);
         }
         
-        log.info("Registered cache loader method as bean: {} -> {}", loaderName, method.toGenericString());
+        log.debug("已注册缓存加载器: {} -> {}", beanName, loader.getClass().getSimpleName());
     }
-    
+
     /**
-     * 获取指定名称的缓存加载器 - 委托给CacheLoaderResolver
+     * 获取指定名称的缓存加载器
      */
     @SuppressWarnings("unchecked")
     public <K, V> CacheLoader<K, V> getLoader(String name) {
-        try {
-            if (applicationContext.containsBean(name)) {
-                Object bean = applicationContext.getBean(name);
-                if (bean instanceof CacheLoader) {
-                    return (CacheLoader<K, V>) bean;
-                }
-            }
-        } catch (Exception e) {
-            log.debug("Failed to get loader bean '{}': {}", name, e.getMessage());
+        // 先从内部注册表查找
+        CacheLoader<?, ?> loader = loaderRegistry.get(name);
+        if (loader != null) {
+            return (CacheLoader<K, V>) loader;
         }
+        
+        // 如果还没有完成初始化扫描，尝试直接从Spring容器获取
+        if (!initialized) {
+            log.debug("缓存加载器注册表尚未初始化，尝试直接从容器查找: {}", name);
+            try {
+                if (applicationContext.containsBean(name)) {
+                    Object bean = applicationContext.getBean(name);
+                    if (bean instanceof CacheLoader) {
+                        return (CacheLoader<K, V>) bean;
+                    }
+                }
+            } catch (Exception e) {
+                log.debug("获取加载器Bean '{}' 失败: {}", name, e.getMessage());
+            }
+        }
+        
         return null;
     }
-    
+
     /**
      * 根据缓存名称获取加载器 - 委托给CacheLoaderResolver
      */
     @SuppressWarnings("unchecked")
     public <K, V> CacheLoader<K, V> getLoaderForCache(String cacheName) {
+        if (!initialized) {
+            log.debug("缓存加载器注册表尚未初始化，委托给CacheLoaderResolver处理缓存: {}", cacheName);
+        }
         return cacheLoaderResolver.resolveCacheLoader(cacheName, (Class<K>) Object.class, (Class<V>) Object.class);
     }
-    
+
     /**
-     * 注册CacheLoader Bean到Spring容器
+     * 获取所有已注册的加载器
      */
-    private void registerCacheLoaderBean(String beanName, CacheLoader<?, ?> loader) {
-        if (applicationContext instanceof ConfigurableApplicationContext) {
-            ConfigurableListableBeanFactory beanFactory = 
-                ((ConfigurableApplicationContext) applicationContext).getBeanFactory();
-            beanFactory.registerSingleton(beanName, loader);
-            log.debug("Registered CacheLoader bean: {}", beanName);
-        } else {
-            log.warn("Cannot register CacheLoader bean '{}' - ApplicationContext is not configurable", beanName);
-        }
+    public Map<String, CacheLoader<?, ?>> getAllLoaders() {
+        return Map.copyOf(loaderRegistry);
     }
     
     /**
-     * 检查Bean是否已经注册
+     * 检查是否包含指定名称的加载器
      */
-    private boolean isBeanAlreadyRegistered(String beanName) {
-        return applicationContext.containsBean(beanName);
+    public boolean containsLoader(String name) {
+        return loaderRegistry.containsKey(name);
     }
-    
-    /**
-     * 获取缓存名称数组
-     */
-    private String[] getCacheNames(CacheLoaderMethod annotation) {
-        String[] value = annotation.value();
-        if (value.length > 0) {
-            return value;
-        }
-        return annotation.cacheNames();
-    }
-    
-    /**
-     * 基于方法的缓存加载器实现
-     * 将@CacheLoaderMethod注解的方法包装为标准的CacheLoader
-     */
-    private static class MethodBasedCacheLoader<K, V> implements CacheLoader<K, V> {
-        
-        private final Object targetBean;
-        private final Method method;
-        private final CacheLoaderMethod annotation;
-        private final ApplicationContext applicationContext;
-        
-        public MethodBasedCacheLoader(Object targetBean, Method method, CacheLoaderMethod annotation, 
-                                    ApplicationContext applicationContext) {
-            this.targetBean = targetBean;
-            this.method = method;
-            this.annotation = annotation;
-            this.applicationContext = applicationContext;
-            
-            // 确保方法可访问
-            ReflectionUtils.makeAccessible(method);
-        }
-        
-        @Override
-        @SuppressWarnings("unchecked")
-        public V load(K key) throws Exception {
-            try {
-                log.debug("Loading cache value for key '{}' using method '{}'", key, method.getName());
-                
-                Object result;
-                if (annotation.async()) {
-                    // 异步加载
-                    CompletableFuture<Object> future = CompletableFuture.supplyAsync(() -> {
-                        try {
-                            return ReflectionUtils.invokeMethod(method, targetBean, key);
-                        } catch (Exception e) {
-                            throw new RuntimeException(e);
-                        }
-                    });
-                    
-                    Duration timeout = parseTimeout(annotation.asyncTimeout());
-                    result = future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
-                } else {
-                    // 同步加载
-                    result = ReflectionUtils.invokeMethod(method, targetBean, key);
-                }
-                
-                return (V) result;
-                
-            } catch (Exception e) {
-                return handleFailure(key, e);
-            }
-        }
-        
-        @Override
-        @SuppressWarnings("unchecked")
-        public Map<K, V> loadAll(Set<K> keys) throws Exception {
-            if (!annotation.supportsBatch()) {
-                // 如果不支持批量，则逐个加载
-                Map<K, V> result = new HashMap<>();
-                for (K key : keys) {
-                    try {
-                        V value = load(key);
-                        if (value != null) {
-                            result.put(key, value);
-                        }
-                    } catch (Exception e) {
-                        log.warn("Failed to load key '{}': {}", key, e.getMessage());
-                    }
-                }
-                return result;
-            }
-            
-            try {
-                log.debug("Batch loading cache values using method '{}'", method.getName());
-                
-                Object result;
-                if (annotation.async()) {
-                    // 异步批量加载
-                    CompletableFuture<Object> future = CompletableFuture.supplyAsync(() -> {
-                        try {
-                            return ReflectionUtils.invokeMethod(method, targetBean, keys);
-                        } catch (Exception e) {
-                            throw new RuntimeException(e);
-                        }
-                    });
-                    
-                    Duration timeout = parseTimeout(annotation.batchTimeout());
-                    result = future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
-                } else {
-                    // 同步批量加载
-                    result = ReflectionUtils.invokeMethod(method, targetBean, keys);
-                }
-                
-                return (Map<K, V>) result;
-                
-            } catch (Exception e) {
-                log.warn("Batch loading failed, falling back to individual loading: {}", e.getMessage());
-                return loadAll(keys);
-            }
-        }
-        
-        /**
-         * 处理加载失败
-         */
-        @SuppressWarnings("unchecked")
-        private V handleFailure(K key, Exception e) throws Exception {
-            switch (annotation.onFailure()) {
-                case THROW:
-                    throw e;
-                    
-                case RETURN_NULL:
-                    log.debug("Returning null for failed key '{}': {}", key, e.getMessage());
-                    return null;
-                    
-                case RETURN_DEFAULT:
-                    if (StringUtils.hasText(annotation.defaultValue())) {
-                        return (V) annotation.defaultValue();
-                    }
-                    return null;
-                    
-                case FALLBACK:
-                    return executeFallback(key, e);
-                    
-                default:
-                    throw e;
-            }
-        }
-        
-        /**
-         * 执行降级逻辑
-         */
-        @SuppressWarnings("unchecked")
-        private V executeFallback(K key, Exception originalException) throws Exception {
-            if (!StringUtils.hasText(annotation.fallbackMethod())) {
-                log.warn("Fallback method not specified for key '{}'", key);
-                throw originalException;
-            }
-            
-            try {
-                Method fallbackMethod = targetBean.getClass().getMethod(annotation.fallbackMethod(), 
-                                                                       method.getParameterTypes());
-                ReflectionUtils.makeAccessible(fallbackMethod);
-                
-                Object result = ReflectionUtils.invokeMethod(fallbackMethod, targetBean, key);
-                log.debug("Fallback executed successfully for key '{}'", key);
-                return (V) result;
-                
-            } catch (Exception e) {
-                log.warn("Fallback method execution failed for key '{}': {}", key, e.getMessage());
-                throw originalException;
-            }
-        }
-        
-        /**
-         * 解析超时时间
-         */
-        private Duration parseTimeout(String timeoutStr) {
-            try {
-                return Duration.parse(timeoutStr);
-            } catch (Exception e) {
-                try {
-                    return Duration.ofSeconds(Long.parseLong(timeoutStr));
-                } catch (Exception ex) {
-                    log.warn("Failed to parse timeout '{}', using default 30 seconds", timeoutStr);
-                    return Duration.ofSeconds(30);
-                }
-            }
-        }
-        
-        @Override
-        public String getName() {
-            return String.format("%s#%s", 
-                    targetBean.getClass().getSimpleName(), method.getName());
-        }
-        
-        @Override
-        public boolean supportsBatchLoading() {
-            return annotation.supportsBatch();
-        }
-        
-        @Override
-        public boolean supportsAsyncLoading() {
-            return annotation.async();
-        }
-        
-        @Override
-        public long getLoadTimeoutMillis() {
-            if (annotation.async()) {
-                Duration timeout = parseTimeout(annotation.asyncTimeout());
-                return timeout.toMillis();
-            }
-            return 0;
-        }
-        
-        @Override
-        public String toString() {
-            return String.format("MethodBasedCacheLoader[%s#%s]", 
-                    targetBean.getClass().getSimpleName(), method.getName());
-        }
-    }
+
 }
