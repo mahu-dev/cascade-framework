@@ -1,0 +1,2 @@
+io.github.cascade.cache.config.CacheAutoConfiguration
+io.github.cascade.cache.config.CacheLoaderAutoConfiguration

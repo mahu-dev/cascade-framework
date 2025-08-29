@@ -1,0 +1,104 @@
+{
+  "groups": [
+    {
+      "name": "cascade",
+      "type": "io.github.cascade.cache.config.CascadeCacheProperties",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties"
+    },
+    {
+      "name": "cascade.l1",
+      "type": "io.github.cascade.cache.config.CascadeCacheProperties$L1Properties",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties",
+      "sourceMethod": "getL1()"
+    },
+    {
+      "name": "cascade.l2",
+      "type": "io.github.cascade.cache.config.CascadeCacheProperties$L2Properties",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties",
+      "sourceMethod": "getL2()"
+    },
+    {
+      "name": "cascade.sync",
+      "type": "io.github.cascade.cache.config.CascadeCacheProperties$SyncProperties",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties",
+      "sourceMethod": "getSync()"
+    },
+    {
+      "name": "cascade.refresh",
+      "type": "io.github.cascade.cache.config.CascadeCacheProperties$RefreshConfig",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties",
+      "sourceMethod": "getRefresh()"
+    },
+    {
+      "name": "cascade.loader",
+      "type": "io.github.cascade.cache.config.CascadeCacheProperties$LoaderProperties",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties",
+      "sourceMethod": "getLoader()"
+    }
+  ],
+  "properties": [
+    {
+      "name": "cascade.enabled",
+      "type": "java.lang.Boolean",
+      "description": "是否启用Cascade框架",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties",
+      "defaultValue": true
+    },
+    {
+      "name": "cascade.default-cache-name",
+      "type": "java.lang.String",
+      "description": "默认缓存名称",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties",
+      "defaultValue": "default"
+    },
+    {
+      "name": "cascade.l1.enabled",
+      "type": "java.lang.Boolean",
+      "description": "是否启用L1缓存",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties$L1Properties",
+      "defaultValue": true
+    },
+    {
+      "name": "cascade.l1.maximum-size",
+      "type": "java.lang.Long",
+      "description": "L1缓存最大容量",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties$L1Properties",
+      "defaultValue": 10000
+    },
+    {
+      "name": "cascade.l2.enabled",
+      "type": "java.lang.Boolean",
+      "description": "是否启用L2缓存",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties$L2Properties",
+      "defaultValue": false
+    },
+    {
+      "name": "cascade.l2.key-prefix",
+      "type": "java.lang.String",
+      "description": "Redis键前缀",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties$L2Properties",
+      "defaultValue": "cascade:"
+    },
+    {
+      "name": "cascade.sync.enabled",
+      "type": "java.lang.Boolean",
+      "description": "是否启用分布式同步",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties$SyncProperties",
+      "defaultValue": false
+    },
+    {
+      "name": "cascade.refresh.enabled",
+      "type": "java.lang.Boolean",
+      "description": "是否启用自动刷新",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties$RefreshConfig",
+      "defaultValue": false
+    },
+    {
+      "name": "cascade.loader.auto-discover",
+      "type": "java.lang.Boolean",
+      "description": "是否启用CacheLoader自动发现",
+      "sourceType": "io.github.cascade.cache.config.CascadeCacheProperties$LoaderProperties",
+      "defaultValue": true
+    }
+  ]
+}

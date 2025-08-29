@@ -15,12 +15,6 @@
     <description>Spring Boot starter for Cascade framework - includes all modules</description>
 
     <dependencies>
-        <!-- Cascade自动配置 -->
-        <dependency>
-            <groupId>cc.coderm</groupId>
-            <artifactId>cascade-autoconfigure</artifactId>
-        </dependency>
-
         <!-- Cascade核心模块 -->
         <dependency>
             <groupId>cc.coderm</groupId>

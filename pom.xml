@@ -39,7 +39,6 @@
         <module>cascade-limiter</module>
         <module>cascade-queue</module>
         <module>cascade-pubsub</module>
-        <module>cascade-autoconfigure</module>
         <module>cascade-spring-boot-starter</module>
         <module>cascade-demo</module>
     </modules>
@@ -134,11 +133,6 @@
             <dependency>
                 <groupId>cc.coderm</groupId>
                 <artifactId>cascade-pubsub</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>cc.coderm</groupId>
-                <artifactId>cascade-autoconfigure</artifactId>
                 <version>${project.version}</version>
             </dependency>
         </dependencies>

@@ -42,7 +42,8 @@ public final class Assert {
     /**
      * 断言Map不为空
      */
-    public static void notEmpty(Map<?, ?> map, String message) {
+    @SuppressWarnings("rawtypes")
+    public static void notEmpty(Map map, String message) {
         if (map == null || map.isEmpty()) {
             throw new IllegalArgumentException(message);
         }

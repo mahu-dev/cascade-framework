@@ -1,14 +1,10 @@
 package cc.coderm.demo.service;
 
 import cc.coderm.demo.model.User;
-import io.github.cascade.cache.annotation.CascadeCachePut;
-import io.github.cascade.cache.annotation.CascadeCacheRefresh;
-import io.github.cascade.cache.annotation.CascadeCacheable;
+import io.github.cascade.cache.simple.CacheEvict;
+import io.github.cascade.cache.simple.CachePut;
+import io.github.cascade.cache.simple.Cacheable;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.cache.annotation.CacheConfig;
-import org.springframework.cache.annotation.CacheEvict;
-import org.springframework.cache.annotation.Cacheable;
-import org.springframework.cache.annotation.Caching;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -25,37 +21,23 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Slf4j
 @Service
-@CacheConfig(cacheNames = "users")  // 指定默认缓存名称
+//@CacheConfig(cacheNames = "users")  // 指定默认缓存名称
 public class UserService {
 
     // 模拟数据库
     private final Map<String, User> userDatabase = new ConcurrentHashMap<>();
-    private Long nextId = 1L;
 
     // 初始化一些测试数据
     public UserService() {
         userDatabase.put("1", new User(1L, "张三", "zhangsan@example.com", 25));
         userDatabase.put("2", new User(2L, "李四", "lisi@example.com", 30));
         userDatabase.put("3", new User(3L, "王五", "wangwu@example.com", 28));
-        nextId = 4L;
     }
 
     /**
-     * 根据ID查询用户 - 会被缓存
+     * 根据ID查询用户 - 使用显式指定的CacheLoader
      */
-    @CascadeCacheable(
-            value = "users",
-            key = "#id",
-            enableL1 = true,
-            enableL2 = true,
-            ttl = "PT30M",
-            loader = "userCacheLoader"
-    )
-    @CascadeCacheRefresh(
-            value = "users",
-            refreshInterval = 10,  // 10分钟 = 600秒
-            loader = "userCacheLoader"
-    )
+    @Cacheable(value = "users", key = "#id")
     public User findById(String id) {
         log.info(">>> 从数据库查询用户(缓存方法): {}", id);
         return loadUserDirectFromDatabase(id);
@@ -85,7 +67,7 @@ public class UserService {
      */
     @Cacheable(key = "'all'")
     public List<User> findAll() {
-        System.out.println(">>> 从数据库查询所有用户");
+        log.info(">>> 从数据库查询所有用户");
         try {
             Thread.sleep(2000);
         } catch (InterruptedException e) {
@@ -99,44 +81,10 @@ public class UserService {
      */
     @Cacheable(key = "#name", condition = "#name.length() > 2")
     public List<User> findByName(String name) {
-        System.out.println(">>> 从数据库根据名称查询用户: " + name);
+        log.info(">>> 从数据库根据名称查询用户: {}", name);
         return userDatabase.values().stream()
                 .filter(user -> user.getName().contains(name))
                 .toList();
-    }
-
-    /**
-     * 创建用户 - 清除相关缓存
-     */
-    @CacheEvict(key = "'all'")
-    public User createUser(User user) {
-        user.setId(nextId++);
-        userDatabase.put(user.getId().toString(), user);
-        System.out.println(">>> 创建用户: " + user);
-        return user;
-    }
-
-    /**
-     * 更新用户 - 清除对应缓存
-     */
-    @CacheEvict(key = "'all'")
-    public User updateUser(User user) {
-        userDatabase.put(user.getId().toString(), user);
-        System.out.println(">>> 更新用户: " + user);
-        return user;
-    }
-
-    /**
-     * 删除用户 - 清除多个缓存
-     */
-    @Caching(evict = {
-            @CacheEvict(key = "#id"),
-            @CacheEvict(key = "'all'")
-    })
-    public boolean deleteUser(Long id) {
-        User removed = userDatabase.remove(id);
-        System.out.println(">>> 删除用户: " + id);
-        return removed != null;
     }
 
     /**
@@ -144,26 +92,51 @@ public class UserService {
      */
     @CacheEvict(allEntries = true)
     public void clearAllCache() {
-        System.out.println(">>> 清除所有用户缓存");
+        log.info(">>> 清除所有用户缓存");
     }
 
+    @CachePut(value = "users", key = "#id")
+    public User updateById(String id) {
+        User user = userDatabase.get(id);
+        log.debug(">>> 更新用户: {}", user);
+        return user;
+    }
+
+    @CacheEvict(value = "users", key = "#id")
+    public void deleteById(String id) {
+        userDatabase.remove(id);
+    }
+
+    // ==================== 自动CacheLoader发现功能演示 ====================
 
     /**
-     * 演示编程式缓存创建的新API
+     * 演示自动CacheLoader发现功能
+     * 不需要显式指定loader，会自动发现UserCacheLoader实现
      */
-    public void demonstrateNewCacheAPI() {
-        // 注意：这个方法仅用于演示，实际使用中应通过依赖注入获取CacheManager
-        // 新的API使用方式：
-        // cacheManager.cacheBuilder("customCache")
-        //     .maximumSize(5000)
-        //     .expireAfterWrite(Duration.ofMinutes(30))
-        //     .enableL2Cache(true, redissonClient)
-        //     .enableProtection(true)
-        //     .build();
+    @Cacheable(value = "users", key = "#id", enableRefresh = true, refreshInterval = 10)
+    public User findByIdWithAutoLoader(String id) {
+        log.info(">>> 使用自动发现的CacheLoader查询用户: {}", id);
+        // 如果缓存未命中且找到了匹配的CacheLoader，这个方法可能不会被调用
+        // 因为自动发现的UserCacheLoader会被使用
+        return loadUserDirectFromDatabase(id);
     }
 
-    @CascadeCachePut(value = "users", key = "#id")
-    public User updateById(String id) {
-        return userDatabase.get(id);
+    /**
+     * 演示显式指定loader（传统方式）
+     */
+    @Cacheable(value = "users-explicit", key = "#id")
+    public User findByIdWithExplicitLoader(String id) {
+        log.info(">>> 使用显式指定的CacheLoader查询用户: {}", id);
+        return loadUserDirectFromDatabase(id);
+    }
+
+    /**
+     * 演示没有CacheLoader的情况
+     * 当缓存未命中时会调用这个方法
+     */
+    @Cacheable(value = "users", key = "#id")
+    public User findByIdNoLoader(String id) {
+        log.info(">>> 没有CacheLoader时的查询用户: {}", id);
+        return loadUserDirectFromDatabase(id);
     }
 }
