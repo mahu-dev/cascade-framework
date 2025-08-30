@@ -3,7 +3,8 @@ package cc.coderm.demo.controller;
 import cc.coderm.demo.model.User;
 import cc.coderm.demo.service.UserService;
 import io.github.cascade.cache.simple.Cache;
-import io.github.cascade.cache.simple.SimpleCacheManager;
+import io.github.cascade.cache.simple.CacheManager;
+import io.github.cascade.cache.simple.CacheManagerImpl;
 import io.github.cascade.cache.simple.TieredCache;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,7 +33,7 @@ public class UserController {
 
 
     @Autowired
-    private SimpleCacheManager cascadeCacheManager;
+    private CacheManager cascadeCacheManager;
 
 
     // ==================== 自动CacheLoader发现功能测试端点 ====================
@@ -134,8 +135,10 @@ public class UserController {
      */
     @GetMapping("/test/resolver-stats")
     public Object getResolverStats() {
-        if (cascadeCacheManager.getCacheLoaderResolver() != null) {
-            return cascadeCacheManager.getCacheLoaderResolver().getStats();
+        if (cascadeCacheManager instanceof CacheManagerImpl cacheManagerImpl) {
+            if (cacheManagerImpl.getCacheLoaderResolver() != null) {
+                return cacheManagerImpl.getCacheLoaderResolver().getStats();
+            }
         }
         return "CacheLoaderResolver未设置";
     }
@@ -164,7 +167,10 @@ public class UserController {
      */
     @GetMapping("/test/manager-stats")
     public Object getManagerStats() {
-        return cascadeCacheManager.getStats();
+        if (cascadeCacheManager instanceof CacheManagerImpl cacheManagerImpl) {
+            return cacheManagerImpl.getStats();
+        }
+        return "统计信息不可用";
     }
 
 }

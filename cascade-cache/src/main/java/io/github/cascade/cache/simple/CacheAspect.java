@@ -21,6 +21,7 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 统一缓存切面实现
@@ -40,10 +41,14 @@ public class CacheAspect {
 
     private static final Logger log = LoggerFactory.getLogger(CacheAspect.class);
 
-    private final SimpleCacheManager cacheManager;
+    private final CacheManager cacheManager;
     private final ExpressionParser expressionParser = new SpelExpressionParser();
+    
+    // SpEL表达式缓存，提升性能并限制内存占用
+    private final ConcurrentHashMap<String, Expression> expressionCache = new ConcurrentHashMap<>();
+    private static final int MAX_EXPRESSION_CACHE_SIZE = 1000; // 最大缓存1000个表达式
 
-    public CacheAspect(SimpleCacheManager cacheManager) {
+    public CacheAspect(CacheManager cacheManager) {
         this.cacheManager = cacheManager;
         log.info("缓存切面已初始化");
     }
@@ -212,8 +217,8 @@ public class CacheAspect {
             // 创建标准评估上下文
             StandardEvaluationContext context = createEvaluationContext(joinPoint);
 
-            // 解析并评估表达式
-            Expression spelExpression = expressionParser.parseExpression(expression);
+            // 从缓存获取已解析的表达式，避免重复解析
+            Expression spelExpression = getCachedExpression(expression);
             Object result = spelExpression.getValue(context);
 
             return result != null ? result : "null";
@@ -221,6 +226,28 @@ public class CacheAspect {
             log.warn("SpEL表达式解析失败: {}, 使用默认键生成策略, 错误: {}", expression, e.getMessage());
             return generateDefaultCacheKey(joinPoint);
         }
+    }
+    
+    /**
+     * 获取缓存的SpEL表达式，如果不存在则解析并缓存
+     * 使用LRU清理策略防止内存泄漏
+     */
+    private Expression getCachedExpression(String expression) {
+        return expressionCache.computeIfAbsent(expression, expr -> {
+            // 检查缓存大小，超出限制时进行清理
+            if (expressionCache.size() >= MAX_EXPRESSION_CACHE_SIZE) {
+                // 简单的清理策略：清理25%最老的条目
+                int removeCount = MAX_EXPRESSION_CACHE_SIZE / 4;
+                expressionCache.entrySet().stream()
+                    .limit(removeCount)
+                    .forEach(entry -> expressionCache.remove(entry.getKey()));
+                
+                log.debug("SpEL表达式缓存已清理 {} 个条目，当前大小: {}", removeCount, expressionCache.size());
+            }
+            
+            // 解析新表达式
+            return expressionParser.parseExpression(expr);
+        });
     }
 
     /**

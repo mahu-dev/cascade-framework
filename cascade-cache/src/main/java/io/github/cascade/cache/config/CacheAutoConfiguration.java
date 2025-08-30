@@ -1,9 +1,6 @@
 package io.github.cascade.cache.config;
 
-import io.github.cascade.cache.simple.CacheAspect;
-import io.github.cascade.cache.simple.CacheLoaderResolver;
-import io.github.cascade.cache.simple.CacheManager;
-import io.github.cascade.cache.simple.SimpleCacheManager;
+import io.github.cascade.cache.simple.*;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,7 +27,7 @@ import org.springframework.context.annotation.Primary;
  * @author cascade
  */
 @AutoConfiguration
-@ConditionalOnClass({CacheManager.class, SimpleCacheManager.class})
+@ConditionalOnClass({CacheManager.class, CacheManagerImpl.class})
 @ConditionalOnProperty(prefix = "cascade", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(CascadeCacheProperties.class)
 public class CacheAutoConfiguration {
@@ -38,21 +35,38 @@ public class CacheAutoConfiguration {
     private static final Logger log = LoggerFactory.getLogger(CacheAutoConfiguration.class);
 
     /**
-     * 精简缓存管理器配置
+     * 新架构缓存管理器配置
      */
     @Bean
     @Primary
     @ConditionalOnMissingBean
-    public SimpleCacheManager simpleCacheManager(
+    public CacheManagerImpl cacheManagerImpl(
             RedissonClient redissonClient, 
             CascadeCacheProperties defaultConfig,
             @Autowired(required = false) CacheLoaderResolver cacheLoaderResolver) {
-        log.info("配置精简缓存管理器");
-        SimpleCacheManager cacheManager = new SimpleCacheManager(redissonClient, defaultConfig);
-        if (cacheLoaderResolver != null) {
-            cacheManager.setCacheLoaderResolver(cacheLoaderResolver);
+        log.info("配置新架构缓存管理器");
+        
+        // 创建组件
+        CacheRegistry cacheRegistry = new DefaultCacheRegistry();
+        CacheFactoryRegistry factoryRegistry = new CacheFactoryRegistry();
+        LifecycleManager lifecycleManager = new DefaultLifecycleManager();
+        
+        // 注册工厂
+        factoryRegistry.registerFactory(new L1CacheFactory());
+        if (redissonClient != null) {
+            factoryRegistry.registerFactory(new L2CacheFactory(redissonClient));
+            factoryRegistry.registerFactory(new TieredCacheFactory(redissonClient));
         }
-        log.info("✅ 精简缓存管理器配置完成");
+        
+        CacheManagerImpl cacheManager = new CacheManagerImpl(
+                cacheRegistry, 
+                factoryRegistry, 
+                lifecycleManager,
+                defaultConfig,
+                cacheLoaderResolver
+        );
+        
+        log.info("✅ 新架构缓存管理器配置完成");
         return cacheManager;
     }
 
@@ -78,7 +92,7 @@ public class CacheAutoConfiguration {
     @ConditionalOnMissingBean
     @ConditionalOnClass(name = "org.aspectj.lang.annotation.Aspect")
     @ConditionalOnProperty(prefix = "cascade.cache.annotation", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public CacheAspect cacheAspect(SimpleCacheManager cacheManager) {
+    public CacheAspect cacheAspect(CacheManagerImpl cacheManager) {
 
         log.info("配置缓存切面");
 
@@ -94,7 +108,7 @@ public class CacheAutoConfiguration {
     @Bean
     @ConditionalOnProperty(prefix = "cascade.cache.logging", name = "config-info", havingValue = "true", matchIfMissing = true)
     public CacheConfigurationInfoLogger cacheConfigurationInfoLogger(
-            SimpleCacheManager cacheManager,
+            CacheManagerImpl cacheManager,
             CascadeCacheProperties defaultConfig,
             RedissonClient redissonClient) {
 
@@ -108,7 +122,7 @@ public class CacheAutoConfiguration {
 
         private static final Logger log = LoggerFactory.getLogger(CacheConfigurationInfoLogger.class);
 
-        public CacheConfigurationInfoLogger(SimpleCacheManager cacheManager,
+        public CacheConfigurationInfoLogger(CacheManagerImpl cacheManager,
                                             CascadeCacheProperties defaultConfig,
                                             RedissonClient redissonClient) {
 

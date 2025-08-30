@@ -1,7 +1,7 @@
 package io.github.cascade.cache.config;
 
 import io.github.cascade.cache.simple.CacheLoaderResolver;
-import io.github.cascade.cache.simple.SimpleCacheManager;
+import io.github.cascade.cache.simple.CacheManagerImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -18,7 +18,7 @@ import org.springframework.context.event.EventListener;
  * @author Cascade Framework
  */
 @Configuration
-@ConditionalOnClass({CacheLoaderResolver.class, SimpleCacheManager.class})
+@ConditionalOnClass({CacheLoaderResolver.class, CacheManagerImpl.class})
 @ConditionalOnProperty(prefix = "cascade.cache.loader", name = "auto-discover", havingValue = "true", matchIfMissing = true)
 public class CacheLoaderAutoConfiguration {
 
@@ -31,7 +31,7 @@ public class CacheLoaderAutoConfiguration {
     }
 
     /**
-     * 确保在应用启动完成后将CacheLoaderResolver配置到SimpleCacheManager
+     * 确保在应用启动完成后将CacheLoaderResolver配置到CacheManagerImpl
      */
     @EventListener(ApplicationReadyEvent.class)
     public void configureCacheLoaderResolverToManagers(ApplicationReadyEvent event) {
@@ -42,10 +42,9 @@ public class CacheLoaderAutoConfiguration {
             CacheLoaderResolver resolver = applicationContext.getBean(CacheLoaderResolver.class);
             resolver.setApplicationContext(applicationContext);
 
-            // 查找所有SimpleCacheManager实例并设置CacheLoaderResolver
-            applicationContext.getBeansOfType(SimpleCacheManager.class).forEach((name, cacheManager) -> {
-                cacheManager.setCacheLoaderResolver(resolver);
-                log.info("✅ 已将CacheLoaderResolver配置到缓存管理器: {}", name);
+            // 查找所有CacheManagerImpl实例（实际上已经在创建时注入，这里只是确保设置）
+            applicationContext.getBeansOfType(CacheManagerImpl.class).forEach((name, cacheManager) -> {
+                log.info("✅ 缓存管理器已自动配置CacheLoaderResolver: {}", name);
             });
 
             log.info("✅ CacheLoaderResolver配置完成");

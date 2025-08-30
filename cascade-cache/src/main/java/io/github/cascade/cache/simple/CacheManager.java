@@ -91,4 +91,16 @@ public interface CacheManager {
      * 检查是否已关闭
      */
     boolean isClosed();
+
+    // ==================== 扩展功能 ====================
+    
+    /**
+     * 获取或创建缓存刷新器
+     * 
+     * @param cacheName 缓存名称
+     * @param <K> 键类型
+     * @param <V> 值类型
+     * @return 缓存刷新器，创建失败返回null
+     */
+    <K, V> CacheRefresher<K, V> getOrCreateCacheRefresher(String cacheName);
 }
