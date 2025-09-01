@@ -6,6 +6,7 @@ import org.springframework.context.ApplicationContext;
 
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -80,34 +81,55 @@ public class CacheLoaderResolver<K, V> {
      */
     @SuppressWarnings("unchecked")
     private CacheLoader<K, V> findMatchingCacheLoader(Class<K> keyType, Class<V> valueType) {
-        try {
-            // 获取所有CacheLoader类型的Bean
-            Map<String, CacheLoader> loaderBeans = applicationContext.getBeansOfType(CacheLoader.class);
-
-            log.debug("扫描到{}个CacheLoader实现", loaderBeans.size());
-
-            for (Map.Entry<String, CacheLoader> entry : loaderBeans.entrySet()) {
-                String beanName = entry.getKey();
-                CacheLoader<K, V> loader = entry.getValue();
-                try {
-                    TypeInfo typeInfo = getOrAnalyzeTypeInfo(loader);
-                    if (typeInfo != null && typeInfo.matches(keyType, valueType)) {
-                        log.debug("找到匹配的CacheLoader Bean: name={}, keyType={}, valueType={}",
-                                beanName, typeInfo.keyType.getSimpleName(), typeInfo.valueType.getSimpleName());
-                        return loader;
-                    }
-                } catch (Exception e) {
-                    log.warn("分析CacheLoader类型失败: beanName={}, error={}", beanName, e.getMessage());
-                }
-            }
-
+        Map<String, CacheLoader> loaderBeans = getLoaderBeans(keyType, valueType);
+        if (loaderBeans == null) {
             return null;
+        }
 
+        log.debug("扫描到{}个CacheLoader实现", loaderBeans.size());
+
+        for (Map.Entry<String, CacheLoader> entry : loaderBeans.entrySet()) {
+            String beanName = entry.getKey();
+            CacheLoader<K, V> loader = entry.getValue();
+
+            CacheLoader<K, V> matchedLoader = tryMatchLoader(beanName, loader, keyType, valueType);
+            if (matchedLoader != null) {
+                return matchedLoader;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 安全获取所有CacheLoader类型的Bean
+     */
+    private Map<String, CacheLoader> getLoaderBeans(Class<K> keyType, Class<V> valueType) {
+        try {
+            return applicationContext.getBeansOfType(CacheLoader.class);
         } catch (Exception e) {
             log.error("查找CacheLoader失败: keyType={}, valueType={}, error={}",
                     keyType.getSimpleName(), valueType.getSimpleName(), e.getMessage());
-            return null;
+            return Collections.emptyMap();
         }
+    }
+
+    /**
+     * 尝试匹配单个CacheLoader
+     */
+    private CacheLoader<K, V> tryMatchLoader(String beanName, CacheLoader<K, V> loader,
+                                             Class<K> keyType, Class<V> valueType) {
+        try {
+            TypeInfo typeInfo = getOrAnalyzeTypeInfo(loader);
+            if (typeInfo != null && typeInfo.matches(keyType, valueType)) {
+                log.debug("找到匹配的CacheLoader Bean: name={}, keyType={}, valueType={}",
+                        beanName, typeInfo.keyType.getSimpleName(), typeInfo.valueType.getSimpleName());
+                return loader;
+            }
+        } catch (Exception e) {
+            log.warn("分析CacheLoader类型失败: beanName={}, error={}", beanName, e.getMessage());
+        }
+        return null;
     }
 
     /**

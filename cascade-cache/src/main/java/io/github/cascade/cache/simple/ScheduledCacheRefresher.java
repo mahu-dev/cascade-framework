@@ -1,12 +1,12 @@
 package io.github.cascade.cache.simple;
 
 import io.github.cascade.cache.config.CascadeCacheProperties;
+import io.github.cascade.cache.exception.CacheException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.stream.Collectors;
 
 /**
  * 基于调度器的缓存刷新实现
@@ -84,9 +84,8 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
             throw new IllegalArgumentException("缓存加载器不能为null");
         }
 
-        log.info("创建定时缓存刷新器: cache={}, 默认间隔={}s, 并行刷新={}, 配置L2TTL={}s",
-                cacheName, defaultRefreshIntervalSeconds, parallelRefresh,
-                config != null ? config.getL2DefaultTtlSeconds() : "null");
+        log.info("创建缓存刷新器: cache={}, 默认间隔={}s, 并行刷新={}",
+                cacheName, defaultRefreshIntervalSeconds, parallelRefresh);
     }
 
 
@@ -94,13 +93,8 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
 
     @Override
     public CompletableFuture<V> refresh(K key) {
-        if (loader == null) {
-            return CompletableFuture.completedFuture(null);
-        }
-
         return CompletableFuture.supplyAsync(() -> {
             try {
-                log.debug("开始刷新缓存: cache={}, key={}", cacheName, key);
                 V newValue = loader.apply(key);
 
                 if (newValue != null) {
@@ -109,23 +103,19 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
                         long ttl = config.getL2DefaultTtlSeconds();
                         if (ttl > 0) {
                             cache.put(key, newValue, ttl);
-                            log.debug("缓存刷新成功: cache={}, key={}, ttl={}s", cacheName, key, ttl);
                         } else {
                             cache.put(key, newValue);
-                            log.debug("缓存刷新成功: cache={}, key={}, ttl=永不过期", cacheName, key);
                         }
                     } else {
                         cache.put(key, newValue);
-                        log.debug("缓存刷新成功: cache={}, key={}, ttl=默认", cacheName, key);
                     }
-                } else {
-                    log.debug("缓存刷新返回null: cache={}, key={}", cacheName, key);
+                    log.trace("缓存刷新完成: cache={}, key={}", cacheName, key);
                 }
 
                 return newValue;
             } catch (Exception e) {
-                log.error("缓存刷新失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
-                throw new CompletionException("缓存刷新失败: " + key, e);
+                log.error("缓存刷新失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
+                throw new CompletionException(new CacheException(cacheName, "刷新", "刷新键失败: " + key, e));
             }
         }, refreshExecutor);
     }
@@ -140,7 +130,7 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
             // 并行刷新
             List<CompletableFuture<V>> futures = keys.stream()
                     .map(this::refresh)
-                    .collect(Collectors.toList());
+                    .toList();
 
             return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
                     .exceptionally(throwable -> {
@@ -314,7 +304,7 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
 
         scheduledTasks.put(key, newTask);
 
-        log.info("调度键刷新任务已创建: cache={}, key={}, interval={}s", cacheName, key, info.refreshIntervalSeconds);
+        log.debug("调度键刷新任务已创建: cache={}, key={}, interval={}s", cacheName, key, info.refreshIntervalSeconds);
     }
 
     /**

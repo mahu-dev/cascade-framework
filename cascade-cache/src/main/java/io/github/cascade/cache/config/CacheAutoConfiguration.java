@@ -35,28 +35,63 @@ public class CacheAutoConfiguration {
     private static final Logger log = LoggerFactory.getLogger(CacheAutoConfiguration.class);
 
     /**
-     * 新架构缓存管理器配置
+     * 缓存注册表Bean
      */
     @Bean
-    @Primary
     @ConditionalOnMissingBean
-    public CacheManagerImpl cacheManagerImpl(
-            RedissonClient redissonClient, 
-            CascadeCacheProperties defaultConfig,
-            @Autowired(required = false) CacheLoaderResolver cacheLoaderResolver) {
-        log.info("配置新架构缓存管理器");
+    public CacheRegistry cacheRegistry() {
+        log.info("创建缓存注册表");
+        return new DefaultCacheRegistry();
+    }
+
+    /**
+     * 缓存工厂注册表Bean
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public CacheFactoryRegistry cacheFactoryRegistry(
+            @Autowired(required = false) RedissonClient redissonClient) {
+        log.info("创建缓存工厂注册表");
         
-        // 创建组件
-        CacheRegistry cacheRegistry = new DefaultCacheRegistry();
         CacheFactoryRegistry factoryRegistry = new CacheFactoryRegistry();
-        LifecycleManager lifecycleManager = new DefaultLifecycleManager();
         
         // 注册工厂
         factoryRegistry.registerFactory(new L1CacheFactory());
         if (redissonClient != null) {
             factoryRegistry.registerFactory(new L2CacheFactory(redissonClient));
             factoryRegistry.registerFactory(new TieredCacheFactory(redissonClient));
+            log.info("注册Redis相关缓存工厂: L2CacheFactory, TieredCacheFactory");
+        } else {
+            log.info("Redis客户端未配置，跳过Redis相关缓存工厂");
         }
+        
+        log.info("缓存工厂注册完成，共注册{}个工厂", factoryRegistry.getFactoryCount());
+        return factoryRegistry;
+    }
+
+    /**
+     * 生命周期管理器Bean
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public LifecycleManager lifecycleManager() {
+        log.info("创建生命周期管理器");
+        return new DefaultLifecycleManager();
+    }
+
+    /**
+     * 新架构缓存管理器配置
+     */
+    @Bean
+    @Primary
+    @ConditionalOnMissingBean
+    public CacheManagerImpl cacheManagerImpl(
+            CacheRegistry cacheRegistry,
+            CacheFactoryRegistry factoryRegistry,
+            LifecycleManager lifecycleManager,
+            CascadeCacheProperties defaultConfig,
+            @Autowired(required = false) CacheLoaderResolver cacheLoaderResolver) {
+        log.info("配置新架构缓存管理器");
         
         CacheManagerImpl cacheManager = new CacheManagerImpl(
                 cacheRegistry, 
@@ -76,12 +111,13 @@ public class CacheAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "cascade.loader", name = "auto-discover", havingValue = "true", matchIfMissing = true)
-    public CacheLoaderResolver cacheLoaderResolver() {
+    public CacheLoaderResolver cacheLoaderResolver(org.springframework.context.ApplicationContext applicationContext) {
         log.info("创建CacheLoaderResolver用于自动发现CacheLoader实现");
 
         CacheLoaderResolver resolver = new CacheLoaderResolver();
+        resolver.setApplicationContext(applicationContext);
 
-        log.info("CacheLoaderResolver已创建");
+        log.info("CacheLoaderResolver已创建并设置ApplicationContext");
         return resolver;
     }
 

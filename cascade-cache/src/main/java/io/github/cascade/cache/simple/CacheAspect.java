@@ -59,7 +59,9 @@ public class CacheAspect {
     public <K, V> Object handleCacheable(ProceedingJoinPoint joinPoint, Cacheable cacheable) throws Throwable {
         String cacheName = resolveCacheName(joinPoint, cacheable.value());
         K cacheKey = (K) evaluateSpelExpression(joinPoint, cacheable.key());
-        log.debug("@Cacheable处理开始: cache={}, key={}", cacheName, cacheKey);
+        if (log.isTraceEnabled()) {
+            log.trace("@Cacheable处理开始: cache={}, key={}", cacheName, cacheKey);
+        }
 
         try {
             // 获取缓存实例
@@ -73,11 +75,10 @@ public class CacheAspect {
             // 尝试从缓存获取
             Optional<V> cachedValue = cache.get(cacheKey);
             if (cachedValue.isPresent()) {
-                log.debug("@Cacheable缓存命中: cache={}, key={}", cacheName, cacheKey);
+                if (log.isTraceEnabled()) {
+                    log.trace("@Cacheable缓存命中: cache={}, key={}", cacheName, cacheKey);
+                }
 
-                // 即使缓存命中，也要检查是否需要添加到刷新列表
-                log.debug("检查缓存命中时是否需要启用自动刷新: enableRefresh={}, refreshInterval={}",
-                        cacheable.enableRefresh(), cacheable.refreshInterval());
                 if (cacheable.enableRefresh()) {
                     log.info("缓存命中但需要启用自动刷新: cache={}, key={}, interval={}s",
                             cacheName, cacheKey, cacheable.refreshInterval());
@@ -109,18 +110,12 @@ public class CacheAspect {
                     cache.put(cacheKey, result, cacheable.ttl());
 
                     // 启用自动刷新
-                    log.debug("检查是否需要启用自动刷新: enableRefresh={}, refreshInterval={}",
-                            cacheable.enableRefresh(), cacheable.refreshInterval());
                     if (cacheable.enableRefresh()) {
                         log.info("准备启用自动刷新: cache={}, key={}, interval={}s",
                                 cacheName, cacheKey, cacheable.refreshInterval());
                         scheduleRefresh(cache, cacheKey, cacheable.refreshInterval());
                     }
-                } else {
-                    log.debug("方法返回结果为null，跳过缓存和刷新: cache={}, key={}", cacheName, cacheKey);
                 }
-
-                log.debug("@Cacheable缓存更新: cache={}, key={}", cacheName, cacheKey);
                 return result;
             }
 
@@ -700,15 +695,10 @@ public class CacheAspect {
      * 调度刷新任务
      */
     private <K, V> void scheduleRefresh(Cache<K, V> cache, K key, long intervalSeconds) {
-        log.info(" [DEBUG] scheduleRefresh 方法被调用: cache={}, key={}, interval={}s", cache.getName(), key, intervalSeconds);
         try {
-            // 获取或按需创建CacheRefresher（支持注解级别覆盖全局配置）
-            log.info(" [DEBUG] 正在调用 getOrCreateCacheRefresher 方法");
             CacheRefresher<K, V> refresher = cacheManager.getOrCreateCacheRefresher(cache.getName());
-            log.info(" [DEBUG] getOrCreateCacheRefresher 返回结果: {}", refresher != null ? "非空" : "为空");
 
             if (refresher != null) {
-                // 将缓存键添加到刷新器的监控列表中，使用指定的刷新间隔
                 refresher.addKey(key, intervalSeconds);
                 log.info("缓存自动刷新已启用: cache={}, key={}, interval={}s", cache.getName(), key, intervalSeconds);
             } else {

@@ -1,6 +1,7 @@
 package io.github.cascade.cache.simple;
 
 import io.github.cascade.cache.config.CascadeCacheProperties;
+import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,7 +38,17 @@ public class TieredCache<K, V> implements Cache<K, V> {
     private final Cache<K, V> l2Cache;    // L2缓存（可选）
     private final CacheLoader<K, V> loader; // 数据加载器（可选）
     private final CacheLoaderResolver cacheLoaderResolver; // CacheLoader解析器（可选）
+    /**
+     * -- GETTER --
+     * 获取键类型
+     */
+    @Getter
     private final Class<K> keyType;  // 键类型
+    /**
+     * -- GETTER --
+     * 获取值类型
+     */
+    @Getter
     private final Class<V> valueType; // 值类型
     private volatile boolean closed = false;
 
@@ -551,20 +562,6 @@ public class TieredCache<K, V> implements Cache<K, V> {
         }
 
         return result;
-    }
-
-    /**
-     * 获取键类型
-     */
-    public Class<K> getKeyType() {
-        return keyType;
-    }
-
-    /**
-     * 获取值类型
-     */
-    public Class<V> getValueType() {
-        return valueType;
     }
 
     @Override

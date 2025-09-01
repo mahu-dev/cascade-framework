@@ -1,6 +1,9 @@
 package io.github.cascade.cache.simple;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.cascade.cache.exception.CacheConnectionException;
+import io.github.cascade.cache.exception.CacheSerializationException;
+import lombok.Getter;
 import org.redisson.api.RTopic;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
@@ -30,7 +33,17 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
     private static final Logger log = LoggerFactory.getLogger(RedisCacheSync.class);
 
     private final RedissonClient redissonClient;
+    /**
+     * -- GETTER --
+     * 获取主题前缀
+     */
+    @Getter
     private final String topicPrefix;
+    /**
+     * -- GETTER --
+     * 获取当前节点ID
+     */
+    @Getter
     private final String nodeId;
     private final ObjectMapper objectMapper;
     private final ConcurrentMap<String, Consumer<SyncEvent<K, V>>> subscribers = new ConcurrentHashMap<>();
@@ -63,9 +76,6 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
             return "node-" + System.currentTimeMillis() + "-" + Thread.currentThread().getId();
         }
 
-//        String hostname = System.getProperty("hostname", "unknown");
-//        String pid = System.getProperty("pid", String.valueOf(System.currentTimeMillis() % 10000));
-//        return hostname + "-" + pid + "-" + UUID.randomUUID().toString().substring(0, 8);
     }
 
     // ==================== CacheSync接口实现 ====================
@@ -88,11 +98,16 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
                 // 发布事件
                 topic.publish(jsonData);
 
-                log.debug("发布同步事件: topic={}, event={}", topicName, event);
+                if (log.isTraceEnabled()) {
+                    log.trace("发布同步事件: topic={}, event={}", topicName, event);
+                }
 
+            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+                log.error("发布同步事件失败: event={}, error={}", event, e.getMessage(), e);
+                throw new CacheSerializationException("RedisCacheSync", "序列化事件失败", e);
             } catch (Exception e) {
-                log.error("发布同步事件失败: event={}, error={}", event, e.getMessage());
-                throw new RuntimeException("发布同步事件失败", e);
+                log.error("发布同步事件失败: event={}, error={}", event, e.getMessage(), e);
+                throw new CacheConnectionException("RedisCacheSync", "发布事件失败", e);
             }
         });
     }
@@ -187,7 +202,9 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
                     // 处理事件
                     eventHandler.accept(syncEvent);
 
-                    log.debug("处理同步事件: topic={}, event={}", topicName, syncEvent);
+                    if (log.isTraceEnabled()) {
+                        log.trace("处理同步事件: topic={}, event={}", topicName, syncEvent);
+                    }
 
                 } catch (Exception e) {
                     log.error("处理同步事件失败: topic={}, data={}, error={}",
@@ -215,18 +232,17 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
      * 可序列化的事件类（用于JSON序列化）
      */
     public static class SerializableEvent {
-        public String cacheName;
-        public String type;
-        public Object key;
-        public Object value;
-        public String nodeId;
-        public long timestamp;
+        private String cacheName;
+        private String type;
+        private Object key;
+        private Object value;
+        private String nodeId;
+        private long timestamp;
 
         // 默认构造器（JSON反序列化需要）
         public SerializableEvent() {
         }
 
-        @SuppressWarnings("unchecked")
         public SerializableEvent(SyncEvent event) {
             this.cacheName = event.getCacheName();
             this.type = event.getType().name();
@@ -240,24 +256,10 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
     // ==================== 扩展方法 ====================
 
     /**
-     * 获取当前节点ID
-     */
-    public String getNodeId() {
-        return nodeId;
-    }
-
-    /**
      * 获取订阅数量
      */
     public int getSubscriberCount() {
         return subscribers.size();
-    }
-
-    /**
-     * 获取主题前缀
-     */
-    public String getTopicPrefix() {
-        return topicPrefix;
     }
 
     @Override
