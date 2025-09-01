@@ -132,31 +132,6 @@ public class CascadeCacheProperties {
         private long timeoutSeconds = 5;
     }
 
-    /**
-     * 同步配置
-     */
-    @Data
-    public static class SyncProperties {
-        /**
-         * 是否启用同步
-         */
-        private boolean enabled = false;
-
-        /**
-         * 同步主题
-         */
-        private String topic = "cascade:cache:sync";
-
-        /**
-         * 同步超时时间（秒）
-         */
-        private long timeoutSeconds = 5;
-
-        /**
-         * 是否异步同步
-         */
-        private boolean async = true;
-    }
 
     /**
      * 刷新调度器配置
@@ -167,7 +142,7 @@ public class CascadeCacheProperties {
         /**
          * 是否启用自动刷新
          */
-        private boolean enabled = false;
+        private boolean enabled = true;
 
         /**
          * 默认刷新间隔（秒）
@@ -302,14 +277,21 @@ public class CascadeCacheProperties {
      * 是否启用分布式同步
      */
     public boolean isSyncEnabled() {
-        return sync.enabled;
+        return sync.isEnabled();
+    }
+
+    /**
+     * 获取同步配置
+     */
+    public SyncProperties getSyncConfig() {
+        return sync;
     }
 
     /**
      * 同步主题名称
      */
     public String getSyncTopic() {
-        return sync.topic;
+        return sync.getTopicPrefix();
     }
 
     /**
@@ -355,7 +337,7 @@ public class CascadeCacheProperties {
     public static CascadeCacheProperties l1Only() {
         CascadeCacheProperties config = new CascadeCacheProperties();
         config.l2.enabled = false;
-        config.sync.enabled = false;
+        config.sync.disable();
         return config;
     }
 
@@ -366,7 +348,7 @@ public class CascadeCacheProperties {
         CascadeCacheProperties config = new CascadeCacheProperties();
         config.l1.enabled = false;
         config.l2.enabled = true;
-        config.sync.enabled = false;
+        config.sync.disable();
         return config;
     }
 
@@ -377,7 +359,7 @@ public class CascadeCacheProperties {
         CascadeCacheProperties config = new CascadeCacheProperties();
         config.l1.enabled = true;
         config.l2.enabled = true;
-        config.sync.enabled = true;
+        config.sync.enable();
         return config;
     }
 }

@@ -52,6 +52,17 @@ public interface CacheRegistry {
     <K, V> Cache<K, V> remove(String name);
     
     /**
+     * 替换缓存实例
+     * 
+     * @param name 缓存名称
+     * @param cache 新的缓存实例
+     * @param <K> 键类型
+     * @param <V> 值类型
+     * @return 被替换的缓存实例，不存在时返回null
+     */
+    <K, V> Cache<K, V> replace(String name, Cache<K, V> cache);
+    
+    /**
      * 检查是否包含指定名称的缓存
      * 
      * @param name 缓存名称

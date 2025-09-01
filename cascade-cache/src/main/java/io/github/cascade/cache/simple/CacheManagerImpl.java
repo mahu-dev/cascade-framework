@@ -1,12 +1,13 @@
 package io.github.cascade.cache.simple;
 
 import io.github.cascade.cache.config.CascadeCacheProperties;
+import io.github.cascade.cache.config.SyncProperties;
 import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.function.Function;
 
 /**
@@ -23,7 +24,6 @@ import java.util.function.Function;
  *
  * @author cascade
  */
-@Component("cacheManagerImpl")
 public class CacheManagerImpl implements CacheManager {
 
     private static final Logger log = LoggerFactory.getLogger(CacheManagerImpl.class);
@@ -55,6 +55,9 @@ public class CacheManagerImpl implements CacheManager {
     @Getter
     private final CacheLoaderResolver cacheLoaderResolver;
 
+    // 同步工厂列表 (Spring自动注入)
+    private final List<CacheSyncFactory> cacheSyncFactories;
+
     // 状态管理
     private volatile boolean closed = false;
     private final String nodeId;
@@ -66,16 +69,19 @@ public class CacheManagerImpl implements CacheManager {
                             CacheFactoryRegistry factoryRegistry,
                             LifecycleManager lifecycleManager,
                             CascadeCacheProperties defaultConfig,
-                            CacheLoaderResolver cacheLoaderResolver) {
+                            CacheLoaderResolver cacheLoaderResolver,
+                            List<CacheSyncFactory> cacheSyncFactories) {
         this.cacheRegistry = cacheRegistry;
         this.factoryRegistry = factoryRegistry;
         this.lifecycleManager = lifecycleManager;
         this.defaultConfig = defaultConfig != null ? defaultConfig : CascadeCacheProperties.defaults();
         this.cacheLoaderResolver = cacheLoaderResolver;
+        this.cacheSyncFactories = cacheSyncFactories;
         this.nodeId = generateNodeId();
 
-        log.info("缓存管理器初始化完成: nodeId={}, factoryCount={}",
-                nodeId, factoryRegistry.getFactoryCount());
+        log.info("缓存管理器初始化完成: nodeId={}, factoryCount={}, syncFactoryCount={}",
+                nodeId, factoryRegistry.getFactoryCount(),
+                cacheSyncFactories != null ? cacheSyncFactories.size() : 0);
         log.debug("支持的缓存类型: {}", factoryRegistry.getRegisteredFactories().keySet());
     }
 
@@ -102,6 +108,10 @@ public class CacheManagerImpl implements CacheManager {
     public <K, V> Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType,
                                                CascadeCacheProperties config, Function<K, V> loader) {
         checkNotClosed();
+        if (loader == null) {
+            // 尝试从 cacheLoaderResolver 中获取真实类型的 Loader
+            loader = cacheLoaderResolver.resolveCacheLoader(keyType, valueType);
+        }
 
         if (cacheName == null || cacheName.trim().isEmpty()) {
             throw new IllegalArgumentException("缓存名称不能为空");
@@ -114,11 +124,12 @@ public class CacheManagerImpl implements CacheManager {
         log.debug("获取或创建缓存: name={}, keyType={}, valueType={}",
                 cacheName, keyType.getSimpleName(), valueType.getSimpleName());
 
+        Function<K, V> finalLoader = loader;
         return cacheRegistry.computeIfAbsent(cacheName, () -> {
             // 构建缓存定义
             CacheDefinition<K, V> definition = CacheDefinition.of(cacheName, keyType, valueType)
                     .setConfig(finalConfig)
-                    .setLoader(loader)
+                    .setLoader(finalLoader)
                     .setLoaderResolver(cacheLoaderResolver);
 
             // 使用工厂创建缓存
@@ -261,16 +272,23 @@ public class CacheManagerImpl implements CacheManager {
             // 启动刷新器
             if (shouldCreateRefresher(definition)) {
                 CacheRefresher<K, V> refresher = createCacheRefresher(cacheName, cache, definition);
-                if (refresher != null) {
-                    lifecycleManager.start(cacheName + ":refresher", refresher);
-                    log.debug("缓存刷新器已启动: cache={}", cacheName);
-                }
+                lifecycleManager.start(cacheName + ":refresher", refresher);
+                log.debug("缓存刷新器已启动: cache={}", cacheName);
             }
 
-            // 启动同步器
+            // 启动同步器并包装缓存
             if (shouldCreateSync(definition)) {
                 CacheSync<K, V> sync = createCacheSync(cacheName, cache, definition);
                 if (sync != null) {
+                    // 用SyncAwareCache装饰原始缓存
+                    Cache<K, V> syncAwareCache = SyncAwareCache.wrapIfNeeded(cache, sync, nodeId);
+
+                    // 如果缓存被装饰了，需要更新注册表中的缓存
+                    if (syncAwareCache != cache) {
+                        cacheRegistry.replace(cacheName, syncAwareCache);
+                        log.debug("缓存已装饰为同步感知: cache={}", cacheName);
+                    }
+
                     lifecycleManager.start(cacheName + ":sync", sync);
                     log.debug("缓存同步器已启动: cache={}", cacheName);
                 }
@@ -302,16 +320,14 @@ public class CacheManagerImpl implements CacheManager {
      * 判断是否应该创建刷新器
      */
     private <K, V> boolean shouldCreateRefresher(CacheDefinition<K, V> definition) {
-        return definition.getConfig().isRefreshEnabled() &&
-                definition.getLoader() != null;
+        return definition.getConfig().isRefreshEnabled() && definition.getLoader() != null;
     }
 
     /**
      * 判断是否应该创建同步器
      */
     private <K, V> boolean shouldCreateSync(CacheDefinition<K, V> definition) {
-        return definition.getConfig().isSyncEnabled() &&
-                definition.getType() == CacheType.TIERED;
+        return definition.getConfig().isSyncEnabled() && definition.getType().equals(CacheType.TIERED);
     }
 
     /**
@@ -327,9 +343,28 @@ public class CacheManagerImpl implements CacheManager {
      */
     private <K, V> CacheSync<K, V> createCacheSync(String cacheName, Cache<K, V> cache,
                                                    CacheDefinition<K, V> definition) {
-        // 同步器功能暂时跳过，需要RedissonClient依赖注入支持
-        log.debug("跳过缓存同步器创建: cache={}", cacheName);
-        return null;
+        try {
+            SyncProperties syncConfig = definition.getConfig().getSyncConfig();
+
+            // 使用工厂创建同步器
+            CacheSyncFactory factory = findCacheSyncFactory(syncConfig.getType());
+            if (factory != null) {
+                CacheSync<K, V> sync = factory.createCacheSync(syncConfig);
+
+                // 为缓存订阅同步事件
+                sync.subscribe(cacheName, event -> handleSyncEvent(cache, event));
+
+                log.info("缓存同步器创建成功: cache={}, type={}", cacheName, syncConfig.getType());
+                return sync;
+            }
+
+            log.warn("未找到合适的同步器工厂: cache={}, type={}", cacheName, syncConfig.getType());
+            return null;
+
+        } catch (Exception e) {
+            log.error("创建缓存同步器失败: cache={}, error={}", cacheName, e.getMessage(), e);
+            return null;
+        }
     }
 
     /**
@@ -385,15 +420,13 @@ public class CacheManagerImpl implements CacheManager {
         }
 
         // 如果TieredCache没有loader，尝试通过CacheLoaderResolver获取
-        if (loader == null && cacheLoaderResolver != null) {
-            // 需要获取缓存的泛型类型
-            if (cache instanceof TieredCache<?, ?>) {
-                TieredCache<K, V> tieredCache = (TieredCache<K, V>) cache;
-                Class<K> keyType = tieredCache.getKeyType();
-                Class<V> valueType = tieredCache.getValueType();
-                loader = cacheLoaderResolver.resolveCacheLoader(keyType, valueType);
-            }
+        if (loader == null && cacheLoaderResolver != null && cache instanceof TieredCache<?, ?>) {
+            TieredCache<K, V> tieredCache = (TieredCache<K, V>) cache;
+            Class<K> keyType = tieredCache.getKeyType();
+            Class<V> valueType = tieredCache.getValueType();
+            loader = cacheLoaderResolver.resolveCacheLoader(keyType, valueType);
         }
+
 
         // 如果仍然没有找到loader，则无法创建刷新器
         if (loader == null) {
@@ -418,6 +451,66 @@ public class CacheManagerImpl implements CacheManager {
         } catch (Exception e) {
             log.error("创建缓存刷新器失败: cacheName={}, error={}", cacheName, e.getMessage(), e);
             return null;
+        }
+    }
+
+    // ==================== 同步器辅助方法 ====================
+
+    /**
+     * 查找合适的缓存同步工厂
+     */
+    private CacheSyncFactory findCacheSyncFactory(SyncProperties.SyncType syncType) {
+        if (cacheSyncFactories == null || cacheSyncFactories.isEmpty()) {
+            log.warn("未找到任何缓存同步工厂，请检查: 1) RedissonClient是否配置 2) RedisCacheSyncFactory是否被正确注册");
+            return null;
+        }
+
+        log.debug("查找同步工厂: type={}, 可用工厂: {}", syncType, 
+                  cacheSyncFactories.stream().map(f -> f.getClass().getSimpleName()).toList());
+
+        CacheSyncFactory factory = cacheSyncFactories.stream()
+                .filter(f -> f.supports(syncType))
+                .findFirst()
+                .orElse(null);
+        
+        if (factory == null) {
+            log.warn("未找到支持类型{}的同步工厂，可用类型: {}", syncType,
+                    cacheSyncFactories.stream()
+                            .flatMap(f -> java.util.Arrays.stream(SyncProperties.SyncType.values()).filter(f::supports))
+                            .toList());
+        } else {
+            log.debug("找到同步工厂: type={}, factory={}", syncType, factory.getClass().getSimpleName());
+        }
+        
+        return factory;
+    }
+
+    /**
+     * 处理同步事件
+     */
+    private <K, V> void handleSyncEvent(Cache<K, V> cache, CacheSync.SyncEvent<K, V> event) {
+        try {
+            switch (event.getType()) {
+                case PUT -> {
+                    if (event.getKey() != null && event.getValue() != null) {
+                        cache.put(event.getKey(), event.getValue());
+                        log.trace("同步PUT事件已处理: cache={}, key={}", cache.getName(), event.getKey());
+                    }
+                }
+                case EVICT -> {
+                    if (event.getKey() != null) {
+                        cache.evict(event.getKey());
+                        log.trace("同步EVICT事件已处理: cache={}, key={}", cache.getName(), event.getKey());
+                    }
+                }
+                case CLEAR -> {
+                    cache.clear();
+                    log.trace("同步CLEAR事件已处理: cache={}", cache.getName());
+                }
+            }
+        } catch (Exception e) {
+            log.error("处理同步事件失败: cache={}, event={}, error={}",
+                    cache.getName(), event, e.getMessage());
         }
     }
 

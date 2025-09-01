@@ -186,17 +186,18 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
                     SerializableEvent serializableEvent = objectMapper.readValue(jsonData, SerializableEvent.class);
 
                     // 忽略自己发送的事件
-                    if (nodeId.equals(serializableEvent.nodeId)) {
+                    if (nodeId.equals(serializableEvent.getNodeId())) {
+                        log.info("忽略自己发送的事件: topic={}, event={}", topicName, serializableEvent);
                         return;
                     }
 
                     // 构造同步事件
                     SyncEvent<K, V> syncEvent = new SyncEvent<>(
-                            serializableEvent.cacheName,
-                            EventType.valueOf(serializableEvent.type),
-                            (K) serializableEvent.key,
-                            (V) serializableEvent.value,
-                            serializableEvent.nodeId
+                            serializableEvent.getCacheName(),
+                            EventType.valueOf(serializableEvent.getType()),
+                            (K) serializableEvent.getKey(),
+                            (V) serializableEvent.getValue(),
+                            serializableEvent.getNodeId()
                     );
 
                     // 处理事件
@@ -250,6 +251,55 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
             this.value = event.getValue();
             this.nodeId = event.getNodeId();
             this.timestamp = event.getTimestamp();
+        }
+
+        // Getter/Setter methods for Jackson serialization
+        public String getCacheName() {
+            return cacheName;
+        }
+
+        public void setCacheName(String cacheName) {
+            this.cacheName = cacheName;
+        }
+
+        public String getType() {
+            return type;
+        }
+
+        public void setType(String type) {
+            this.type = type;
+        }
+
+        public Object getKey() {
+            return key;
+        }
+
+        public void setKey(Object key) {
+            this.key = key;
+        }
+
+        public Object getValue() {
+            return value;
+        }
+
+        public void setValue(Object value) {
+            this.value = value;
+        }
+
+        public String getNodeId() {
+            return nodeId;
+        }
+
+        public void setNodeId(String nodeId) {
+            this.nodeId = nodeId;
+        }
+
+        public long getTimestamp() {
+            return timestamp;
+        }
+
+        public void setTimestamp(long timestamp) {
+            this.timestamp = timestamp;
         }
     }
 

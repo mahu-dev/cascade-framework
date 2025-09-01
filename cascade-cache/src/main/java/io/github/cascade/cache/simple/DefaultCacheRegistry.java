@@ -102,6 +102,27 @@ public class DefaultCacheRegistry implements CacheRegistry {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
+    public <K, V> Cache<K, V> replace(String name, Cache<K, V> cache) {
+        if (name == null || name.trim().isEmpty()) {
+            throw new IllegalArgumentException("缓存名称不能为空");
+        }
+        if (cache == null) {
+            throw new IllegalArgumentException("缓存实例不能为空");
+        }
+
+        Cache<?, ?> previous = caches.replace(name, cache);
+        if (previous != null) {
+            log.info("缓存已替换: name={}, old={}, new={}", 
+                     name, previous.getClass().getSimpleName(), cache.getClass().getSimpleName());
+        } else {
+            log.warn("替换缓存失败，缓存不存在: name={}", name);
+        }
+
+        return (Cache<K, V>) previous;
+    }
+
+    @Override
     public boolean contains(String name) {
         return name != null && caches.containsKey(name);
     }

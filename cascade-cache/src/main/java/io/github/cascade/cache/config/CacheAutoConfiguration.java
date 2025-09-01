@@ -13,6 +13,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 
+import java.util.List;
+
 /**
  * Cascade 框架精简缓存自动配置
  * <p>
@@ -52,9 +54,9 @@ public class CacheAutoConfiguration {
     public CacheFactoryRegistry cacheFactoryRegistry(
             @Autowired(required = false) RedissonClient redissonClient) {
         log.info("创建缓存工厂注册表");
-        
+
         CacheFactoryRegistry factoryRegistry = new CacheFactoryRegistry();
-        
+
         // 注册工厂
         factoryRegistry.registerFactory(new L1CacheFactory());
         if (redissonClient != null) {
@@ -64,7 +66,7 @@ public class CacheAutoConfiguration {
         } else {
             log.info("Redis客户端未配置，跳过Redis相关缓存工厂");
         }
-        
+
         log.info("缓存工厂注册完成，共注册{}个工厂", factoryRegistry.getFactoryCount());
         return factoryRegistry;
     }
@@ -80,6 +82,17 @@ public class CacheAutoConfiguration {
     }
 
     /**
+     * Redis缓存同步工厂Bean
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(RedissonClient.class)
+    public RedisCacheSyncFactory redisCacheSyncFactory(@Autowired(required = false) RedissonClient redissonClient) {
+        log.info("创建Redis缓存同步工厂: redisClient={}", redissonClient != null ? "已配置" : "未配置");
+        return new RedisCacheSyncFactory(java.util.Optional.ofNullable(redissonClient));
+    }
+
+    /**
      * 新架构缓存管理器配置
      */
     @Bean
@@ -90,18 +103,21 @@ public class CacheAutoConfiguration {
             CacheFactoryRegistry factoryRegistry,
             LifecycleManager lifecycleManager,
             CascadeCacheProperties defaultConfig,
-            @Autowired(required = false) CacheLoaderResolver cacheLoaderResolver) {
+            CacheLoaderResolver cacheLoaderResolver,
+            List<CacheSyncFactory> cacheSyncFactories) {
         log.info("配置新架构缓存管理器");
-        
+
         CacheManagerImpl cacheManager = new CacheManagerImpl(
-                cacheRegistry, 
-                factoryRegistry, 
+                cacheRegistry,
+                factoryRegistry,
                 lifecycleManager,
                 defaultConfig,
-                cacheLoaderResolver
+                cacheLoaderResolver,
+                cacheSyncFactories
         );
-        
-        log.info("✅ 新架构缓存管理器配置完成");
+
+        log.info("✅ 新架构缓存管理器配置完成，同步工厂数: {}",
+                cacheSyncFactories != null ? cacheSyncFactories.size() : 0);
         return cacheManager;
     }
 

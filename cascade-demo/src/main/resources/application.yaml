@@ -56,14 +56,13 @@ cascade:
 
   # 分布式同步配置
   sync:
-    enabled: false
-    topic: "cascade:cache:sync"
+    enabled: true
+    topic-prefix: "cascade:cache:sync"
     timeout-seconds: 5
-    async: true
 
   # 自动刷新配置
   refresh:
-    enabled: false  # 全局关闭，测试注解覆盖
+    enabled: true  # 全局关闭，测试注解覆盖
     default-refresh-interval-seconds: 10   # 10分钟
     min-refresh-interval-seconds: 10        # 最小1分钟
     max-refresh-interval-seconds: 1800      # 最大1小时
