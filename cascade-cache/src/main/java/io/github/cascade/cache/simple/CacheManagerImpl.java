@@ -48,6 +48,11 @@ public class CacheManagerImpl implements CacheManager {
     @Getter
     private final LifecycleManager lifecycleManager;
     private final CascadeCacheProperties defaultConfig;
+    /**
+     * -- GETTER --
+     * 获取CacheLoader解析器
+     */
+    @Getter
     private final CacheLoaderResolver cacheLoaderResolver;
 
     // 状态管理
@@ -246,13 +251,6 @@ public class CacheManagerImpl implements CacheManager {
                 .build();
     }
 
-    /**
-     * 获取CacheLoader解析器
-     */
-    public CacheLoaderResolver getCacheLoaderResolver() {
-        return cacheLoaderResolver;
-    }
-
     // ==================== 私有方法 ====================
 
     /**
@@ -357,7 +355,7 @@ public class CacheManagerImpl implements CacheManager {
      */
     public <K, V> CacheRefresher<K, V> getOrCreateCacheRefresher(String cacheName) {
         checkNotClosed();
-        
+
         if (cacheName == null || cacheName.trim().isEmpty()) {
             throw new IllegalArgumentException("缓存名称不能为空");
         }
@@ -365,7 +363,7 @@ public class CacheManagerImpl implements CacheManager {
         // 查找现有的刷新器
         String refresherKey = cacheName + ":refresher";
         Object component = lifecycleManager.getComponent(refresherKey);
-        
+
         if (component instanceof CacheRefresher) {
             return (CacheRefresher<K, V>) component;
         }
@@ -377,18 +375,44 @@ public class CacheManagerImpl implements CacheManager {
             return null;
         }
 
+        // 获取缓存对应的Loader
+        CacheLoader<K, V> loader = null;
+
+        // 尝试从TieredCache获取loader
+        if (cache instanceof TieredCache<?, ?>) {
+            TieredCache<K, V> tieredCache = (TieredCache<K, V>) cache;
+            loader = tieredCache.getLoader().orElse(null);
+        }
+
+        // 如果TieredCache没有loader，尝试通过CacheLoaderResolver获取
+        if (loader == null && cacheLoaderResolver != null) {
+            // 需要获取缓存的泛型类型
+            if (cache instanceof TieredCache<?, ?>) {
+                TieredCache<K, V> tieredCache = (TieredCache<K, V>) cache;
+                Class<K> keyType = tieredCache.getKeyType();
+                Class<V> valueType = tieredCache.getValueType();
+                loader = cacheLoaderResolver.resolveCacheLoader(keyType, valueType);
+            }
+        }
+
+        // 如果仍然没有找到loader，则无法创建刷新器
+        if (loader == null) {
+            log.warn("无法创建缓存刷新器，没有找到对应的CacheLoader: cacheName={}", cacheName);
+            return null;
+        }
+
         // 创建新的刷新器
         try {
             CacheRefresher<K, V> refresher = new ScheduledCacheRefresher<>(
-                    cacheName, 
-                    cache, 
-                    null, // 没有loader会在添加key时动态获取
+                    cacheName,
+                    cache,
+                    loader, // 使用找到的loader
                     defaultConfig
             );
-            
+
             // 启动并注册到生命周期管理器
             lifecycleManager.start(refresherKey, refresher);
-            
+
             log.info("缓存刷新器创建成功: cacheName={}", cacheName);
             return refresher;
         } catch (Exception e) {

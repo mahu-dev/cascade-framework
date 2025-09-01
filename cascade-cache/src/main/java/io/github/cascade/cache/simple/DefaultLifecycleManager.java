@@ -164,12 +164,10 @@ public class DefaultLifecycleManager implements LifecycleManager {
      */
     private void startComponent(String name, Object component) {
         // 根据组件类型执行相应的启动逻辑
-        if (component instanceof CacheRefresher) {
-            CacheRefresher<?, ?> refresher = (CacheRefresher<?, ?>) component;
+        if (component instanceof CacheRefresher<?, ?> refresher) {
             refresher.start();
             log.debug("缓存刷新器已启动: name={}", name);
-        } else if (component instanceof CacheSync) {
-            CacheSync<?, ?> sync = (CacheSync<?, ?>) component;
+        } else if (component instanceof CacheSync<?, ?> sync) {
             sync.start();
             log.debug("缓存同步器已启动: name={}", name);
         } else if (component instanceof Cache) {
@@ -188,23 +186,20 @@ public class DefaultLifecycleManager implements LifecycleManager {
      */
     private void stopComponent(String name, Object component) {
         // 根据组件类型执行相应的停止逻辑
-        if (component instanceof CacheRefresher) {
-            CacheRefresher<?, ?> refresher = (CacheRefresher<?, ?>) component;
+        if (component instanceof CacheRefresher<?, ?> refresher) {
             refresher.stop();
             log.debug("缓存刷新器已停止: name={}", name);
-        } else if (component instanceof CacheSync) {
-            CacheSync<?, ?> sync = (CacheSync<?, ?>) component;
+        } else if (component instanceof CacheSync<?, ?> sync) {
             sync.stop();
             log.debug("缓存同步器已停止: name={}", name);
-        } else if (component instanceof Cache) {
-            Cache<?, ?> cache = (Cache<?, ?>) component;
+        } else if (component instanceof Cache<?, ?> cache) {
             if (!cache.isClosed()) {
                 cache.close();
             }
             log.debug("缓存实例已关闭: name={}", name);
-        } else if (component instanceof AutoCloseable) {
+        } else if (component instanceof AutoCloseable autoCloseable) {
             try {
-                ((AutoCloseable) component).close();
+                autoCloseable.close();
                 log.debug("自动关闭组件: name={}", name);
             } catch (Exception e) {
                 throw new RuntimeException("关闭组件失败: " + name, e);
