@@ -57,10 +57,11 @@ public class CacheDefinition<K, V> {
      * 创建缓存定义的静态方法
      */
     public static <K, V> CacheDefinition<K, V> of(String name, Class<K> keyType, Class<V> valueType) {
-        return new CacheDefinition<K, V>()
-                .setName(name)
-                .setKeyType(keyType)
-                .setValueType(valueType);
+        CacheDefinition<K, V> definition = new CacheDefinition<K, V>();
+        definition.setName(name);
+        definition.setKeyType(keyType);
+        definition.setValueType(valueType);
+        return definition;
     }
     
     /**

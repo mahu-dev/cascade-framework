@@ -322,6 +322,13 @@ public class CascadeCacheProperties {
         return l1.recordStats;
     }
 
+    /**
+     * 获取CacheLoader配置
+     */
+    public LoaderProperties getLoader() {
+        return loader;
+    }
+
     // ==================== 便捷构建方法 ====================
 
     /**

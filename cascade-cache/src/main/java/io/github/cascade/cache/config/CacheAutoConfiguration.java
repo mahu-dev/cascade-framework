@@ -89,7 +89,7 @@ public class CacheAutoConfiguration {
     @ConditionalOnClass(RedissonClient.class)
     public RedisCacheSyncFactory redisCacheSyncFactory(@Autowired(required = false) RedissonClient redissonClient) {
         log.info("创建Redis缓存同步工厂: redisClient={}", redissonClient != null ? "已配置" : "未配置");
-        return new RedisCacheSyncFactory(java.util.Optional.ofNullable(redissonClient));
+        return new RedisCacheSyncFactory(redissonClient);
     }
 
     /**

@@ -124,8 +124,16 @@ public class CacheManagerImpl implements CacheManager {
         log.debug("获取或创建缓存: name={}, keyType={}, valueType={}",
                 cacheName, keyType.getSimpleName(), valueType.getSimpleName());
 
+        // 首先检查缓存是否已存在
+        Cache<K, V> existingCache = cacheRegistry.get(cacheName);
+        if (existingCache != null) {
+            return existingCache;
+        }
+
         Function<K, V> finalLoader = loader;
-        return cacheRegistry.computeIfAbsent(cacheName, () -> {
+        
+        // 创建缓存但不在computeIfAbsent中启动组件
+        Cache<K, V> cache = cacheRegistry.computeIfAbsent(cacheName, () -> {
             // 构建缓存定义
             CacheDefinition<K, V> definition = CacheDefinition.of(cacheName, keyType, valueType)
                     .setConfig(finalConfig)
@@ -133,13 +141,32 @@ public class CacheManagerImpl implements CacheManager {
                     .setLoaderResolver(cacheLoaderResolver);
 
             // 使用工厂创建缓存
-            Cache<K, V> cache = factoryRegistry.createCache(definition);
-
-            // 启动相关组件（刷新器、同步器等）
-            startCacheComponents(cacheName, cache, definition);
-
-            return cache;
+            return factoryRegistry.createCache(definition);
         });
+
+        // 在computeIfAbsent外部启动组件（避免递归更新）
+        if (cache != null) {
+            CacheDefinition<K, V> definition = CacheDefinition.of(cacheName, keyType, valueType)
+                    .setConfig(finalConfig)
+                    .setLoader(finalLoader)
+                    .setLoaderResolver(cacheLoaderResolver);
+            
+            // 验证定义并推断缓存类型
+            definition.validate();
+            
+            // 启动相关组件并可能返回装饰后的缓存
+            Cache<K, V> decoratedCache = startCacheComponents(cacheName, cache, definition);
+            
+            // 如果缓存被装饰了，需要更新注册表
+            if (decoratedCache != cache) {
+                // 直接使用replace方法更新，这是安全的因为已经在computeIfAbsent外部
+                cacheRegistry.replace(cacheName, decoratedCache);
+                cache = decoratedCache;
+                log.debug("缓存注册表已更新为装饰后的缓存: {}", cacheName);
+            }
+        }
+
+        return cache;
     }
 
     @Override
@@ -265,10 +292,12 @@ public class CacheManagerImpl implements CacheManager {
     // ==================== 私有方法 ====================
 
     /**
-     * 启动缓存相关组件
+     * 启动缓存相关组件，返回可能装饰后的缓存实例
      */
-    private <K, V> void startCacheComponents(String cacheName, Cache<K, V> cache, CacheDefinition<K, V> definition) {
+    private <K, V> Cache<K, V> startCacheComponents(String cacheName, Cache<K, V> cache, CacheDefinition<K, V> definition) {
         try {
+            Cache<K, V> resultCache = cache;
+            
             // 启动刷新器
             if (shouldCreateRefresher(definition)) {
                 CacheRefresher<K, V> refresher = createCacheRefresher(cacheName, cache, definition);
@@ -283,9 +312,9 @@ public class CacheManagerImpl implements CacheManager {
                     // 用SyncAwareCache装饰原始缓存
                     Cache<K, V> syncAwareCache = SyncAwareCache.wrapIfNeeded(cache, sync, nodeId);
 
-                    // 如果缓存被装饰了，需要更新注册表中的缓存
+                    // 如果缓存被装饰了，更新返回的缓存实例
                     if (syncAwareCache != cache) {
-                        cacheRegistry.replace(cacheName, syncAwareCache);
+                        resultCache = syncAwareCache;
                         log.debug("缓存已装饰为同步感知: cache={}", cacheName);
                     }
 
@@ -294,8 +323,11 @@ public class CacheManagerImpl implements CacheManager {
                 }
             }
 
+            return resultCache;
+
         } catch (Exception e) {
             log.error("启动缓存组件失败: cache={}, error={}", cacheName, e.getMessage(), e);
+            return cache;
         }
     }
 

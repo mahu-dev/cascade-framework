@@ -28,17 +28,10 @@ public class RedisCacheSyncFactory implements CacheSyncFactory {
 
     private final Optional<RedissonClient> redissonClient;
 
-    // 支持不同的构造方式，Spring会选择合适的
-    public RedisCacheSyncFactory(@Autowired(required = false) Optional<RedissonClient> redissonClient) {
-        this.redissonClient = redissonClient != null ? redissonClient : Optional.empty();
+    // Spring构造函数注入
+    public RedisCacheSyncFactory(@Autowired(required = false) RedissonClient redissonClient) {
+        this.redissonClient = Optional.ofNullable(redissonClient);
         log.debug("RedisCacheSyncFactory创建: redisClient={}", 
-                  this.redissonClient.isPresent() ? "已配置" : "未配置");
-    }
-
-    // 为AutoConfiguration提供的构造函数
-    public RedisCacheSyncFactory(Optional<RedissonClient> redissonClient) {
-        this.redissonClient = redissonClient != null ? redissonClient : Optional.empty();
-        log.debug("RedisCacheSyncFactory创建(直接构造): redisClient={}", 
                   this.redissonClient.isPresent() ? "已配置" : "未配置");
     }
 
