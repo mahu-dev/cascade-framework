@@ -28,11 +28,14 @@ public class DefaultLifecycleManager implements LifecycleManager {
      * 管理器是否已关闭
      */
     private volatile boolean closed = false;
+    
+    /**
+     * 状态锁，用于保证启动、停止操作的原子性
+     */
+    private final Object stateLock = new Object();
 
     @Override
     public <T> void start(String name, T component) {
-        checkNotClosed();
-
         if (name == null || name.trim().isEmpty()) {
             throw new IllegalArgumentException("组件名称不能为空");
         }
@@ -40,22 +43,27 @@ public class DefaultLifecycleManager implements LifecycleManager {
             throw new IllegalArgumentException("组件实例不能为空");
         }
 
-        // 检查是否已存在同名组件
-        Object existing = runningComponents.putIfAbsent(name, component);
-        if (existing != null) {
-            log.warn("组件已存在，启动失败: name={}, existingType={}", name, existing.getClass().getSimpleName());
-            return;
-        }
+        synchronized (stateLock) {
+            checkNotClosed();
 
-        try {
-            // 尝试启动组件
-            startComponent(name, component);
-            log.info("组件启动成功: name={}, type={}", name, component.getClass().getSimpleName());
-        } catch (Exception e) {
-            // 启动失败时从运行列表中移除
-            runningComponents.remove(name);
-            log.error("组件启动失败: name={}, error={}", name, e.getMessage(), e);
-            throw new RuntimeException("组件启动失败: " + name, e);
+            // 检查是否已存在同名组件
+            Object existing = runningComponents.get(name);
+            if (existing != null) {
+                log.warn("组件已存在，启动失败: name={}, existingType={}", name, existing.getClass().getSimpleName());
+                return;
+            }
+
+            try {
+                // 先启动组件，再添加到运行列表（保证原子性）
+                startComponent(name, component);
+                runningComponents.put(name, component);
+                log.info("组件启动成功: name={}, type={}", name, component.getClass().getSimpleName());
+            } catch (Exception e) {
+                // 启动失败时确保不会留在运行列表中
+                runningComponents.remove(name);
+                log.error("组件启动失败: name={}, error={}", name, e.getMessage(), e);
+                throw new RuntimeException("组件启动失败: " + name, e);
+            }
         }
     }
 
@@ -90,24 +98,61 @@ public class DefaultLifecycleManager implements LifecycleManager {
             return;
         }
 
-        int count = runningComponents.size();
-        log.info("开始停止所有组件，总数: {}", count);
-
-        // 创建名称副本避免ConcurrentModificationException
-        String[] names = runningComponents.keySet().toArray(new String[0]);
-        int successCount = 0;
-
-        for (String name : names) {
-            try {
-                if (stop(name)) {
-                    successCount++;
-                }
-            } catch (Exception e) {
-                log.error("停止组件异常: name={}, error={}", name, e.getMessage());
+        synchronized (stateLock) {
+            int count = runningComponents.size();
+            if (count == 0) {
+                log.debug("所有组件已停止，无需操作");
+                return;
             }
+            
+            log.info("开始停止所有组件，总数: {}", count);
+
+            // 创建名称副本避免ConcurrentModificationException
+            String[] names = runningComponents.keySet().toArray(new String[0]);
+            int successCount = 0;
+            int actualCount = 0; // 实际尝试停止的组件数
+
+            for (String name : names) {
+                if (name == null) continue;
+                actualCount++;
+                
+                try {
+                    if (stopSingleComponent(name)) {
+                        successCount++;
+                    }
+                } catch (Exception e) {
+                    log.error("停止组件异常: name={}, error={}", name, e.getMessage(), e);
+                }
+            }
+
+            log.info("所有组件停止完成: 尝试停止={}, 成功={}, 失败={}", 
+                    actualCount, successCount, actualCount - successCount);
+        }
+    }
+    
+    /**
+     * 停止单个组件（内部使用，不加锁）
+     */
+    private boolean stopSingleComponent(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            return false;
         }
 
-        log.info("所有组件停止完成: 总数={}, 成功={}, 失败={}", count, successCount, count - successCount);
+        Object component = runningComponents.remove(name);
+        if (component == null) {
+            log.debug("组件不存在或已停止: name={}", name);
+            return false;
+        }
+
+        try {
+            stopComponent(name, component);
+            log.info("组件停止成功: name={}, type={}", name, component.getClass().getSimpleName());
+            return true;
+        } catch (Exception e) {
+            log.error("组件停止失败: name={}, error={}", name, e.getMessage(), e);
+            // 停止失败时，组件已从运行列表移除，但记录为失败
+            return false;
+        }
     }
 
     @Override
@@ -142,18 +187,23 @@ public class DefaultLifecycleManager implements LifecycleManager {
 
     @Override
     public void close() {
-        if (closed) {
-            log.debug("生命周期管理器已关闭，无需重复关闭");
-            return;
+        synchronized (stateLock) {
+            if (closed) {
+                log.debug("生命周期管理器已关闭，无需重复关闭");
+                return;
+            }
+
+            log.info("开始关闭生命周期管理器...");
+            closed = true;
+
+            try {
+                // 停止所有组件
+                stopAll();
+                log.info("生命周期管理器关闭完成");
+            } catch (Exception e) {
+                log.error("关闭生命周期管理器时出现异常: error={}", e.getMessage(), e);
+            }
         }
-
-        log.info("开始关闭生命周期管理器...");
-        closed = true;
-
-        // 停止所有组件
-        stopAll();
-
-        log.info("生命周期管理器关闭完成");
     }
 
     /**

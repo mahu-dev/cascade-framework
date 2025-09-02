@@ -207,9 +207,10 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
                         log.trace("处理同步事件: topic={}, event={}", topicName, syncEvent);
                     }
 
+                } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+                    log.error("同步事件反序列化失败: topic={}, data={}, error={}", topicName, jsonData, e.getMessage());
                 } catch (Exception e) {
-                    log.error("处理同步事件失败: topic={}, data={}, error={}",
-                            topicName, jsonData, e.getMessage());
+                    log.error("处理同步事件失败: topic={}, data={}, error={}", topicName, jsonData, e.getMessage(), e);
                 }
             });
 

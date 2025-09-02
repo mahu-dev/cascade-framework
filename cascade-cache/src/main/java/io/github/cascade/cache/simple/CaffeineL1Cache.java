@@ -84,14 +84,31 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
     @Override
     public Optional<V> get(K key) {
         checkNotClosed();
-        V value = caffeineCache.getIfPresent(key);
-        return Optional.ofNullable(value);
+        try {
+            V value = caffeineCache.getIfPresent(key);
+            return Optional.ofNullable(value);
+        } catch (Exception e) {
+            log.error("L1缓存获取失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
+            return Optional.empty();
+        }
     }
 
     @Override
     public V getOrLoad(K key, Function<K, V> loader) {
         checkNotClosed();
-        return caffeineCache.get(key, loader);
+        try {
+            return caffeineCache.get(key, loader);
+        } catch (Exception e) {
+            log.error("L1缓存加载失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
+            // 尝试直接调用loader作为fallback
+            try {
+                return loader.apply(key);
+            } catch (Exception loaderException) {
+                log.error("Loader fallback失败: cache={}, key={}, error={}", 
+                        cacheName, key, loaderException.getMessage());
+                return null;
+            }
+        }
     }
 
     @Override
@@ -103,8 +120,14 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
     @Override
     public void put(K key, V value) {
         checkNotClosed();
-        caffeineCache.put(key, value);
-        log.debug("L1缓存存储: cache={}, key={}", cacheName, key);
+        try {
+            caffeineCache.put(key, value);
+            if (log.isTraceEnabled()) {
+                log.trace("L1缓存存储: cache={}, key={}", cacheName, key);
+            }
+        } catch (Exception e) {
+            log.error("L1缓存存储失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
+        }
     }
 
     @Override
@@ -117,49 +140,94 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
     @Override
     public CompletableFuture<Void> putAsync(K key, V value) {
         checkNotClosed();
-        return CompletableFuture.runAsync(() -> put(key, value));
+        return CompletableFuture.runAsync(() -> put(key, value))
+                .exceptionally(throwable -> {
+                    log.error("L1缓存异步存储失败: cache={}, key={}, error={}", 
+                            cacheName, key, throwable.getMessage());
+                    return null;
+                });
     }
 
     @Override
     public void evict(K key) {
         checkNotClosed();
-        caffeineCache.invalidate(key);
-        log.debug("L1缓存删除: cache={}, key={}", cacheName, key);
+        try {
+            caffeineCache.invalidate(key);
+            if (log.isTraceEnabled()) {
+                log.trace("L1缓存删除: cache={}, key={}", cacheName, key);
+            }
+        } catch (Exception e) {
+            log.error("L1缓存删除失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
+        }
     }
 
     @Override
     public void clear() {
         checkNotClosed();
-        long sizeBefore = caffeineCache.estimatedSize();
-        caffeineCache.invalidateAll();
-        log.info("L1缓存清空: cache={}, 删除条目数={}", cacheName, sizeBefore);
+        try {
+            long sizeBefore = caffeineCache.estimatedSize();
+            caffeineCache.invalidateAll();
+            log.info("L1缓存清空: cache={}, 删除条目数={}", cacheName, sizeBefore);
+        } catch (Exception e) {
+            log.error("L1缓存清空失败: cache={}, error={}", cacheName, e.getMessage(), e);
+        }
     }
 
     @Override
     public Map<K, V> getAll(Iterable<K> keys) {
         checkNotClosed();
-        List<K> keyList = new ArrayList<>();
-        keys.forEach(keyList::add);
-        return caffeineCache.getAllPresent(keyList);
+        try {
+            List<K> keyList = new ArrayList<>();
+            keys.forEach(keyList::add);
+            Map<K, V> result = caffeineCache.getAllPresent(keyList);
+            if (log.isTraceEnabled()) {
+                log.trace("L1缓存批量获取: cache={}, 请求数={}, 返回数={}", 
+                        cacheName, keyList.size(), result.size());
+            }
+            return result;
+        } catch (Exception e) {
+            log.error("L1缓存批量获取失败: cache={}, error={}", cacheName, e.getMessage(), e);
+            return Map.of(); // 返回空Map而不是null
+        }
     }
 
     @Override
     public void putAll(Map<K, V> entries) {
         checkNotClosed();
-        caffeineCache.putAll(entries);
-        log.debug("L1缓存批量存储: cache={}, 条目数={}", cacheName, entries.size());
+        if (entries == null || entries.isEmpty()) {
+            return;
+        }
+        try {
+            caffeineCache.putAll(entries);
+            if (log.isTraceEnabled()) {
+                log.trace("L1缓存批量存储: cache={}, 条目数={}", cacheName, entries.size());
+            }
+        } catch (Exception e) {
+            log.error("L1缓存批量存储失败: cache={}, 条目数={}, error={}", 
+                    cacheName, entries.size(), e.getMessage(), e);
+        }
     }
 
     @Override
     public boolean containsKey(K key) {
         checkNotClosed();
-        return caffeineCache.getIfPresent(key) != null;
+        try {
+            return caffeineCache.getIfPresent(key) != null;
+        } catch (Exception e) {
+            log.error("L1缓存检查键失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
+            return false;
+        }
     }
 
     @Override
     public long size() {
         checkNotClosed();
-        return caffeineCache.estimatedSize();
+        try {
+            return caffeineCache.estimatedSize();
+        } catch (Exception e) {
+            log.error("L1缓存获取大小失败: cache={}, error={}", cacheName, e.getMessage(), e);
+            return 0;
+        }
     }
 
     @Override

@@ -36,6 +36,10 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
     // 配置参数
     private volatile long defaultRefreshIntervalSeconds;
     private volatile boolean parallelRefresh;
+    
+    // 资源管理配置
+    private final long shutdownTimeoutSeconds = 10L; // 关闭超时时间
+    private final Object stateLock = new Object(); // 状态锁
 
     // 监控的键和调度任务
     private final ConcurrentMap<K, KeyRefreshInfo> monitoredKeys = new ConcurrentHashMap<>();
@@ -211,46 +215,101 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
 
     @Override
     public void start() {
-        if (!running) {
-            running = true;
+        synchronized (stateLock) {
+            if (running) {
+                log.debug("缓存刷新器已经在运行: cache={}", cacheName);
+                return;
+            }
+            
+            try {
+                running = true;
 
-            // 为所有监控的键创建调度任务
-            monitoredKeys.forEach(this::scheduleKeyRefresh);
+                // 为所有监控的键创建调度任务
+                monitoredKeys.forEach(this::scheduleKeyRefresh);
 
-            log.info("缓存刷新器已启动: cache={}, 监控键数={}", cacheName, monitoredKeys.size());
+                log.info("缓存刷新器已启动: cache={}, 监控键数={}", cacheName, monitoredKeys.size());
+            } catch (Exception e) {
+                running = false; // 回滚状态
+                log.error("启动缓存刷新器失败: cache={}, error={}", cacheName, e.getMessage(), e);
+                throw new RuntimeException("启动缓存刷新器失败", e);
+            }
         }
     }
 
     @Override
     public void stop() {
-        if (running) {
-            running = false;
-
-            // 取消所有调度任务
-            scheduledTasks.values().forEach(task -> task.cancel(false));
-            scheduledTasks.clear();
-
-            // 关闭线程池（如果拥有的话）
-            if (ownsExecutors) {
-                scheduler.shutdown();
-                if (refreshExecutor != ForkJoinPool.commonPool()) {
-                    refreshExecutor.shutdown();
-                }
-
-                try {
-                    if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                        scheduler.shutdownNow();
-                    }
-                    if (refreshExecutor != ForkJoinPool.commonPool() &&
-                            !refreshExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                        refreshExecutor.shutdownNow();
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
+        synchronized (stateLock) {
+            if (!running) {
+                log.debug("缓存刷新器已经停止: cache={}", cacheName);
+                return;
             }
+            
+            running = false;
+            log.info("正在停止缓存刷新器: cache={}", cacheName);
+            
+            try {
+                // 取消所有调度任务
+                log.debug("取消调度任务: cache={}, 任务数={}", cacheName, scheduledTasks.size());
+                scheduledTasks.values().forEach(task -> {
+                    try {
+                        task.cancel(false);
+                    } catch (Exception e) {
+                        log.warn("取消调度任务失败: cache={}, error={}", cacheName, e.getMessage());
+                    }
+                });
+                scheduledTasks.clear();
 
-            log.info("缓存刷新器已停止: cache={}", cacheName);
+                // 关闭线程池（如果拥有的话）
+                if (ownsExecutors) {
+                    shutdownExecutors();
+                }
+
+                log.info("缓存刷新器已停止: cache={}", cacheName);
+            } catch (Exception e) {
+                log.error("停止缓存刷新器时出现异常: cache={}, error={}", cacheName, e.getMessage(), e);
+            }
+        }
+    }
+    
+    /**
+     * 安全关闭执行器
+     */
+    private void shutdownExecutors() {
+        // 优雅关闭调度器
+        shutdownExecutor("scheduler", scheduler);
+        
+        // 优雅关闭刷新执行器（如果不是公共池）
+        if (refreshExecutor != ForkJoinPool.commonPool()) {
+            shutdownExecutor("refreshExecutor", refreshExecutor);
+        }
+    }
+    
+    /**
+     * 安全关闭单个执行器
+     */
+    private void shutdownExecutor(String name, ExecutorService executor) {
+        try {
+            log.debug("正在关闭执行器: cache={}, executor={}", cacheName, name);
+            executor.shutdown();
+            
+            if (!executor.awaitTermination(shutdownTimeoutSeconds, TimeUnit.SECONDS)) {
+                log.warn("执行器未在超时时间内关闭，强制关闭: cache={}, executor={}, timeout={}s",
+                        cacheName, name, shutdownTimeoutSeconds);
+                executor.shutdownNow();
+                
+                // 再等待一段时间确认强制关闭生效
+                if (!executor.awaitTermination(2, TimeUnit.SECONDS)) {
+                    log.error("执行器强制关闭失败: cache={}, executor={}", cacheName, name);
+                }
+            } else {
+                log.debug("执行器已成功关闭: cache={}, executor={}", cacheName, name);
+            }
+        } catch (InterruptedException e) {
+            log.warn("等待执行器关闭被中断: cache={}, executor={}", cacheName, name);
+            Thread.currentThread().interrupt();
+            executor.shutdownNow();
+        } catch (Exception e) {
+            log.error("关闭执行器失败: cache={}, executor={}, error={}", cacheName, name, e.getMessage());
         }
     }
 

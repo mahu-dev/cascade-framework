@@ -7,6 +7,8 @@ import org.redisson.api.RBatch;
 import org.redisson.api.RBucket;
 import org.redisson.api.RKeys;
 import org.redisson.api.RedissonClient;
+import org.redisson.client.RedisConnectionException;
+import org.redisson.client.RedisTimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -86,10 +88,10 @@ public class RedissonL2Cache<K, V> implements Cache<K, V> {
                 log.trace("L2缓存获取: cache={}, key={}, found={}", cacheName, key, value != null);
             }
             return Optional.ofNullable(value);
-        } catch (org.redisson.client.RedisTimeoutException e) {
+        } catch (RedisTimeoutException e) {
             log.error("L2缓存获取超时: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
             throw new CacheTimeoutException(cacheName, "GET", "Redis操作超时");
-        } catch (org.redisson.client.RedisConnectionException e) {
+        } catch (RedisConnectionException e) {
             log.error("L2缓存连接失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
             throw new CacheConnectionException(cacheName, "Redis连接失败", e);
         } catch (Exception e) {
@@ -145,7 +147,7 @@ public class RedissonL2Cache<K, V> implements Cache<K, V> {
         try {
             String redisKey = buildRedisKey(key);
             RBucket<V> bucket = redissonClient.getBucket(redisKey);
-            
+
             if (ttlSeconds > 0) {
                 bucket.set(value, Duration.ofSeconds(ttlSeconds));
             } else {
@@ -166,7 +168,7 @@ public class RedissonL2Cache<K, V> implements Cache<K, V> {
             long ttl = config.getL2DefaultTtlSeconds();
             String redisKey = buildRedisKey(key);
             RBucket<V> bucket = redissonClient.getBucket(redisKey);
-            
+
             return (ttl > 0 ?
                     bucket.setAsync(value, ttl, TimeUnit.SECONDS) :
                     bucket.setAsync(value))
@@ -202,20 +204,56 @@ public class RedissonL2Cache<K, V> implements Cache<K, V> {
     public void clear() {
         checkNotClosed();
         try {
-            // 使用pattern匹配删除所有相关键
+            // 使用批量删除优化性能
             String pattern = keyPrefix + "*";
             RKeys keys = redissonClient.getKeys();
-            Iterable<String> matchingKeys = keys.getKeysByPattern(pattern);
             
-            int count = 0;
-            for (String key : matchingKeys) {
-                redissonClient.getBucket(key).delete();
-                count++;
+            // 分批删除，避免一次性处理大量键影响Redis性能
+            final int batchSize = 1000;
+            List<String> batch = new ArrayList<>(batchSize);
+            int totalDeleted = 0;
+            
+            for (String key : keys.getKeysByPattern(pattern)) {
+                batch.add(key);
+                if (batch.size() >= batchSize) {
+                    totalDeleted += deleteBatch(keys, batch);
+                    batch.clear();
+                }
             }
             
-            log.info("L2缓存清空: cache={}, pattern={}, 删除条目数={}", cacheName, pattern, count);
+            // 处理剩余的键
+            if (!batch.isEmpty()) {
+                totalDeleted += deleteBatch(keys, batch);
+            }
+            
+            log.info("L2缓存清空: cache={}, pattern={}, 删除条目数={}", cacheName, pattern, totalDeleted);
         } catch (Exception e) {
-            log.error("L2缓存清空失败: cache={}, error={}", cacheName, e.getMessage());
+            log.error("L2缓存清空失败: cache={}, error={}", cacheName, e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * 批量删除键
+     */
+    private int deleteBatch(RKeys keys, List<String> keyList) {
+        try {
+            // 使用Redis的批量删除命令
+            long deleted = keys.delete(keyList.toArray(new String[0]));
+            return (int) deleted;
+        } catch (Exception e) {
+            // 如果批量删除失败，fallback到逐个删除
+            log.warn("批量删除失败，使用逐个删除: batch size={}, error={}", keyList.size(), e.getMessage());
+            int count = 0;
+            for (String key : keyList) {
+                try {
+                    if (redissonClient.getBucket(key).delete()) {
+                        count++;
+                    }
+                } catch (Exception ex) {
+                    log.debug("删除键失败: key={}", key);
+                }
+            }
+            return count;
         }
     }
 
@@ -224,7 +262,7 @@ public class RedissonL2Cache<K, V> implements Cache<K, V> {
         checkNotClosed();
         try {
             Map<K, V> result = new HashMap<>();
-            
+
             // 构建Redis键列表
             List<String> redisKeys = new ArrayList<>();
             List<K> keyList = new ArrayList<>();
@@ -232,14 +270,14 @@ public class RedissonL2Cache<K, V> implements Cache<K, V> {
                 redisKeys.add(buildRedisKey(key));
                 keyList.add(key);
             }
-            
+
             if (redisKeys.isEmpty()) {
                 return Collections.emptyMap();
             }
 
             // 批量获取
             Map<String, V> buckets = redissonClient.getBuckets().get(redisKeys.toArray(new String[0]));
-            
+
             // 映射回原始key
             for (int i = 0; i < keyList.size(); i++) {
                 K originalKey = keyList.get(i);
@@ -249,7 +287,7 @@ public class RedissonL2Cache<K, V> implements Cache<K, V> {
                     result.put(originalKey, value);
                 }
             }
-            
+
             log.debug("L2缓存批量获取: cache={}, 请求数={}, 返回数={}",
                     cacheName, keyList.size(), result.size());
             return result;
@@ -268,7 +306,7 @@ public class RedissonL2Cache<K, V> implements Cache<K, V> {
 
         try {
             long ttl = config.getL2DefaultTtlSeconds();
-            
+
             if (ttl > 0) {
                 // 使用批量操作优化性能
                 RBatch batch = redissonClient.createBatch();
@@ -286,7 +324,7 @@ public class RedissonL2Cache<K, V> implements Cache<K, V> {
                 });
                 redissonClient.getBuckets().set(redisBuckets);
             }
-            
+
             log.debug("L2缓存批量存储: cache={}, 条目数={}, ttl={}s", cacheName, entries.size(), ttl);
         } catch (Exception e) {
             log.error("L2缓存批量存储失败: cache={}, error={}", cacheName, e.getMessage());
@@ -400,7 +438,7 @@ public class RedissonL2Cache<K, V> implements Cache<K, V> {
             RKeys keys = redissonClient.getKeys();
             Iterable<String> matchingKeys = keys.getKeysByPattern(pattern);
             Set<K> result = new HashSet<>();
-            
+
             for (String redisKey : matchingKeys) {
                 if (redisKey.startsWith(keyPrefix)) {
                     String cacheKey = redisKey.substring(keyPrefix.length());

@@ -1,14 +1,14 @@
 package io.github.cascade.cache.simple;
 
 import io.github.cascade.cache.config.SyncProperties;
-import lombok.RequiredArgsConstructor;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Component;
 
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 
 /**
  * Redis缓存同步工厂
@@ -21,7 +21,6 @@ import java.util.Optional;
  *
  * @author cascade
  */
-@Component
 public class RedisCacheSyncFactory implements CacheSyncFactory {
 
     private static final Logger log = LoggerFactory.getLogger(RedisCacheSyncFactory.class);
@@ -31,8 +30,8 @@ public class RedisCacheSyncFactory implements CacheSyncFactory {
     // Spring构造函数注入
     public RedisCacheSyncFactory(@Autowired(required = false) RedissonClient redissonClient) {
         this.redissonClient = Optional.ofNullable(redissonClient);
-        log.debug("RedisCacheSyncFactory创建: redisClient={}", 
-                  this.redissonClient.isPresent() ? "已配置" : "未配置");
+        log.debug("RedisCacheSyncFactory创建: redisClient={}",
+                this.redissonClient.isPresent() ? "已配置" : "未配置");
     }
 
     @Override
@@ -106,13 +105,13 @@ public class RedisCacheSyncFactory implements CacheSyncFactory {
         private static final Logger log = LoggerFactory.getLogger(NoOpCacheSync.class);
 
         @Override
-        public java.util.concurrent.CompletableFuture<Void> publishEvent(SyncEvent<K, V> event) {
+        public CompletableFuture<Void> publishEvent(SyncEvent<K, V> event) {
             log.trace("空同步器忽略事件: {}", event);
-            return java.util.concurrent.CompletableFuture.completedFuture(null);
+            return CompletableFuture.completedFuture(null);
         }
 
         @Override
-        public void subscribe(String cacheName, java.util.function.Consumer<SyncEvent<K, V>> eventHandler) {
+        public void subscribe(String cacheName, Consumer<SyncEvent<K, V>> eventHandler) {
             log.debug("空同步器忽略订阅: cacheName={}", cacheName);
         }
 
