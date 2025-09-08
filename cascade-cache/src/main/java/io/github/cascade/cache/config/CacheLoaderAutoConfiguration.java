@@ -1,7 +1,7 @@
 package io.github.cascade.cache.config;
 
 import io.github.cascade.cache.simple.CacheLoaderResolver;
-import io.github.cascade.cache.simple.CacheManagerImpl;
+import io.github.cascade.cache.simple.FunctionalCacheManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -18,8 +18,9 @@ import org.springframework.context.event.EventListener;
  * @author Cascade Framework
  */
 @Configuration
-@ConditionalOnClass({CacheLoaderResolver.class, CacheManagerImpl.class})
-@ConditionalOnProperty(prefix = "cascade.cache.loader", name = "auto-discover", havingValue = "true", matchIfMissing = true)
+@ConditionalOnClass({CacheLoaderResolver.class, FunctionalCacheManager.class})
+@ConditionalOnProperty(prefix = "cascade.cache.loader", name = "auto-discover", havingValue = "true",
+        matchIfMissing = true)
 public class CacheLoaderAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(CacheLoaderAutoConfiguration.class);
@@ -31,7 +32,7 @@ public class CacheLoaderAutoConfiguration {
     }
 
     /**
-     * 确保在应用启动完成后将CacheLoaderResolver配置到CacheManagerImpl
+     * 确保在应用启动完成后将CacheLoaderResolver配置到FunctionalCacheManager
      */
     @EventListener(ApplicationReadyEvent.class)
     public void configureCacheLoaderResolverToManagers(ApplicationReadyEvent event) {
@@ -42,10 +43,11 @@ public class CacheLoaderAutoConfiguration {
             CacheLoaderResolver resolver = applicationContext.getBean(CacheLoaderResolver.class);
             resolver.setApplicationContext(applicationContext);
 
-            // 查找所有CacheManagerImpl实例（实际上已经在创建时注入，这里只是确保设置）
-            applicationContext.getBeansOfType(CacheManagerImpl.class).forEach((name, cacheManager) -> {
-                log.info("✅ 缓存管理器已自动配置CacheLoaderResolver: {}", name);
-            });
+            // 查找所有FunctionalCacheManager实例（实际上已经在创建时注入，这里只是确保设置）
+            applicationContext.getBeansOfType(FunctionalCacheManager.class)
+                    .forEach((name, cacheManager) -> {
+                        log.info("✅ 缓存管理器已自动配置CacheLoaderResolver: {}", name);
+                    });
 
             log.info("✅ CacheLoaderResolver配置完成");
         } catch (Exception e) {

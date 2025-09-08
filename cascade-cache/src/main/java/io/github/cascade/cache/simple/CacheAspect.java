@@ -33,11 +33,13 @@ public class CacheAspect {
     private final CacheManager cacheManager;
     private final SpelExpressionHelper spelHelper;
     private final TypeInferenceHelper typeHelper;
+    private final FunctionalCacheOperations.SpelEvaluator functionalSpelEvaluator;
 
     public CacheAspect(CacheManager cacheManager) {
         this.cacheManager = cacheManager;
         this.spelHelper = new SpelExpressionHelper(1000);
         this.typeHelper = new TypeInferenceHelper();
+        this.functionalSpelEvaluator = new FunctionalCacheOperations.SpelEvaluator(spelHelper);
         log.info("缓存切面已初始化");
     }
 
@@ -252,6 +254,44 @@ public class CacheAspect {
             log.error("启用缓存自动刷新失败: cache={}, key={}, error={}",
                     cache.getName(), key, e.getMessage(), e);
         }
+    }
+
+    // ==================== 函数式@Cacheable处理（示例） ====================
+
+    /**
+     * 函数式@Cacheable处理示例 - 展示如何使用函数组合简化逻辑
+     * 注意：这是一个展示性的方法，实际使用时可以替换原有的handleCacheable方法
+     */
+    @SuppressWarnings("unused")
+    private <K, V> Object handleCacheableFunctional(ProceedingJoinPoint joinPoint, Cacheable cacheable) {
+        return FunctionalCacheOperations.cacheNameResolver(cacheable.value())
+                .andThen(cacheName -> {
+                    // 使用函数式求值器安全求值SpEL表达式
+                    return functionalSpelEvaluator.evaluateExpression(cacheable.key())
+                            .apply(joinPoint)
+                            .map(key -> {
+                                Cache<K, V> cache = getOrCreateCache(joinPoint, cacheName, cacheable);
+                                
+                                // 使用函数组合的方式处理缓存操作
+                                return FunctionalCacheOperations.cacheableOperation(
+                                        cache,
+                                        (K) key,
+                                        jp -> !evaluateCondition(jp, cacheable.condition(), null),
+                                        cacheable.enableRefresh(),
+                                        cacheable.ttl()
+                                ).apply(joinPoint);
+                            })
+                            .orElseGet(() -> FunctionalCacheOperations.safely(() -> {
+                                try {
+                                    @SuppressWarnings("unchecked")
+                                    V result = (V) joinPoint.proceed();
+                                    return result;
+                                } catch (Throwable e) {
+                                    throw new RuntimeException("方法执行失败", e);
+                                }
+                            }));
+                })
+                .apply(joinPoint);
     }
 
     // ==================== @Cacheable 辅助方法 ====================

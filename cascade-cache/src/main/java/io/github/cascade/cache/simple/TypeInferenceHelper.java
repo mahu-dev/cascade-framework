@@ -37,7 +37,7 @@ public class TypeInferenceHelper {
                 return entry.getValue();
             }
         }
-        
+
         return inferComplexType(expression, joinPoint);
     }
 
@@ -72,7 +72,7 @@ public class TypeInferenceHelper {
     /**
      * 推断数字字面量类型
      */
-    private Class<?> inferNumericLiteralType(String expr) {
+    private static Class<?> inferNumericLiteralType(String expr) {
         if (!expr.matches("\\d+[LlFfDd]?")) {
             return null;
         }
@@ -80,19 +80,19 @@ public class TypeInferenceHelper {
         if (expr.endsWith("L") || expr.endsWith("l")) {
             return Long.class;
         }
-        
+
         if (expr.endsWith("F") || expr.endsWith("f")) {
             return Float.class;
         }
-        
+
         if (expr.endsWith("D") || expr.endsWith("d")) {
             return Double.class;
         }
-        
+
         if (expr.contains(".")) {
             return Double.class;
         }
-        
+
         return Integer.class;
     }
 
@@ -144,7 +144,7 @@ public class TypeInferenceHelper {
     /**
      * 推断默认键的类型（基于方法参数）
      */
-    private Class<?> inferDefaultKeyType(JoinPoint joinPoint) {
+    private static Class<?> inferDefaultKeyType(JoinPoint joinPoint) {
         MethodSignature methodSignature = (MethodSignature) joinPoint.getSignature();
         Class<?>[] paramTypes = methodSignature.getParameterTypes();
 
@@ -160,7 +160,7 @@ public class TypeInferenceHelper {
     /**
      * 根据参数索引推断类型
      */
-    private Class<?> inferParameterType(String expr, JoinPoint joinPoint) {
+    private static Class<?> inferParameterType(String expr, JoinPoint joinPoint) {
         int paramIndex = Integer.parseInt(expr.substring(2)); // 去掉 "#p"
         MethodSignature methodSignature = (MethodSignature) joinPoint.getSignature();
         Class<?>[] paramTypes = methodSignature.getParameterTypes();
@@ -174,7 +174,7 @@ public class TypeInferenceHelper {
     /**
      * 根据参数名推断类型
      */
-    private Class<?> inferParameterTypeByName(String paramName, JoinPoint joinPoint) {
+    private static Class<?> inferParameterTypeByName(String paramName, JoinPoint joinPoint) {
         MethodSignature methodSignature = (MethodSignature) joinPoint.getSignature();
         String[] paramNames = methodSignature.getParameterNames();
         Class<?>[] paramTypes = methodSignature.getParameterTypes();
@@ -268,7 +268,7 @@ public class TypeInferenceHelper {
     /**
      * 查找getter方法
      */
-    private Method findGetterMethod(Class<?> clazz, String fieldName) {
+    private static Method findGetterMethod(Class<?> clazz, String fieldName) {
         String capitalizedFieldName = Character.toUpperCase(fieldName.charAt(0)) + fieldName.substring(1);
 
         try {
@@ -285,7 +285,7 @@ public class TypeInferenceHelper {
     /**
      * 推断静态方法调用的返回类型
      */
-    private Class<?> inferStaticMethodReturnType(String expr) {
+    private static Class<?> inferStaticMethodReturnType(String expr) {
         if (expr.contains("String.valueOf")) {
             return String.class;
         } else if (expr.contains("Integer.valueOf") || expr.contains("Integer.parseInt")) {

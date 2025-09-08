@@ -68,7 +68,7 @@ public class SpelExpressionHelper {
         });
     }
 
-    private StandardEvaluationContext createContext(JoinPoint joinPoint, Object result) {
+    private static StandardEvaluationContext createContext(JoinPoint joinPoint, Object result) {
         StandardEvaluationContext context = new StandardEvaluationContext();
         MethodSignature signature = (MethodSignature) joinPoint.getSignature();
 
@@ -92,7 +92,7 @@ public class SpelExpressionHelper {
     /**
      * 生成默认缓存键
      */
-    private Object generateDefaultKey(JoinPoint joinPoint) {
+    private static Object generateDefaultKey(JoinPoint joinPoint) {
         Object[] args = joinPoint.getArgs();
 
         if (args.length == 0) {
@@ -119,7 +119,7 @@ public class SpelExpressionHelper {
     /**
      * 从对象生成缓存键字符串
      */
-    private String generateKeyFromObject(Object obj) {
+    private static String generateKeyFromObject(Object obj) {
         if (obj == null) {
             return "null";
         }
@@ -151,7 +151,7 @@ public class SpelExpressionHelper {
     /**
      * 处理基本类型和字符串
      */
-    private String handlePrimitiveTypes(Object obj) {
+    private static String handlePrimitiveTypes(Object obj) {
         if (obj instanceof String || obj instanceof Number ||
                 obj instanceof Boolean || obj instanceof Character) {
             return obj.toString();
@@ -162,7 +162,7 @@ public class SpelExpressionHelper {
     /**
      * 处理数组类型
      */
-    private String handleArrayTypes(Object obj) {
+    private static String handleArrayTypes(Object obj) {
         if (!obj.getClass().isArray()) {
             return null;
         }
@@ -170,14 +170,14 @@ public class SpelExpressionHelper {
         if (obj instanceof Object[] objectArray) {
             return Arrays.deepToString(objectArray);
         }
-        
+
         return handlePrimitiveArrays(obj);
     }
 
     /**
      * 处理基本类型数组
      */
-    private String handlePrimitiveArrays(Object obj) {
+    private static String handlePrimitiveArrays(Object obj) {
         if (obj instanceof int[] intArray) {
             return Arrays.toString(intArray);
         } else if (obj instanceof long[] longArray) {
@@ -194,7 +194,7 @@ public class SpelExpressionHelper {
     /**
      * 处理集合类型
      */
-    private String handleCollectionTypes(Object obj) {
+    private static String handleCollectionTypes(Object obj) {
         if (!(obj instanceof Collection<?> collection)) {
             return null;
         }
@@ -211,7 +211,7 @@ public class SpelExpressionHelper {
     /**
      * 处理Map类型
      */
-    private String handleMapTypes(Object obj) {
+    private static String handleMapTypes(Object obj) {
         if (!(obj instanceof Map<?, ?> map)) {
             return null;
         }

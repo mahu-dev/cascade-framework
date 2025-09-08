@@ -1,5 +1,6 @@
 package io.github.cascade.cache.simple;
 
+import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,7 +28,17 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
 
     private static final Logger log = LoggerFactory.getLogger(SyncAwareCache.class);
 
+    /**
+     * -- GETTER --
+     * 获取底层缓存（用于高级操作）
+     */
+    @Getter
     private final Cache<K, V> delegate;
+    /**
+     * -- GETTER --
+     * 获取同步器（用于高级操作）
+     */
+    @Getter
     private final CacheSync<K, V> cacheSync;
     private final String nodeId;
 
@@ -79,7 +90,7 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
     public void put(K key, V value) {
         // 先执行缓存操作
         delegate.put(key, value);
-        
+
         // 异步发布同步事件
         publishSyncEvent(key, value, CacheSync.EventType.PUT);
     }
@@ -88,7 +99,7 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
     public void put(K key, V value, long ttlSeconds) {
         // 先执行缓存操作
         delegate.put(key, value, ttlSeconds);
-        
+
         // 异步发布同步事件
         publishSyncEvent(key, value, CacheSync.EventType.PUT);
     }
@@ -103,7 +114,7 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
     public void putAll(Map<K, V> entries) {
         // 先执行缓存操作
         delegate.putAll(entries);
-        
+
         // 批量发布同步事件
         entries.forEach((key, value) -> publishSyncEvent(key, value, CacheSync.EventType.PUT));
     }
@@ -112,7 +123,7 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
     public void evict(K key) {
         // 先执行缓存操作
         delegate.evict(key);
-        
+
         // 异步发布同步事件
         publishSyncEvent(key, null, CacheSync.EventType.EVICT);
     }
@@ -121,7 +132,7 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
     public void clear() {
         // 先执行缓存操作
         delegate.clear();
-        
+
         // 异步发布同步事件
         publishSyncEvent(null, null, CacheSync.EventType.CLEAR);
     }
@@ -146,17 +157,17 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
                 CacheSync.SyncEvent<K, V> event = new CacheSync.SyncEvent<>(
                         getName(), eventType, key, value, nodeId
                 );
-                
+
                 cacheSync.publishEvent(event)
                         .exceptionally(throwable -> {
-                            log.warn("发布同步事件失败: cache={}, event={}, error={}", 
-                                     getName(), event, throwable.getMessage());
+                            log.warn("发布同步事件失败: cache={}, event={}, error={}",
+                                    getName(), event, throwable.getMessage());
                             return null;
                         });
-                        
+
             } catch (Exception e) {
-                log.warn("创建同步事件失败: cache={}, eventType={}, error={}", 
-                         getName(), eventType, e.getMessage());
+                log.warn("创建同步事件失败: cache={}, eventType={}, error={}",
+                        getName(), eventType, e.getMessage());
             }
         });
     }
@@ -178,7 +189,7 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
         if (cacheSync == null) {
             log.warn("同步器为null，将创建无同步功能的装饰器: cache={}", cache.getName());
         }
-        
+
         return new SyncAwareCache<>(cache, cacheSync, nodeId);
     }
 
@@ -190,27 +201,13 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
             log.debug("缓存已经是同步感知的，跳过包装: cache={}", cache.getName());
             return cache;
         }
-        
+
         return wrap(cache, cacheSync, nodeId);
-    }
-
-    /**
-     * 获取底层缓存（用于高级操作）
-     */
-    public Cache<K, V> getDelegate() {
-        return delegate;
-    }
-
-    /**
-     * 获取同步器（用于高级操作）
-     */
-    public CacheSync<K, V> getCacheSync() {
-        return cacheSync;
     }
 
     @Override
     public String toString() {
-        return String.format("SyncAwareCache{delegate=%s, sync=%s, nodeId=%s}", 
-                           delegate, cacheSync != null, nodeId);
+        return String.format("SyncAwareCache{delegate=%s, sync=%s, nodeId=%s}",
+                delegate, cacheSync != null, nodeId);
     }
 }
