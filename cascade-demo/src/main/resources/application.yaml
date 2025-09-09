@@ -16,7 +16,7 @@ spring:
           password: "56445218@"
           subscriptionsPerConnection: 5
           clientName: null
-          address: "redis://coderm.cc:6379"
+          address: "redis://vektrify.cn:37679"
           subscriptionConnectionMinimumIdleSize: 1
           subscriptionConnectionPoolSize: 50
           connectionMinimumIdleSize: 24

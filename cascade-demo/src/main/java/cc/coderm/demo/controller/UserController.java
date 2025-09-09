@@ -4,8 +4,6 @@ import cc.coderm.demo.model.User;
 import cc.coderm.demo.service.UserService;
 import io.github.cascade.cache.simple.Cache;
 import io.github.cascade.cache.simple.CacheManager;
-import io.github.cascade.cache.simple.CacheManagerImpl;
-import io.github.cascade.cache.simple.TieredCache;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -128,49 +126,6 @@ public class UserController {
         long end = System.currentTimeMillis();
         log.info("编程式缓存+自动CacheLoader测试 - 查询耗时: {}ms", (end - start));
         return user;
-    }
-
-    /**
-     * 获取CacheLoaderResolver的统计信息
-     */
-    @GetMapping("/test/resolver-stats")
-    public Object getResolverStats() {
-        if (cascadeCacheManager instanceof CacheManagerImpl cacheManagerImpl) {
-            if (cacheManagerImpl.getCacheLoaderResolver() != null) {
-                return cacheManagerImpl.getCacheLoaderResolver().getStats();
-            }
-        }
-        return "CacheLoaderResolver未设置";
-    }
-
-    /**
-     * 测试缓存统计信息
-     */
-    @GetMapping("/test/cache-stats/{cacheName}")
-    public String getCacheStats(@PathVariable String cacheName) {
-        @SuppressWarnings("unchecked")
-        Cache<String, User> cache = cascadeCacheManager.getCache(cacheName);
-        if (cache != null) {
-            if (cache instanceof TieredCache) {
-                @SuppressWarnings("unchecked")
-                TieredCache<String, User> tieredCache = (TieredCache<String, User>) cache;
-                return "缓存 " + cacheName + " 统计信息: " + tieredCache.getStats();
-            } else {
-                return "缓存 " + cacheName + " 基本信息: 名称=" + cache.getName() + ", 大小=" + cache.size();
-            }
-        }
-        return "缓存 " + cacheName + " 不存在";
-    }
-
-    /**
-     * 获取缓存管理器统计信息
-     */
-    @GetMapping("/test/manager-stats")
-    public Object getManagerStats() {
-        if (cascadeCacheManager instanceof CacheManagerImpl cacheManagerImpl) {
-            return cacheManagerImpl.getStats();
-        }
-        return "统计信息不可用";
     }
 
 }

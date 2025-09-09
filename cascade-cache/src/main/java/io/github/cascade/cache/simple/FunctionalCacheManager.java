@@ -248,16 +248,18 @@ public class FunctionalCacheManager implements CacheManager {
             return null;
         }
 
-        // 获取函数式缓存的加载器
-        CacheLoader<K, V> loader = null;
-        if (cache instanceof FunctionalCache<?, ?>) {
-            FunctionalCache<K, V> functionalCache = (FunctionalCache<K, V>) cache;
-            loader = functionalCache.getLoader().orElse(null);
+        // 穿透装饰器获取底层的FunctionalCache
+        FunctionalCache<K, V> functionalCache = extractFunctionalCache(cache);
+        if (functionalCache == null) {
+            log.warn("不是函数式缓存，无法创建刷新器: {}", cacheName);
+            return null;
         }
 
+        // 获取函数式缓存的加载器
+        CacheLoader<K, V> loader = functionalCache.getLoader().orElse(null);
+
         // 如果缓存没有加载器，尝试通过解析器获取
-        if (loader == null && loaderResolver != null && cache instanceof FunctionalCache<?, ?>) {
-            FunctionalCache<K, V> functionalCache = (FunctionalCache<K, V>) cache;
+        if (loader == null && loaderResolver != null) {
             loader = loaderResolver.resolveCacheLoader(
                     functionalCache.getKeyType(), functionalCache.getValueType());
         }
@@ -469,6 +471,32 @@ public class FunctionalCacheManager implements CacheManager {
         String appName = System.getProperty("spring.application.name", "functional-cache");
         long timestamp = System.currentTimeMillis() % 100000;
         return String.format("%s-%d", appName, timestamp);
+    }
+
+    /**
+     * 穿透装饰器获取底层的FunctionalCache
+     * <p>
+     * 解决装饰器模式导致的类型识别问题：
+     * SyncAwareCache(FunctionalCache) -> FunctionalCache
+     */
+    @SuppressWarnings("unchecked")
+    private <K, V> FunctionalCache<K, V> extractFunctionalCache(Cache<K, V> cache) {
+        // 直接是FunctionalCache
+        if (cache instanceof FunctionalCache<?, ?>) {
+            return (FunctionalCache<K, V>) cache;
+        }
+        
+        // 穿透SyncAwareCache装饰器
+        if (cache instanceof SyncAwareCache<?, ?>) {
+            SyncAwareCache<K, V> syncAware = (SyncAwareCache<K, V>) cache;
+            Cache<K, V> delegate = syncAware.getDelegate();
+            return extractFunctionalCache(delegate); // 递归穿透多层装饰器
+        }
+        
+        // 可以在这里添加对其他装饰器的支持
+        // if (cache instanceof OtherDecoratorCache<?, ?>) { ... }
+        
+        return null; // 不是函数式缓存
     }
 
     /**

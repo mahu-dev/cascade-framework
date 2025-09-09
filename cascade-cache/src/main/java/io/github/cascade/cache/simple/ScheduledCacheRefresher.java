@@ -36,7 +36,7 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
     // 配置参数
     private volatile long defaultRefreshIntervalSeconds;
     private volatile boolean parallelRefresh;
-    
+
     // 资源管理配置
     private final long shutdownTimeoutSeconds = 10L; // 关闭超时时间
     private final Object stateLock = new Object(); // 状态锁
@@ -46,7 +46,7 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
     private final ConcurrentMap<K, ScheduledFuture<?>> scheduledTasks = new ConcurrentHashMap<>();
 
     // 状态管理
-    private volatile boolean running = false;
+    private volatile boolean running = true;
 
     /**
      * 构造器 - 使用默认线程池
@@ -220,7 +220,7 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
                 log.debug("缓存刷新器已经在运行: cache={}", cacheName);
                 return;
             }
-            
+
             try {
                 running = true;
 
@@ -243,10 +243,10 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
                 log.debug("缓存刷新器已经停止: cache={}", cacheName);
                 return;
             }
-            
+
             running = false;
             log.info("正在停止缓存刷新器: cache={}", cacheName);
-            
+
             try {
                 // 取消所有调度任务
                 log.debug("取消调度任务: cache={}, 任务数={}", cacheName, scheduledTasks.size());
@@ -270,20 +270,20 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
             }
         }
     }
-    
+
     /**
      * 安全关闭执行器
      */
     private void shutdownExecutors() {
         // 优雅关闭调度器
         shutdownExecutor("scheduler", scheduler);
-        
+
         // 优雅关闭刷新执行器（如果不是公共池）
         if (refreshExecutor != ForkJoinPool.commonPool()) {
             shutdownExecutor("refreshExecutor", refreshExecutor);
         }
     }
-    
+
     /**
      * 安全关闭单个执行器
      */
@@ -291,12 +291,12 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
         try {
             log.debug("正在关闭执行器: cache={}, executor={}", cacheName, name);
             executor.shutdown();
-            
+
             if (!executor.awaitTermination(shutdownTimeoutSeconds, TimeUnit.SECONDS)) {
                 log.warn("执行器未在超时时间内关闭，强制关闭: cache={}, executor={}, timeout={}s",
                         cacheName, name, shutdownTimeoutSeconds);
                 executor.shutdownNow();
-                
+
                 // 再等待一段时间确认强制关闭生效
                 if (!executor.awaitTermination(2, TimeUnit.SECONDS)) {
                     log.error("执行器强制关闭失败: cache={}, executor={}", cacheName, name);
