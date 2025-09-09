@@ -156,21 +156,6 @@ public final class CacheDefinition<K, V> {
         return loaderResolver != null;
     }
 
-    /**
-     * 获取显式加载器（向后兼容）
-     */
-    @Deprecated
-    public Function<K, V> getLoaderDeprecated() {
-        return loader;
-    }
-
-    /**
-     * 获取加载器解析器（向后兼容）
-     */
-    @Deprecated
-    public CacheLoaderResolver getLoaderResolverDeprecated() {
-        return loaderResolver;
-    }
 
     // ==================== Builder类 ====================
 
@@ -271,7 +256,7 @@ public final class CacheDefinition<K, V> {
             return new CacheDefinition<>(this);
         }
 
-        private CacheType inferTypeFromConfig(CascadeCacheProperties config) {
+        private static CacheType inferTypeFromConfig(CascadeCacheProperties config) {
             boolean l1Enabled = config.isL1Enabled();
             boolean l2Enabled = config.isL2Enabled();
 
@@ -313,38 +298,5 @@ public final class CacheDefinition<K, V> {
                 hasLoaderResolver());
     }
 
-    // ==================== 向后兼容方法（标记为过时） ====================
-
-    /**
-     * @deprecated 使用 {@link #builder(String, Class, Class)} 和 Builder API
-     */
-    @Deprecated
-    public CacheDefinition<K, V> setName(String name) {
-        throw new UnsupportedOperationException("CacheDefinition是不可变的，请使用Builder");
-    }
-
-    /**
-     * @deprecated 使用 {@link #builder(String, Class, Class)} 和 Builder API
-     */
-    @Deprecated
-    public CacheDefinition<K, V> setConfig(CascadeCacheProperties config) {
-        throw new UnsupportedOperationException("CacheDefinition是不可变的，请使用Builder");
-    }
-
-    /**
-     * @deprecated 使用 {@link #builder(String, Class, Class)} 和 Builder API
-     */
-    @Deprecated
-    public CacheDefinition<K, V> setLoader(Function<K, V> loader) {
-        throw new UnsupportedOperationException("CacheDefinition是不可变的，请使用Builder");
-    }
-
-    /**
-     * @deprecated 使用 {@link #builder(String, Class, Class)} 和 Builder API
-     */
-    @Deprecated
-    public CacheDefinition<K, V> setLoaderResolver(CacheLoaderResolver loaderResolver) {
-        throw new UnsupportedOperationException("CacheDefinition是不可变的，请使用Builder");
-    }
 
 }

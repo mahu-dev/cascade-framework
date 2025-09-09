@@ -1,5 +1,6 @@
 package io.github.cascade.cache.simple;
 
+import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationContext;
@@ -188,8 +189,21 @@ public class CacheLoaderResolver<K, V> {
      * 分析参数化类型
      */
     private TypeInfo analyzeParameterizedType(ParameterizedType parameterizedType) {
-        // TODO: 实现复杂泛型解析逻辑
-        // 这里可以添加更复杂的泛型解析，包括继承链的处理
+        Type rawType = parameterizedType.getRawType();
+
+        // 检查是否是CacheLoader类型或其子类
+        if (rawType instanceof Class && CacheLoader.class.isAssignableFrom((Class<?>) rawType)) {
+            Type[] typeArguments = parameterizedType.getActualTypeArguments();
+            if (typeArguments.length == 2) {
+                Type keyType = typeArguments[0];
+                Type valueType = typeArguments[1];
+
+                if (keyType instanceof Class && valueType instanceof Class) {
+                    return new TypeInfo((Class<?>) keyType, (Class<?>) valueType);
+                }
+            }
+        }
+
         return null;
     }
 
@@ -256,6 +270,7 @@ public class CacheLoaderResolver<K, V> {
     /**
      * 统计信息
      */
+    @Getter
     public static class ResolverStats {
         private final int resolvedLoaderCount;
         private final int typeInfoCacheSize;
@@ -265,18 +280,6 @@ public class CacheLoaderResolver<K, V> {
             this.resolvedLoaderCount = resolvedLoaderCount;
             this.typeInfoCacheSize = typeInfoCacheSize;
             this.applicationContextSet = applicationContextSet;
-        }
-
-        public int getResolvedLoaderCount() {
-            return resolvedLoaderCount;
-        }
-
-        public int getTypeInfoCacheSize() {
-            return typeInfoCacheSize;
-        }
-
-        public boolean isApplicationContextSet() {
-            return applicationContextSet;
         }
 
         @Override
