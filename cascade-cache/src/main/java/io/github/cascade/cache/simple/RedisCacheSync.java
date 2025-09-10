@@ -1,8 +1,11 @@
 package io.github.cascade.cache.simple;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.cascade.cache.exception.CacheConnectionException;
+import io.github.cascade.cache.exception.CacheException;
 import io.github.cascade.cache.exception.CacheSerializationException;
+import lombok.Data;
 import lombok.Getter;
 import org.redisson.api.RTopic;
 import org.redisson.api.RedissonClient;
@@ -10,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -30,7 +34,7 @@ import java.util.function.Consumer;
  */
 public class RedisCacheSync<K, V> implements CacheSync<K, V> {
 
-    private static final Logger log = LoggerFactory.getLogger(RedisCacheSync.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(RedisCacheSync.class);
 
     private final RedissonClient redissonClient;
     /**
@@ -48,7 +52,7 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
     private final ObjectMapper objectMapper;
     private final ConcurrentMap<String, Consumer<SyncEvent<K, V>>> subscribers = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, RTopic> topics = new ConcurrentHashMap<>();
-    private volatile boolean running = false;
+    private volatile boolean running;
 
     /**
      * 构造器
@@ -59,21 +63,23 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
         this.nodeId = generateNodeId();
         this.objectMapper = new ObjectMapper();
 
-        log.info("创建Redis缓存同步器: topicPrefix={}, nodeId={}", this.topicPrefix, this.nodeId);
+        LOGGER.info("创建Redis缓存同步器: topicPrefix={}, nodeId={}", this.topicPrefix, this.nodeId);
     }
 
     /**
      * 生成节点ID
      */
-    private String generateNodeId() {
+    private static String generateNodeId() {
         try {
             String hostName = InetAddress.getLocalHost().getHostName();
             String pid = ProcessHandle.current().pid() + "";
             long timestamp = System.currentTimeMillis();
             return hostName + "-" + pid + "-" + timestamp;
-        } catch (Exception e) {
-            log.warn("Failed to generate node id, using fallback", e);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to generate node id, using fallback", e);
             return "node-" + System.currentTimeMillis() + "-" + Thread.currentThread().getId();
+        } catch (UnknownHostException e) {
+            throw new CacheException("获取节点ID错误", e);
         }
 
     }
@@ -98,15 +104,15 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
                 // 发布事件
                 topic.publish(jsonData);
 
-                if (log.isTraceEnabled()) {
-                    log.trace("发布同步事件: topic={}, event={}", topicName, event);
+                if (LOGGER.isTraceEnabled()) {
+                    LOGGER.trace("发布同步事件: topic={}, event={}", topicName, event);
                 }
 
-            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
-                log.error("发布同步事件失败: event={}, error={}", event, e.getMessage(), e);
+            } catch (JsonProcessingException e) {
+                LOGGER.error("发布同步事件失败: event={}, error={}", event, e.getMessage(), e);
                 throw new CacheSerializationException("RedisCacheSync", "序列化事件失败", e);
-            } catch (Exception e) {
-                log.error("发布同步事件失败: event={}, error={}", event, e.getMessage(), e);
+            } catch (RuntimeException e) {
+                LOGGER.error("发布同步事件失败: event={}, error={}", event, e.getMessage(), e);
                 throw new CacheConnectionException("RedisCacheSync", "发布事件失败", e);
             }
         });
@@ -124,7 +130,7 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
             doSubscribe(cacheName, eventHandler);
         }
 
-        log.info("订阅缓存同步事件: cacheName={}", cacheName);
+        LOGGER.info("订阅缓存同步事件: cacheName={}", cacheName);
     }
 
     @Override
@@ -136,7 +142,7 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
             topic.removeAllListeners();
         }
 
-        log.info("取消订阅缓存同步事件: cacheName={}", cacheName);
+        LOGGER.info("取消订阅缓存同步事件: cacheName={}", cacheName);
     }
 
     @Override
@@ -147,7 +153,7 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
             // 为所有已订阅的缓存创建监听器
             subscribers.forEach(this::doSubscribe);
 
-            log.info("Redis缓存同步器已启动: nodeId={}, 订阅数={}", nodeId, subscribers.size());
+            LOGGER.info("Redis缓存同步器已启动: nodeId={}, 订阅数={}", nodeId, subscribers.size());
         }
     }
 
@@ -160,7 +166,7 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
             topics.values().forEach(RTopic::removeAllListeners);
             topics.clear();
 
-            log.info("Redis缓存同步器已停止: nodeId={}", nodeId);
+            LOGGER.info("Redis缓存同步器已停止: nodeId={}", nodeId);
         }
     }
 
@@ -183,11 +189,11 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
             topic.addListener(String.class, (channel, jsonData) -> {
                 try {
                     // 反序列化事件
-                    SerializableEvent serializableEvent = objectMapper.readValue(jsonData, SerializableEvent.class);
-
+                    SerializableEvent<K, V> serializableEvent = objectMapper.readValue(jsonData,
+                            SerializableEvent.class);
                     // 忽略自己发送的事件
                     if (nodeId.equals(serializableEvent.getNodeId())) {
-                        log.info("忽略自己发送的事件: topic={}, event={}", topicName, serializableEvent);
+                        LOGGER.info("忽略自己发送的事件: topic={}, event={}", topicName, serializableEvent);
                         return;
                     }
 
@@ -195,29 +201,29 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
                     SyncEvent<K, V> syncEvent = new SyncEvent<>(
                             serializableEvent.getCacheName(),
                             EventType.valueOf(serializableEvent.getType()),
-                            (K) serializableEvent.getKey(),
-                            (V) serializableEvent.getValue(),
+                            serializableEvent.getKey(),
+                            serializableEvent.getValue(),
                             serializableEvent.getNodeId()
                     );
 
                     // 处理事件
                     eventHandler.accept(syncEvent);
 
-                    if (log.isTraceEnabled()) {
-                        log.trace("处理同步事件: topic={}, event={}", topicName, syncEvent);
+                    if (LOGGER.isTraceEnabled()) {
+                        LOGGER.trace("处理同步事件: topic={}, event={}", topicName, syncEvent);
                     }
 
-                } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
-                    log.error("同步事件反序列化失败: topic={}, data={}, error={}", topicName, jsonData, e.getMessage());
+                } catch (JsonProcessingException e) {
+                    LOGGER.error("同步事件反序列化失败: topic={}, data={}, error={}", topicName, jsonData, e.getMessage());
                 } catch (Exception e) {
-                    log.error("处理同步事件失败: topic={}, data={}, error={}", topicName, jsonData, e.getMessage(), e);
+                    LOGGER.error("处理同步事件失败: topic={}, data={}, error={}", topicName, jsonData, e.getMessage(), e);
                 }
             });
 
             topics.put(cacheName, topic);
 
         } catch (Exception e) {
-            log.error("订阅同步事件失败: cacheName={}, error={}", cacheName, e.getMessage());
+            LOGGER.error("订阅同步事件失败: cacheName={}, error={}", cacheName, e.getMessage());
         }
     }
 
@@ -233,11 +239,12 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
     /**
      * 可序列化的事件类（用于JSON序列化）
      */
-    public static class SerializableEvent {
+    @Data
+    public static class SerializableEvent<K, V> {
         private String cacheName;
         private String type;
-        private Object key;
-        private Object value;
+        private K key;
+        private V value;
         private String nodeId;
         private long timestamp;
 
@@ -245,62 +252,13 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
         public SerializableEvent() {
         }
 
-        public SerializableEvent(SyncEvent event) {
+        public SerializableEvent(SyncEvent<K, V> event) {
             this.cacheName = event.getCacheName();
             this.type = event.getType().name();
             this.key = event.getKey();
             this.value = event.getValue();
             this.nodeId = event.getNodeId();
             this.timestamp = event.getTimestamp();
-        }
-
-        // Getter/Setter methods for Jackson serialization
-        public String getCacheName() {
-            return cacheName;
-        }
-
-        public void setCacheName(String cacheName) {
-            this.cacheName = cacheName;
-        }
-
-        public String getType() {
-            return type;
-        }
-
-        public void setType(String type) {
-            this.type = type;
-        }
-
-        public Object getKey() {
-            return key;
-        }
-
-        public void setKey(Object key) {
-            this.key = key;
-        }
-
-        public Object getValue() {
-            return value;
-        }
-
-        public void setValue(Object value) {
-            this.value = value;
-        }
-
-        public String getNodeId() {
-            return nodeId;
-        }
-
-        public void setNodeId(String nodeId) {
-            this.nodeId = nodeId;
-        }
-
-        public long getTimestamp() {
-            return timestamp;
-        }
-
-        public void setTimestamp(long timestamp) {
-            this.timestamp = timestamp;
         }
     }
 

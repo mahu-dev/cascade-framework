@@ -1,5 +1,7 @@
 package io.github.cascade.cache.simple;
 
+import io.github.cascade.cache.exception.CacheException;
+
 import java.time.Duration;
 import java.util.Objects;
 import java.util.Optional;
@@ -9,7 +11,7 @@ import java.util.function.Supplier;
 
 /**
  * Try模式接口 - 封装可能失败的计算
- * 
+ *
  * @author cascade
  */
 public interface AbstractTry<T> {
@@ -159,7 +161,7 @@ public interface AbstractTry<T> {
 
         @Override
         public T get() {
-            throw new RuntimeException("Try failed", exception);
+            throw new CacheException("Try failed", exception);
         }
 
         @Override

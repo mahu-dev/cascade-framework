@@ -22,7 +22,7 @@ import java.util.stream.IntStream;
  * @author cascade
  */
 public class SpelExpressionHelper {
-    private static final Logger log = LoggerFactory.getLogger(SpelExpressionHelper.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(SpelExpressionHelper.class);
 
     private final ExpressionParser parser = new SpelExpressionParser();
     private final ConcurrentHashMap<String, Expression> expressionCache;
@@ -41,8 +41,8 @@ public class SpelExpressionHelper {
             Expression expr = getCachedExpression(expression);
             StandardEvaluationContext context = createContext(joinPoint, result);
             return expr.getValue(context);
-        } catch (Exception e) {
-            log.debug("SpEL evaluation failed: {}", expression, e);
+        } catch (RuntimeException e) {
+            LOGGER.debug("SpEL evaluation failed: {}", expression, e);
             return generateDefaultKey(joinPoint);
         }
     }
@@ -60,7 +60,7 @@ public class SpelExpressionHelper {
                         .limit(removeCount)
                         .forEach(entry -> expressionCache.remove(entry.getKey()));
 
-                log.debug("SpEL表达式缓存已清理 {} 个条目，当前大小: {}", removeCount, expressionCache.size());
+                LOGGER.debug("SpEL表达式缓存已清理 {} 个条目，当前大小: {}", removeCount, expressionCache.size());
             }
 
             // 解析新表达式

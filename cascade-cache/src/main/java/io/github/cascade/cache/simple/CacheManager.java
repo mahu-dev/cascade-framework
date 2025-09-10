@@ -16,44 +16,44 @@ import java.util.function.Function;
  *
  * @author cascade
  */
-public interface CacheManager {
+public interface CacheManager<K, V> {
 
     // ==================== 缓存创建与获取 ====================
 
     /**
      * 获取或创建缓存（使用默认配置）
      */
-    <K, V> Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType);
+    Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType);
 
     /**
      * 获取或创建缓存（使用自定义配置）
      */
-    <K, V> Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType,
-                                        CascadeCacheProperties config);
+    Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType,
+                                 CascadeCacheProperties config);
 
     /**
      * 获取或创建缓存（带加载器）
      */
-    <K, V> Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType,
-                                        Function<K, V> loader);
+    Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType,
+                                 Function<K, V> loader);
 
     /**
      * 获取或创建缓存（完整配置）
      */
-    <K, V> Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType,
-                                        CascadeCacheProperties config, Function<K, V> loader);
+    Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType,
+                                 CascadeCacheProperties config, Function<K, V> loader);
 
     /**
      * 获取已存在的缓存
      */
-    <K, V> Cache<K, V> getCache(String cacheName);
+    Cache<K, V> getCache(String cacheName);
 
     // ==================== 缓存管理 ====================
 
     /**
      * 注册缓存实例
      */
-    <K, V> boolean registerCache(String cacheName, Cache<K, V> cache);
+    boolean registerCache(String cacheName, Cache<K, V> cache);
 
     /**
      * 移除缓存
@@ -93,14 +93,12 @@ public interface CacheManager {
     boolean isClosed();
 
     // ==================== 扩展功能 ====================
-    
+
     /**
      * 获取或创建缓存刷新器
-     * 
+     *
      * @param cacheName 缓存名称
-     * @param <K> 键类型
-     * @param <V> 值类型
      * @return 缓存刷新器，创建失败返回null
      */
-    <K, V> CacheRefresher<K, V> getOrCreateCacheRefresher(String cacheName);
+    CacheRefresher<K, V> getOrCreateCacheRefresher(String cacheName);
 }

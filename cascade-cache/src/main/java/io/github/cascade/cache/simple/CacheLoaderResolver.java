@@ -1,6 +1,5 @@
 package io.github.cascade.cache.simple;
 
-import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationContext;
@@ -10,6 +9,7 @@ import java.lang.reflect.Type;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+
 
 /**
  * CacheLoader自动解析器
@@ -60,7 +60,8 @@ public class CacheLoaderResolver<K, V> {
         // 先从缓存中查找
         CacheLoader<K, V> cachedLoader = resolvedLoaders.get(cacheKey);
         if (cachedLoader != null) {
-            log.debug("从缓存中找到CacheLoader: keyType={}, valueType={}", keyType.getSimpleName(), valueType.getSimpleName());
+            log.debug("从缓存中找到CacheLoader: keyType={}, valueType={}", keyType.getSimpleName(),
+                    valueType.getSimpleName());
             return cachedLoader;
         }
 
@@ -71,7 +72,8 @@ public class CacheLoaderResolver<K, V> {
             log.info("找到匹配的CacheLoader: keyType={}, valueType={}, loader={}",
                     keyType.getSimpleName(), valueType.getSimpleName(), loader.getClass().getSimpleName());
         } else {
-            log.debug("未找到匹配的CacheLoader: keyType={}, valueType={}", keyType.getSimpleName(), valueType.getSimpleName());
+            log.debug("未找到匹配的CacheLoader: keyType={}, valueType={}", keyType.getSimpleName(),
+                    valueType.getSimpleName());
         }
 
         return loader;
@@ -80,7 +82,6 @@ public class CacheLoaderResolver<K, V> {
     /**
      * 从Spring容器中查找匹配的CacheLoader
      */
-    @SuppressWarnings("unchecked")
     private CacheLoader<K, V> findMatchingCacheLoader(Class<K> keyType, Class<V> valueType) {
         Map<String, CacheLoader> loaderBeans = getLoaderBeans(keyType, valueType);
         if (loaderBeans == null) {
@@ -108,7 +109,7 @@ public class CacheLoaderResolver<K, V> {
     private Map<String, CacheLoader> getLoaderBeans(Class<K> keyType, Class<V> valueType) {
         try {
             return applicationContext.getBeansOfType(CacheLoader.class);
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             log.error("查找CacheLoader失败: keyType={}, valueType={}, error={}",
                     keyType.getSimpleName(), valueType.getSimpleName(), e.getMessage());
             return Collections.emptyMap();
@@ -127,7 +128,7 @@ public class CacheLoaderResolver<K, V> {
                         beanName, typeInfo.keyType.getSimpleName(), typeInfo.valueType.getSimpleName());
                 return loader;
             }
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             log.warn("分析CacheLoader类型失败: beanName={}, error={}", beanName, e.getMessage());
         }
         return null;
@@ -144,45 +145,88 @@ public class CacheLoaderResolver<K, V> {
      * 分析CacheLoader的泛型类型信息
      */
     private TypeInfo analyzeTypeInfo(CacheLoader<K, V> loader) {
+        TypeInfo result = null;
+
         try {
             Class<?> loaderClass = loader.getClass();
 
-            // 查找CacheLoader接口的泛型参数
-            Type[] genericInterfaces = loaderClass.getGenericInterfaces();
-            for (Type genericInterface : genericInterfaces) {
-                if (genericInterface instanceof ParameterizedType) {
-                    ParameterizedType parameterizedType = (ParameterizedType) genericInterface;
-                    Type rawType = parameterizedType.getRawType();
+            // 首先尝试从接口中解析
+            result = analyzeInterfaceTypes(loaderClass);
 
-                    if (rawType == CacheLoader.class) {
-                        Type[] typeArguments = parameterizedType.getActualTypeArguments();
-                        if (typeArguments.length == 2) {
-                            Type keyType = typeArguments[0];
-                            Type valueType = typeArguments[1];
-
-                            if (keyType instanceof Class && valueType instanceof Class) {
-                                return new TypeInfo((Class<?>) keyType, (Class<?>) valueType);
-                            }
-                        }
-                    }
-                }
+            // 如果接口解析失败，尝试从父类中解析
+            if (result == null) {
+                result = analyzeSuperclassTypes(loaderClass);
             }
 
-            // 检查父类的泛型参数
-            Type genericSuperclass = loaderClass.getGenericSuperclass();
-            if (genericSuperclass instanceof ParameterizedType) {
-                ParameterizedType parameterizedSuperclass = (ParameterizedType) genericSuperclass;
-                return analyzeParameterizedType(parameterizedSuperclass);
+            if (result == null) {
+                log.debug("无法解析CacheLoader的泛型类型: class={}", loaderClass.getName());
             }
 
-            log.debug("无法解析CacheLoader的泛型类型: class={}", loaderClass.getName());
-            return null;
-
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             log.warn("分析CacheLoader类型信息失败: loader={}, error={}",
                     loader.getClass().getName(), e.getMessage());
+        }
+
+        return result;
+    }
+
+    /**
+     * 从接口中分析类型信息
+     */
+    private TypeInfo analyzeInterfaceTypes(Class<?> loaderClass) {
+        Type[] genericInterfaces = loaderClass.getGenericInterfaces();
+        for (Type genericInterface : genericInterfaces) {
+            TypeInfo typeInfo = tryExtractTypeInfo(genericInterface);
+            if (typeInfo != null) {
+                return typeInfo;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 从父类中分析类型信息
+     */
+    private TypeInfo analyzeSuperclassTypes(Class<?> loaderClass) {
+        Type genericSuperclass = loaderClass.getGenericSuperclass();
+        if (genericSuperclass instanceof ParameterizedType superclass) {
+            return analyzeParameterizedType(superclass);
+        }
+        return null;
+    }
+
+    /**
+     * 尝试从泛型类型中提取类型信息
+     */
+    private TypeInfo tryExtractTypeInfo(Type type) {
+        if (!(type instanceof ParameterizedType parameterizedType)) {
             return null;
         }
+
+        Type rawType = parameterizedType.getRawType();
+        if (rawType != CacheLoader.class) {
+            return null;
+        }
+        return extractTypeArgumentsAsTypeInfo(parameterizedType);
+    }
+
+    /**
+     * 从参数化类型中提取类型参数
+     */
+    private static TypeInfo extractTypeArgumentsAsTypeInfo(ParameterizedType parameterizedType) {
+        Type[] typeArguments = parameterizedType.getActualTypeArguments();
+        if (typeArguments.length != 2) {
+            return null;
+        }
+
+        Type keyType = typeArguments[0];
+        Type valueType = typeArguments[1];
+
+        if (keyType instanceof Class && valueType instanceof Class) {
+            return new TypeInfo((Class<?>) keyType, (Class<?>) valueType);
+        }
+
+        return null;
     }
 
     /**
@@ -193,15 +237,7 @@ public class CacheLoaderResolver<K, V> {
 
         // 检查是否是CacheLoader类型或其子类
         if (rawType instanceof Class && CacheLoader.class.isAssignableFrom((Class<?>) rawType)) {
-            Type[] typeArguments = parameterizedType.getActualTypeArguments();
-            if (typeArguments.length == 2) {
-                Type keyType = typeArguments[0];
-                Type valueType = typeArguments[1];
-
-                if (keyType instanceof Class && valueType instanceof Class) {
-                    return new TypeInfo((Class<?>) keyType, (Class<?>) valueType);
-                }
-            }
+            return extractTypeArgumentsAsTypeInfo(parameterizedType);
         }
 
         return null;
@@ -210,7 +246,7 @@ public class CacheLoaderResolver<K, V> {
     /**
      * 生成缓存键
      */
-    private String generateCacheKey(Class<?> keyType, Class<?> valueType) {
+    private static String generateCacheKey(Class<?> keyType, Class<?> valueType) {
         return keyType.getName() + "-" + valueType.getName();
     }
 
@@ -237,15 +273,7 @@ public class CacheLoaderResolver<K, V> {
     /**
      * 类型信息内部类
      */
-    private static class TypeInfo {
-        final Class<?> keyType;
-        final Class<?> valueType;
-
-        TypeInfo(Class<?> keyType, Class<?> valueType) {
-            this.keyType = keyType;
-            this.valueType = valueType;
-        }
-
+    private record TypeInfo(Class<?> keyType, Class<?> valueType) {
         /**
          * 检查是否匹配指定的类型
          */
@@ -256,7 +284,7 @@ public class CacheLoaderResolver<K, V> {
         /**
          * 检查类型兼容性
          */
-        private boolean isAssignableFrom(Class<?> sourceType, Class<?> targetType) {
+        private static boolean isAssignableFrom(Class<?> sourceType, Class<?> targetType) {
             return sourceType.isAssignableFrom(targetType);
         }
 
@@ -270,18 +298,7 @@ public class CacheLoaderResolver<K, V> {
     /**
      * 统计信息
      */
-    @Getter
-    public static class ResolverStats {
-        private final int resolvedLoaderCount;
-        private final int typeInfoCacheSize;
-        private final boolean applicationContextSet;
-
-        public ResolverStats(int resolvedLoaderCount, int typeInfoCacheSize, boolean applicationContextSet) {
-            this.resolvedLoaderCount = resolvedLoaderCount;
-            this.typeInfoCacheSize = typeInfoCacheSize;
-            this.applicationContextSet = applicationContextSet;
-        }
-
+    public record ResolverStats(int resolvedLoaderCount, int typeInfoCacheSize, boolean applicationContextSet) {
         @Override
         public String toString() {
             return String.format("ResolverStats{resolved=%d, cached=%d, contextSet=%s}",

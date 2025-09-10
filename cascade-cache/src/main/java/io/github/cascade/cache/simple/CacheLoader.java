@@ -1,6 +1,9 @@
 package io.github.cascade.cache.simple;
 
+import io.github.cascade.cache.exception.CacheException;
+
 import java.time.Duration;
+import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -8,6 +11,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 /**
  * 缓存加载器接口
@@ -45,18 +50,20 @@ public interface CacheLoader<K, V> extends Function<K, V> {
      * 批量加载（可选实现，默认逐个调用）
      */
     default Map<K, V> loadAll(Iterable<K> keys) {
-        return keys instanceof java.util.Collection<K> coll ?
-                coll.stream().collect(java.util.stream.Collectors.toMap(
-                        k -> k,
-                        this::apply,
-                        (v1, v2) -> v2,
-                        java.util.LinkedHashMap::new)) :
-                java.util.stream.StreamSupport.stream(keys.spliterator(), false)
-                        .collect(java.util.stream.Collectors.toMap(
-                                k -> k,
-                                this::apply,
-                                (v1, v2) -> v2,
-                                java.util.LinkedHashMap::new));
+        if (keys instanceof Collection<K> coll) {
+            return coll.stream().collect(Collectors.toMap(
+                    k -> k,
+                    this::apply,
+                    (v1, v2) -> v2,
+                    java.util.LinkedHashMap::new));
+        } else {
+            return StreamSupport.stream(keys.spliterator(), false)
+                    .collect(Collectors.toMap(
+                            k -> k,
+                            this::apply,
+                            (v1, v2) -> v2,
+                            java.util.LinkedHashMap::new));
+        }
     }
 
     /**
@@ -79,11 +86,11 @@ public interface CacheLoader<K, V> extends Function<K, V> {
      * 创建异步加载器
      */
     static <K, V> CacheLoader<K, V> async(Function<K, CompletableFuture<V>> asyncLoader) {
-        return key -> {
+        return (K key) -> {
             try {
                 return asyncLoader.apply(key).join();
-            } catch (Exception e) {
-                throw new RuntimeException("异步加载失败: " + key, e);
+            } catch (RuntimeException e) {
+                throw new CacheException("异步加载失败: " + key, e);
             }
         };
     }
@@ -127,16 +134,25 @@ public interface CacheLoader<K, V> extends Function<K, V> {
      * 创建带条件过滤的加载器
      */
     default CacheLoader<K, V> filtered(Predicate<K> condition, V defaultValue) {
-        return key -> condition.test(key) ? this.apply(key) : defaultValue;
+        return (K key) -> {
+            if (condition.test(key)) {
+                return this.apply(key);
+            } else {
+                return defaultValue;
+            }
+        };
     }
 
     /**
      * 创建带结果转换的加载器
      */
     default <R> CacheLoader<K, R> mapped(Function<V, R> mapper) {
-        return key -> {
+        return (K key) -> {
             V value = this.apply(key);
-            return value != null ? mapper.apply(value) : null;
+            if (value != null) {
+                return mapper.apply(value);
+            }
+            return null;
         };
     }
 
@@ -151,11 +167,11 @@ public interface CacheLoader<K, V> extends Function<K, V> {
      * 函数组合 - 链式调用其他加载器
      */
     default CacheLoader<K, V> orElse(CacheLoader<K, V> fallback) {
-        return key -> {
+        return (K key) -> {
             try {
                 V result = this.apply(key);
                 return result != null ? result : fallback.apply(key);
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
                 return fallback.apply(key);
             }
         };
@@ -173,9 +189,9 @@ public interface CacheLoader<K, V> extends Function<K, V> {
     /**
      * 创建带熔断器的加载器
      */
-    static <K, V> CacheLoader<K, V> circuitBreaker(Function<K, V> loader, 
-                                                  int failureThreshold, 
-                                                  Duration recoveryTime) {
+    static <K, V> CacheLoader<K, V> circuitBreaker(Function<K, V> loader,
+                                                   int failureThreshold,
+                                                   Duration recoveryTime) {
         return new CircuitBreakerCacheLoader<>(loader, failureThreshold, recoveryTime);
     }
 

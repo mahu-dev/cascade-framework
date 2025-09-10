@@ -1,5 +1,7 @@
 package io.github.cascade.cache.simple;
 
+import lombok.Getter;
+
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -17,6 +19,7 @@ public class CircuitBreaker<T> {
     private final int failureThreshold;
     private final Duration timeout;
     private final Duration retryAfter;
+    @Getter
     private volatile State state = State.CLOSED;
     private final AtomicInteger failureCount = new AtomicInteger();
     private volatile long lastFailureTime;
@@ -74,7 +77,4 @@ public class CircuitBreaker<T> {
         }
     }
 
-    public State getState() {
-        return state;
-    }
 }

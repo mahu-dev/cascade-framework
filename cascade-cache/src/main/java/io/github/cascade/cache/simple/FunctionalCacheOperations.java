@@ -1,5 +1,6 @@
 package io.github.cascade.cache.simple;
 
+import io.github.cascade.cache.exception.CacheException;
 import org.aspectj.lang.JoinPoint;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.slf4j.Logger;
@@ -60,7 +61,7 @@ public class FunctionalCacheOperations {
         public T getValue() {
             return value;
         }
-        
+
         public Optional<T> getOptionalValue() {
             return Optional.ofNullable(value);
         }
@@ -110,7 +111,7 @@ public class FunctionalCacheOperations {
     public static <T> Result<T> safely(Supplier<T> operation) {
         try {
             return Result.success(operation.get());
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             return Result.failure(e);
         }
     }
@@ -126,7 +127,7 @@ public class FunctionalCacheOperations {
      * 缓存名称解析器
      */
     public static Function<JoinPoint, String> cacheNameResolver(String annotationValue) {
-        return joinPoint -> {
+        return (JoinPoint joinPoint) -> {
             if (StringUtils.hasText(annotationValue)) {
                 return annotationValue;
             }
@@ -139,19 +140,14 @@ public class FunctionalCacheOperations {
     /**
      * SpEL表达式求值器 - 函数式封装
      */
-    public static class SpelEvaluator {
-        private final SpelExpressionHelper spelHelper;
-
-        public SpelEvaluator(SpelExpressionHelper spelHelper) {
-            this.spelHelper = spelHelper;
-        }
+    public record SpelEvaluator(SpelExpressionHelper spelHelper) {
 
         public Function<JoinPoint, Result<Object>> evaluateExpression(String expression) {
             return joinPoint -> safely(() -> spelHelper.evaluate(expression, joinPoint, null));
         }
 
         public Function<JoinPoint, Result<Boolean>> evaluateCondition(String condition, Object result) {
-            return joinPoint -> {
+            return (JoinPoint joinPoint) -> {
                 if (!StringUtils.hasText(condition)) {
                     return Result.success(true); // 空条件默认为true
                 }
@@ -169,15 +165,7 @@ public class FunctionalCacheOperations {
     /**
      * 缓存获取管道
      */
-    public static class CacheGetPipeline<K, V> {
-        private final Cache<K, V> cache;
-        private final K key;
-
-        public CacheGetPipeline(Cache<K, V> cache, K key) {
-            this.cache = cache;
-            this.key = key;
-        }
-
+    public record CacheGetPipeline<K, V>(Cache<K, V> cache, K key) {
         public Result<Optional<V>> execute() {
             return safely(() -> cache.get(key));
         }
@@ -197,48 +185,6 @@ public class FunctionalCacheOperations {
         }
     }
 
-    /**
-     * 缓存存储管道
-     */
-    public static class CachePutPipeline<K, V> {
-        private final Cache<K, V> cache;
-        private final K key;
-        private final V value;
-
-        public CachePutPipeline(Cache<K, V> cache, K key, V value) {
-            this.cache = cache;
-            this.key = key;
-            this.value = value;
-        }
-
-        public Result<Void> execute() {
-            return safely(() -> {
-                cache.put(key, value);
-                return null;
-            });
-        }
-
-        public Result<Void> executeWithTtl(long ttlSeconds) {
-            return safely(() -> {
-                cache.put(key, value, ttlSeconds);
-                return null;
-            });
-        }
-
-        public CachePutPipeline<K, V> whenNotNull() {
-            return value != null ? this : new CachePutPipeline<>(cache, key, null) {
-                @Override
-                public Result<Void> execute() {
-                    return Result.success(null); // Skip operation
-                }
-
-                @Override
-                public Result<Void> executeWithTtl(long ttlSeconds) {
-                    return Result.success(null); // Skip operation
-                }
-            };
-        }
-    }
 
     // ==================== 静态工厂方法 ====================
 
@@ -262,16 +208,15 @@ public class FunctionalCacheOperations {
      * 日志装饰器
      */
     public static <T> Function<T, T> withLogging(String operation, Function<T, String> keyExtractor) {
-        return input -> {
+        return (T input) -> {
             String key = keyExtractor.apply(input);
             log.debug("{}开始: key={}", operation, key);
             try {
                 // 这里实际上只是透传，真正的操作在调用方
                 log.debug("{}完成: key={}", operation, key);
                 return input;
-            } catch (Exception e) {
-                log.error("{}失败: key={}, error={}", operation, key, e.getMessage());
-                throw e;
+            } catch (RuntimeException e) {
+                throw new CacheException(operation, "执行", "操作执行失败: " + key, e);
             }
         };
     }
@@ -287,19 +232,19 @@ public class FunctionalCacheOperations {
      * 重试装饰器
      */
     public static <T> Function<Supplier<T>, Supplier<T>> withRetry(int maxRetries) {
-        return supplier -> () -> {
+        return (Supplier<T> supplier) -> () -> {
             Exception lastException = null;
             for (int i = 0; i <= maxRetries; i++) {
                 try {
                     return supplier.get();
-                } catch (Exception e) {
+                } catch (RuntimeException e) {
                     lastException = e;
                     if (i == maxRetries) {
-                        throw new RuntimeException("操作重试失败，次数: " + maxRetries, e);
+                        throw new CacheException("操作重试失败，次数: " + maxRetries, e);
                     }
                 }
             }
-            throw new RuntimeException("不应该到达这里", lastException);
+            throw new CacheException("不应该到达这里", lastException);
         };
     }
 
@@ -321,44 +266,111 @@ public class FunctionalCacheOperations {
             Predicate<JoinPoint> condition,
             boolean enableRefresh,
             long ttlSeconds) {
+        // 向后兼容版本：不支持刷新功能
+        return cacheableOperation(cache, key, condition, enableRefresh, ttlSeconds, null, 300L);
+    }
 
-        return joinPoint -> {
-            // 条件检查
+    /**
+     * 函数式@Cacheable操作（完整版本，支持刷新功能）
+     */
+    public static <K, V> Function<ProceedingJoinPoint, Result<V>> cacheableOperation(
+            Cache<K, V> cache,
+            K key,
+            Predicate<JoinPoint> condition,
+            boolean enableRefresh,
+            long ttlSeconds,
+            CacheManager<K, V> cacheManager,
+            long refreshIntervalSeconds) {
+
+        return (ProceedingJoinPoint joinPoint) -> {
             if (!condition.test(joinPoint)) {
-                return safely(() -> {
-                    try {
-                        return (V) joinPoint.proceed();
-                    } catch (Throwable e) {
-                        throw new RuntimeException("方法执行失败", e);
-                    }
-                });
+                return executeMethodDirectly(joinPoint);
             }
 
-            // 尝试从缓存获取
-            Result<Optional<V>> cacheResult = get(cache, key).execute();
-            if (cacheResult.isSuccess() && cacheResult.getValue().isPresent()) {
-                V cachedValue = cacheResult.getValue().get();
-                log.debug("缓存命中: cache={}, key={}", cache.getName(), key);
-                return Result.success(cachedValue);
+            Result<V> result = executeCacheableMethod(cache, key, joinPoint, ttlSeconds);
+
+            // 如果启用刷新并且有CacheManager，则启用自动刷新
+            if (enableRefresh && cacheManager != null && result.isSuccess()) {
+                enableCacheRefresh(cache, key, cacheManager, refreshIntervalSeconds);
             }
 
-            // 缓存未命中，执行业务方法
-            Result<V> methodResult = safely(() -> {
-                try {
-                    return (V) joinPoint.proceed();
-                } catch (Throwable e) {
-                    throw new RuntimeException("方法执行失败", e);
-                }
-            });
-            if (methodResult.isSuccess()) {
-                V result = methodResult.getValue();
-                if (result != null) {
-                    put(cache, key, result).executeWithTtl(ttlSeconds);
-                }
-            }
-
-            return methodResult;
+            return result;
         };
+    }
+
+    /**
+     * 直接执行方法，不使用缓存
+     */
+    private static <V> Result<V> executeMethodDirectly(ProceedingJoinPoint joinPoint) {
+        return safely(() -> {
+            try {
+                return (V) joinPoint.proceed();
+            } catch (Throwable e) {
+                throw new CacheException("方法执行失败", e);
+            }
+        });
+    }
+
+    /**
+     * 执行可缓存方法：先查缓存，缓存未命中则执行方法并缓存结果
+     */
+    private static <K, V> Result<V> executeCacheableMethod(Cache<K, V> cache, K key,
+                                                           ProceedingJoinPoint joinPoint,
+                                                           long ttlSeconds) {
+        // 尝试从缓存获取
+        Result<Optional<V>> cacheResult = get(cache, key).execute();
+        if (cacheResult.isSuccess() && cacheResult.getValue().isPresent()) {
+            return handleCacheHit(cache, key, cacheResult.getValue().get());
+        }
+
+        // 缓存未命中，执行业务方法
+        return handleCacheMiss(cache, key, joinPoint, ttlSeconds);
+    }
+
+    /**
+     * 处理缓存命中情况
+     */
+    private static <K, V> Result<V> handleCacheHit(Cache<K, V> cache, K key, V cachedValue) {
+        log.debug("缓存命中: cache={}, key={}", cache.getName(), key);
+        return Result.success(cachedValue);
+    }
+
+    /**
+     * 处理缓存未命中情况：执行方法并缓存结果
+     */
+    private static <K, V> Result<V> handleCacheMiss(Cache<K, V> cache, K key,
+                                                    ProceedingJoinPoint joinPoint,
+                                                    long ttlSeconds) {
+        Result<V> methodResult = executeMethodDirectly(joinPoint);
+        if (methodResult.isSuccess()) {
+            V result = methodResult.getValue();
+            if (result != null) {
+                put(cache, key, result).executeWithTtl(ttlSeconds);
+            }
+        }
+        return methodResult;
+    }
+
+    /**
+     * 启用缓存自动刷新功能
+     */
+    private static <K, V> void enableCacheRefresh(Cache<K, V> cache, K key,
+                                                  CacheManager<K, V> cacheManager,
+                                                  long refreshIntervalSeconds) {
+        try {
+            CacheRefresher<K, V> refresher = cacheManager.getOrCreateCacheRefresher(cache.getName());
+
+            if (refresher != null) {
+                refresher.addKey(key, refreshIntervalSeconds);
+                log.info("函数式缓存自动刷新已启用: cache={}, key={}, interval={}s",
+                        cache.getName(), key, refreshIntervalSeconds);
+            } else {
+                log.warn("无法创建或获取缓存刷新器: cache={}", cache.getName());
+            }
+        } catch (RuntimeException e) {
+            log.error("启用函数式缓存自动刷新失败: cache={}, key={}, error={}",
+                    cache.getName(), key, e.getMessage(), e);
+        }
     }
 
     /**
@@ -380,7 +392,7 @@ public class FunctionalCacheOperations {
     }
 
     /**
-     * 函数式@CacheEvict操作  
+     * 函数式@CacheEvict操作
      */
     public static <K, V> Function<JoinPoint, Result<Void>> cacheEvictOperation(
             Cache<K, V> cache,

@@ -19,7 +19,7 @@ import java.util.Set;
  * @author cascade
  */
 @Getter
-public class CacheManagerStats {
+public final class CacheManagerStats {
 
     private final String nodeId;
     private final int cacheCount;
@@ -146,8 +146,12 @@ public class CacheManagerStats {
 
     @Override
     public boolean equals(Object obj) {
-        if (this == obj) return true;
-        if (obj == null || getClass() != obj.getClass()) return false;
+        if (this == obj) {
+            return true;
+        }
+        if (obj == null || getClass() != obj.getClass()) {
+            return false;
+        }
 
         CacheManagerStats that = (CacheManagerStats) obj;
         return cacheCount == that.cacheCount &&

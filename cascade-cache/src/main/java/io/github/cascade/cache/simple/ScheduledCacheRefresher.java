@@ -23,7 +23,7 @@ import java.util.concurrent.*;
  */
 public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
 
-    private static final Logger log = LoggerFactory.getLogger(ScheduledCacheRefresher.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(ScheduledCacheRefresher.class);
 
     private final String cacheName;
     private final Cache<K, V> cache;
@@ -88,7 +88,7 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
             throw new IllegalArgumentException("缓存加载器不能为null");
         }
 
-        log.info("创建缓存刷新器: cache={}, 默认间隔={}s, 并行刷新={}",
+        LOGGER.info("创建缓存刷新器: cache={}, 默认间隔={}s, 并行刷新={}",
                 cacheName, defaultRefreshIntervalSeconds, parallelRefresh);
     }
 
@@ -113,12 +113,11 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
                     } else {
                         cache.put(key, newValue);
                     }
-                    log.trace("缓存刷新完成: cache={}, key={}", cacheName, key);
+                    LOGGER.trace("缓存刷新完成: cache={}, key={}", cacheName, key);
                 }
 
                 return newValue;
-            } catch (Exception e) {
-                log.error("缓存刷新失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
+            } catch (RuntimeException e) {
                 throw new CompletionException(new CacheException(cacheName, "刷新", "刷新键失败: " + key, e));
             }
         }, refreshExecutor);
@@ -138,7 +137,7 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
 
             return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
                     .exceptionally(throwable -> {
-                        log.warn("部分键刷新失败: cache={}, error={}", cacheName, throwable.getMessage());
+                        LOGGER.warn("部分键刷新失败: cache={}, error={}", cacheName, throwable.getMessage());
                         return null;
                     });
         } else {
@@ -147,8 +146,8 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
                 for (K key : keys) {
                     try {
                         refresh(key).join();
-                    } catch (Exception e) {
-                        log.error("串行刷新失败: cache={}, key={}, error={}",
+                    } catch (RuntimeException e) {
+                        LOGGER.error("串行刷新失败: cache={}, key={}, error={}",
                                 cacheName, key, e.getMessage());
                     }
                 }
@@ -183,7 +182,7 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
             scheduleKeyRefresh(key, info);
         }
 
-        log.info("添加刷新键: cache={}, key={}, interval={}s", cacheName, key, refreshIntervalSeconds);
+        LOGGER.info("添加刷新键: cache={}, key={}, interval={}s", cacheName, key, refreshIntervalSeconds);
     }
 
     @Override
@@ -195,7 +194,7 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
             task.cancel(false);
         }
 
-        log.debug("移除刷新键: cache={}, key={}", cacheName, key);
+        LOGGER.debug("移除刷新键: cache={}, key={}", cacheName, key);
     }
 
     @Override
@@ -210,14 +209,14 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
         scheduledTasks.clear();
         monitoredKeys.clear();
 
-        log.info("清空所有刷新键: cache={}", cacheName);
+        LOGGER.info("清空所有刷新键: cache={}", cacheName);
     }
 
     @Override
     public void start() {
         synchronized (stateLock) {
             if (running) {
-                log.debug("缓存刷新器已经在运行: cache={}", cacheName);
+                LOGGER.debug("缓存刷新器已经在运行: cache={}", cacheName);
                 return;
             }
 
@@ -227,11 +226,10 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
                 // 为所有监控的键创建调度任务
                 monitoredKeys.forEach(this::scheduleKeyRefresh);
 
-                log.info("缓存刷新器已启动: cache={}, 监控键数={}", cacheName, monitoredKeys.size());
-            } catch (Exception e) {
+                LOGGER.info("缓存刷新器已启动: cache={}, 监控键数={}", cacheName, monitoredKeys.size());
+            } catch (RuntimeException e) {
                 running = false; // 回滚状态
-                log.error("启动缓存刷新器失败: cache={}, error={}", cacheName, e.getMessage(), e);
-                throw new RuntimeException("启动缓存刷新器失败", e);
+                throw new CacheException("启动缓存刷新器失败", e);
             }
         }
     }
@@ -240,21 +238,21 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
     public void stop() {
         synchronized (stateLock) {
             if (!running) {
-                log.debug("缓存刷新器已经停止: cache={}", cacheName);
+                LOGGER.debug("缓存刷新器已经停止: cache={}", cacheName);
                 return;
             }
 
             running = false;
-            log.info("正在停止缓存刷新器: cache={}", cacheName);
+            LOGGER.info("正在停止缓存刷新器: cache={}", cacheName);
 
             try {
                 // 取消所有调度任务
-                log.debug("取消调度任务: cache={}, 任务数={}", cacheName, scheduledTasks.size());
+                LOGGER.debug("取消调度任务: cache={}, 任务数={}", cacheName, scheduledTasks.size());
                 scheduledTasks.values().forEach(task -> {
                     try {
                         task.cancel(false);
-                    } catch (Exception e) {
-                        log.warn("取消调度任务失败: cache={}, error={}", cacheName, e.getMessage());
+                    } catch (RuntimeException e) {
+                        LOGGER.warn("取消调度任务失败: cache={}, error={}", cacheName, e.getMessage());
                     }
                 });
                 scheduledTasks.clear();
@@ -264,9 +262,9 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
                     shutdownExecutors();
                 }
 
-                log.info("缓存刷新器已停止: cache={}", cacheName);
-            } catch (Exception e) {
-                log.error("停止缓存刷新器时出现异常: cache={}, error={}", cacheName, e.getMessage(), e);
+                LOGGER.info("缓存刷新器已停止: cache={}", cacheName);
+            } catch (RuntimeException e) {
+                LOGGER.error("停止缓存刷新器时出现异常: cache={}, error={}", cacheName, e.getMessage(), e);
             }
         }
     }
@@ -289,27 +287,27 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
      */
     private void shutdownExecutor(String name, ExecutorService executor) {
         try {
-            log.debug("正在关闭执行器: cache={}, executor={}", cacheName, name);
+            LOGGER.debug("正在关闭执行器: cache={}, executor={}", cacheName, name);
             executor.shutdown();
 
             if (!executor.awaitTermination(shutdownTimeoutSeconds, TimeUnit.SECONDS)) {
-                log.warn("执行器未在超时时间内关闭，强制关闭: cache={}, executor={}, timeout={}s",
+                LOGGER.warn("执行器未在超时时间内关闭，强制关闭: cache={}, executor={}, timeout={}s",
                         cacheName, name, shutdownTimeoutSeconds);
                 executor.shutdownNow();
 
                 // 再等待一段时间确认强制关闭生效
                 if (!executor.awaitTermination(2, TimeUnit.SECONDS)) {
-                    log.error("执行器强制关闭失败: cache={}, executor={}", cacheName, name);
+                    LOGGER.error("执行器强制关闭失败: cache={}, executor={}", cacheName, name);
                 }
             } else {
-                log.debug("执行器已成功关闭: cache={}, executor={}", cacheName, name);
+                LOGGER.debug("执行器已成功关闭: cache={}, executor={}", cacheName, name);
             }
         } catch (InterruptedException e) {
-            log.warn("等待执行器关闭被中断: cache={}, executor={}", cacheName, name);
+            LOGGER.warn("等待执行器关闭被中断: cache={}, executor={}", cacheName, name);
             Thread.currentThread().interrupt();
             executor.shutdownNow();
-        } catch (Exception e) {
-            log.error("关闭执行器失败: cache={}, executor={}, error={}", cacheName, name, e.getMessage());
+        } catch (RuntimeException e) {
+            LOGGER.error("关闭执行器失败: cache={}, executor={}, error={}", cacheName, name, e.getMessage());
         }
     }
 
@@ -363,7 +361,7 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
 
         scheduledTasks.put(key, newTask);
 
-        log.debug("调度键刷新任务已创建: cache={}, key={}, interval={}s", cacheName, key, info.refreshIntervalSeconds);
+        LOGGER.debug("调度键刷新任务已创建: cache={}, key={}, interval={}s", cacheName, key, info.refreshIntervalSeconds);
     }
 
     /**
@@ -372,8 +370,8 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
     private void refreshKeyQuietly(K key) {
         try {
             refresh(key).join();
-        } catch (Exception e) {
-            log.error("定时刷新失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
+        } catch (RuntimeException e) {
+            LOGGER.error("定时刷新失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
         }
     }
 
@@ -382,14 +380,7 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
     /**
      * 键刷新信息
      */
-    private static class KeyRefreshInfo {
-        final Object key;
-        final long refreshIntervalSeconds;
-
-        KeyRefreshInfo(Object key, long refreshIntervalSeconds) {
-            this.key = key;
-            this.refreshIntervalSeconds = refreshIntervalSeconds;
-        }
+    private record KeyRefreshInfo(Object key, long refreshIntervalSeconds) {
     }
 
     // ==================== 扩展方法 ====================

@@ -1,5 +1,9 @@
 package io.github.cascade.cache.simple;
 
+import io.github.cascade.cache.exception.CacheLoadException;
+
+import java.util.Arrays;
+
 /**
  * 组合缓存加载器实现
  * <p>
@@ -11,15 +15,12 @@ package io.github.cascade.cache.simple;
  * @param <V> 值类型
  * @author cascade
  */
-final class ComposedCacheLoader<K, V> implements CacheLoader<K, V> {
-    
-    private final CacheLoader<K, V>[] loaders;
-    
+record ComposedCacheLoader<K, V>(CacheLoader<K, V>... loaders) implements CacheLoader<K, V> {
+
     @SafeVarargs
-    ComposedCacheLoader(CacheLoader<K, V>... loaders) {
-        this.loaders = loaders;
+    ComposedCacheLoader {
     }
-    
+
     @Override
     public V apply(K key) {
         Exception lastException = null;
@@ -37,5 +38,27 @@ final class ComposedCacheLoader<K, V> implements CacheLoader<K, V> {
             throw new CacheLoadException("所有组合加载器都失败: " + key, lastException);
         }
         return null;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (obj == null || getClass() != obj.getClass()) {
+            return false;
+        }
+        ComposedCacheLoader<?, ?> that = (ComposedCacheLoader<?, ?>) obj;
+        return Arrays.equals(loaders, that.loaders);
+    }
+
+    @Override
+    public int hashCode() {
+        return Arrays.hashCode(loaders);
+    }
+
+    @Override
+    public String toString() {
+        return "ComposedCacheLoader{loaders=" + Arrays.toString(loaders) + "}";
     }
 }

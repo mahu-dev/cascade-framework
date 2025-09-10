@@ -40,14 +40,13 @@ public class CacheLoaderAutoConfiguration {
 
         try {
             // 查找CacheLoaderResolver
-            CacheLoaderResolver resolver = applicationContext.getBean(CacheLoaderResolver.class);
+            CacheLoaderResolver<?, ?> resolver = applicationContext.getBean(CacheLoaderResolver.class);
             resolver.setApplicationContext(applicationContext);
 
             // 查找所有FunctionalCacheManager实例（实际上已经在创建时注入，这里只是确保设置）
             applicationContext.getBeansOfType(FunctionalCacheManager.class)
-                    .forEach((name, cacheManager) -> {
-                        log.info("✅ 缓存管理器已自动配置CacheLoaderResolver: {}", name);
-                    });
+                    .forEach((name, cacheManager) ->
+                            log.info("✅ 缓存管理器已自动配置CacheLoaderResolver: {}", name));
 
             log.info("✅ CacheLoaderResolver配置完成");
         } catch (Exception e) {

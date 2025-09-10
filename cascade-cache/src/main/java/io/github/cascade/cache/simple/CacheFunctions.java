@@ -1,11 +1,14 @@
 package io.github.cascade.cache.simple;
 
+import io.github.cascade.cache.exception.CacheException;
+import io.github.cascade.cache.exception.CacheLoadException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Function;
 
 /**
@@ -21,6 +24,9 @@ import java.util.function.Function;
 public final class CacheFunctions {
 
     private static final Logger log = LoggerFactory.getLogger(CacheFunctions.class);
+    // 锁对象缓存，确保相同key使用相同锁对象
+    private static final Map<Object, Object> lockObjects = new ConcurrentHashMap<>();
+    private static final Map<Object, CompletableFuture<Object>> loadingCache = new ConcurrentHashMap<>();
 
     private CacheFunctions() {
     } // 工具类不允许实例化
@@ -36,7 +42,7 @@ public final class CacheFunctions {
      * @return 组合后的Function
      */
     public static <T, R> Function<T, R> orElse(Function<T, R> first, Function<T, R> second) {
-        return input -> {
+        return (T input) -> {
             R result = first.apply(input);
             return result != null ? result : second.apply(input);
         };
@@ -77,10 +83,10 @@ public final class CacheFunctions {
      * @return 从数据源加载的Function
      */
     public static <K, V> Function<K, V> loadFromSource(CacheLoader<K, V> loader) {
-        return key -> {
+        return (K key) -> {
             try {
                 return loader.apply(key);
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
                 log.warn("数据源加载失败: key={}, error={}", key, e.getMessage());
                 return null;
             }
@@ -98,12 +104,12 @@ public final class CacheFunctions {
      * @return 带写回功能的Function
      */
     public static <K, V> Function<K, V> withWriteBack(Cache<K, V> cache, Function<K, V> sourceFunction) {
-        return key -> {
+        return (K key) -> {
             V value = sourceFunction.apply(key);
             if (value != null) {
                 try {
                     cache.put(key, value);
-                } catch (Exception e) {
+                } catch (RuntimeException e) {
                     log.warn("缓存写回失败: key={}, cache={}, error={}",
                             key, cache.getName(), e.getMessage());
                 }
@@ -132,7 +138,7 @@ public final class CacheFunctions {
         CompletableFuture.runAsync(() -> {
             try {
                 cache.put(key, value);
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
                 log.warn("异步缓存写回失败: key={}, cache={}, error={}",
                         key, cache.getName(), e.getMessage());
             }
@@ -150,14 +156,16 @@ public final class CacheFunctions {
 
     // ==================== 防击穿装饰器 ====================
 
+
     /**
      * 防击穿装饰器 - 文档扩展思想的实现
      * 使用synchronized锁防止相同key的并发加载
      */
     public static <K, V> Function<K, V> withLock(Function<K, V> sourceFunction) {
-        return key -> {
-            // 使用key的字符串表示作为锁对象，利用String intern池确保相同key使用相同锁
-            synchronized (("CACHE_LOCK_" + key.toString()).intern()) {
+        return (K key) -> {
+            // 获取或创建锁对象，确保相同key使用相同锁
+            Object lockObject = lockObjects.computeIfAbsent(key, k -> new Object());
+            synchronized (lockObject) {
                 return sourceFunction.apply(key);
             }
         };
@@ -167,7 +175,7 @@ public final class CacheFunctions {
      * 进阶防击穿装饰器
      * 使用分段锁和Future来避免重复加载
      */
-    private static final Map<Object, CompletableFuture<Object>> loadingCache = new ConcurrentHashMap<>();
+
 
     public static <K, V> Function<K, V> withAdvancedLock(Function<K, V> sourceFunction) {
         return key -> loadWithLock(key, sourceFunction);
@@ -198,8 +206,9 @@ public final class CacheFunctions {
                 // 4. 等待自己发起的加载任务结果
                 try {
                     result = (V) newFuture.get();
-                } catch (Exception e) {
+                } catch (RuntimeException | InterruptedException | ExecutionException e) {
                     log.warn("防击穿加载失败: key={}, error={}", key, e.getMessage());
+                    Thread.currentThread().interrupt();
                 }
             }
         }
@@ -207,13 +216,13 @@ public final class CacheFunctions {
         return result;
     }
 
-    @SuppressWarnings("unchecked")
     private static <K, V> V waitForFuture(K key, CompletableFuture<Object> future) {
         try {
             return (V) future.get();
-        } catch (Exception e) {
+        } catch (RuntimeException | InterruptedException | ExecutionException e) {
             log.warn("等待加载结果失败: key={}, error={}", key, e.getMessage());
             loadingCache.remove(key, future);
+            Thread.currentThread().interrupt();
             return null;
         }
     }
@@ -225,22 +234,23 @@ public final class CacheFunctions {
      * 记录执行时间和成功率
      */
     public static <K, V> Function<K, V> withMetrics(Function<K, V> sourceFunction, String operationName) {
-        return key -> {
-            long startTime = System.currentTimeMillis();
-            boolean success = false;
-            try {
-                V result = sourceFunction.apply(key);
-                success = (result != null);
-                return result;
-            } catch (Exception e) {
-                log.error("操作执行失败: operation={}, key={}, error={}", operationName, key, e.getMessage());
-                throw e;
-            } finally {
-                long duration = System.currentTimeMillis() - startTime;
-                log.debug("操作执行完成: operation={}, key={}, duration={}ms, success={}",
-                        operationName, key, duration, success);
-            }
-        };
+        return key -> executeWithMetrics(key, sourceFunction, operationName);
+    }
+
+    private static <K, V> V executeWithMetrics(K key, Function<K, V> sourceFunction, String operationName) {
+        long startTime = System.currentTimeMillis();
+        boolean success = false;
+        try {
+            V result = sourceFunction.apply(key);
+            success = (result != null);
+            return result;
+        } catch (RuntimeException e) {
+            throw new CacheException(operationName, "执行", "操作执行失败: " + key, e);
+        } finally {
+            long duration = System.currentTimeMillis() - startTime;
+            log.debug("操作执行完成: operation={}, key={}, duration={}ms, success={}",
+                    operationName, key, duration, success);
+        }
     }
 
     /**
@@ -248,38 +258,39 @@ public final class CacheFunctions {
      * 失败时自动重试
      */
     public static <K, V> Function<K, V> withRetry(Function<K, V> sourceFunction, int maxRetries, long retryDelayMs) {
-        return key -> {
-            Exception lastException = null;
+        return key -> executeWithRetry(key, sourceFunction, maxRetries, retryDelayMs);
+    }
 
-            for (int i = 0; i <= maxRetries; i++) {
-                try {
-                    V result = sourceFunction.apply(key);
-                    if (i > 0) {
-                        log.debug("重试成功: key={}, attempt={}", key, i + 1);
-                    }
-                    return result;
-                } catch (Exception e) {
-                    lastException = e;
-                    if (i < maxRetries) {
-                        log.warn("执行失败，准备重试: key={}, attempt={}, error={}",
-                                key, i + 1, e.getMessage());
-                        try {
-                            Thread.sleep(retryDelayMs);
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
-                    }
+    private static <K, V> V executeWithRetry(K key, Function<K, V> sourceFunction, int maxRetries, long retryDelayMs) {
+        Exception lastException = null;
+
+        for (int i = 0; i <= maxRetries; i++) {
+            try {
+                V result = sourceFunction.apply(key);
+                if (i > 0) {
+                    log.debug("重试成功: key={}, attempt={}", key, i + 1);
+                }
+                return result;
+            } catch (RuntimeException e) {
+                lastException = e;
+                if (i < maxRetries) {
+                    log.warn("执行失败，准备重试: key={}, attempt={}, error={}",
+                            key, i + 1, e.getMessage());
+                    sleepBetweenRetries(retryDelayMs);
                 }
             }
+        }
 
-            log.error("重试次数耗尽: key={}, maxRetries={}", key, maxRetries);
-            if (lastException instanceof RuntimeException) {
-                throw (RuntimeException) lastException;
-            } else {
-                throw new RuntimeException("重试失败", lastException);
-            }
-        };
+        log.error("重试次数耗尽: key={}, maxRetries={}", key, maxRetries);
+        throw new CacheLoadException("重试失败", lastException);
+    }
+
+    private static void sleepBetweenRetries(long retryDelayMs) {
+        try {
+            Thread.sleep(retryDelayMs);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     // ==================== 便捷构造器 ====================
@@ -324,76 +335,4 @@ public final class CacheFunctions {
         );
     }
 
-    // ==================== 内部辅助类 ====================
-
-    /**
-     * 批量写回Function的实现
-     */
-    private static class BatchWriteBackFunction<K, V> implements Function<K, V> {
-        private final Cache<K, V> cache;
-        private final Function<K, V> sourceFunction;
-        private final int batchSize;
-        private final long delayMs;
-        private final Map<K, V> pendingWrites = new ConcurrentHashMap<>();
-
-        public BatchWriteBackFunction(Cache<K, V> cache, Function<K, V> sourceFunction,
-                                      int batchSize, long delayMs) {
-            this.cache = cache;
-            this.sourceFunction = sourceFunction;
-            this.batchSize = batchSize;
-            this.delayMs = delayMs;
-
-            // 启动定时刷新任务
-            startFlushTask();
-        }
-
-        @Override
-        public V apply(K key) {
-            V value = sourceFunction.apply(key);
-            if (value != null) {
-                pendingWrites.put(key, value);
-
-                // 检查是否需要立即刷新
-                if (pendingWrites.size() >= batchSize) {
-                    flushPendingWrites();
-                }
-            }
-            return value;
-        }
-
-        private void startFlushTask() {
-            CompletableFuture.runAsync(() -> {
-                while (true) {
-                    try {
-                        Thread.sleep(delayMs);
-                        if (!pendingWrites.isEmpty()) {
-                            flushPendingWrites();
-                        }
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                }
-            });
-        }
-
-        private void flushPendingWrites() {
-            if (pendingWrites.isEmpty()) {
-                return;
-            }
-
-            Map<K, V> toFlush = Map.copyOf(pendingWrites);
-            pendingWrites.clear();
-
-            try {
-                cache.putAll(toFlush);
-                log.debug("批量写回完成: cache={}, size={}", cache.getName(), toFlush.size());
-            } catch (Exception e) {
-                log.warn("批量写回失败: cache={}, size={}, error={}",
-                        cache.getName(), toFlush.size(), e.getMessage());
-                // 失败的数据放回pending队列
-                pendingWrites.putAll(toFlush);
-            }
-        }
-    }
 }

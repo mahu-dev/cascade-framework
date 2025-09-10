@@ -47,6 +47,8 @@ public class CascadeCacheProperties {
 
     /**
      * CacheLoader配置
+     * -- GETTER --
+     * 获取CacheLoader配置
      */
     private LoaderProperties loader = new LoaderProperties();
 
@@ -320,13 +322,6 @@ public class CascadeCacheProperties {
      */
     public boolean isStatsEnabled() {
         return l1.recordStats;
-    }
-
-    /**
-     * 获取CacheLoader配置
-     */
-    public LoaderProperties getLoader() {
-        return loader;
     }
 
     // ==================== 便捷构建方法 ====================

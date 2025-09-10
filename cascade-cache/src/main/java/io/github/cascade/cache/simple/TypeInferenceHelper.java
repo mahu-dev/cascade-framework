@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Map;
 
@@ -63,7 +64,7 @@ public class TypeInferenceHelper {
 
             return Object.class;
 
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             log.debug("SpEL表达式类型推断失败: {}, 使用Object类型, 错误: {}", expr, e.getMessage());
             return Object.class;
         }
@@ -231,7 +232,7 @@ public class TypeInferenceHelper {
                 return resolveFieldType(paramType, propertyPath);
             }
 
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             log.debug("属性类型解析失败: {}, 错误: {}", expr, e.getMessage());
         }
 
@@ -253,7 +254,7 @@ public class TypeInferenceHelper {
                     currentType = getter.getReturnType();
                 } else {
                     // 尝试直接字段访问
-                    java.lang.reflect.Field field = currentType.getDeclaredField(fieldName);
+                    Field field = currentType.getDeclaredField(fieldName);
                     currentType = field.getType();
                 }
             } catch (Exception e) {

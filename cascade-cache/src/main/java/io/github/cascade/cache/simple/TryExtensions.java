@@ -2,7 +2,9 @@ package io.github.cascade.cache.simple;
 
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -14,7 +16,7 @@ import java.util.function.Supplier;
  * @author cascade
  */
 public final class TryExtensions {
-    
+
     private TryExtensions() {
         // 私有构造函数防止实例化工具类
     }
@@ -27,8 +29,9 @@ public final class TryExtensions {
         try {
             T result = future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
             return AbstractTry.success(result);
-        } catch (Exception e) {
+        } catch (RuntimeException | InterruptedException | ExecutionException | TimeoutException e) {
             future.cancel(true);
+            Thread.currentThread().interrupt();
             return AbstractTry.failure(e);
         }
     }
@@ -36,8 +39,8 @@ public final class TryExtensions {
     /**
      * 带重试的Try操作
      */
-    public static <T> AbstractTry<T> withRetry(Supplier<T> operation, 
-                                                               RecoveryStrategy<T> strategy) {
+    public static <T> AbstractTry<T> withRetry(Supplier<T> operation,
+                                               RecoveryStrategy<T> strategy) {
         int attemptCount = 0;
         Exception lastException = null;
         final int maxAttempts = 10; // 最大重试限制

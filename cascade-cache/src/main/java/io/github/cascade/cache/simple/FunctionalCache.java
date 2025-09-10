@@ -28,7 +28,7 @@ import java.util.function.Function;
  */
 public class FunctionalCache<K, V> implements Cache<K, V> {
 
-    private static final Logger log = LoggerFactory.getLogger(FunctionalCache.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(FunctionalCache.class);
 
     private final String cacheName;
 
@@ -38,7 +38,12 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
     @Getter
     private final Class<V> valueType;
 
+    /**
+     * -- GETTER --
+     * 获取缓存管道Function（用于测试）
+     */
     // 核心：缓存查找管道Function
+    @Getter
     private final Function<K, V> cachePipeline;
 
     // 可选的组件引用（用于直接操作和生命周期管理）
@@ -46,7 +51,7 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
     private final Cache<K, V> l2Cache;
     private final CacheLoader<K, V> loader;
 
-    private volatile boolean closed = false;
+    private volatile boolean closed;
 
     // ==================== 构造器 ====================
 
@@ -76,7 +81,7 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
 
         validateConfiguration();
 
-        log.info("函数式缓存创建: {} - L1={}, L2={}, Loader={}, Strategy={}",
+        LOGGER.info("函数式缓存创建: {} - L1={}, L2={}, Loader={}, Strategy={}",
                 cacheName,
                 l1Cache != null ? l1Cache.getClass().getSimpleName() : "无",
                 l2Cache != null ? l2Cache.getClass().getSimpleName() : "无",
@@ -97,7 +102,7 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
         this.l2Cache = null;
         this.loader = null;
 
-        log.info("自定义管道缓存创建: {}", cacheName);
+        LOGGER.info("自定义管道缓存创建: {}", cacheName);
     }
 
     // ==================== Cache接口实现 ====================
@@ -109,8 +114,8 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
         try {
             V value = cachePipeline.apply(key);
             return Optional.ofNullable(value);
-        } catch (Exception e) {
-            log.error("缓存获取失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
+        } catch (RuntimeException e) {
+            LOGGER.error("缓存获取失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
             return Optional.empty();
         }
     }
@@ -131,11 +136,11 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
                 V loaded = fallbackLoader.apply(key);
                 if (loaded != null) {
                     put(key, loaded);
-                    log.debug("Fallback加载成功: cache={}, key={}", cacheName, key);
+                    LOGGER.debug("Fallback加载成功: cache={}, key={}", cacheName, key);
                 }
                 return loaded;
-            } catch (Exception e) {
-                log.warn("Fallback加载失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
+            } catch (RuntimeException e) {
+                LOGGER.warn("Fallback加载失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
             }
         }
 
@@ -147,8 +152,8 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
         checkNotClosed();
 
         return CompletableFuture.supplyAsync(() -> get(key))
-                .exceptionally(throwable -> {
-                    log.error("异步缓存获取失败: cache={}, key={}, error={}",
+                .exceptionally((Throwable throwable) -> {
+                    LOGGER.error("异步缓存获取失败: cache={}, key={}, error={}",
                             cacheName, key, throwable.getMessage());
                     return Optional.empty();
                 });
@@ -177,9 +182,9 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
         if (!futures.isEmpty()) {
             try {
                 CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-                log.debug("多级缓存写入完成: cache={}, key={}", cacheName, key);
-            } catch (Exception e) {
-                log.error("多级缓存写入失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
+                LOGGER.debug("多级缓存写入完成: cache={}, key={}", cacheName, key);
+            } catch (RuntimeException e) {
+                LOGGER.error("多级缓存写入失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
             }
         }
     }
@@ -202,8 +207,8 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
         }
 
         return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-                .exceptionally(throwable -> {
-                    log.error("异步多级缓存写入失败: cache={}, key={}, error={}",
+                .exceptionally((Throwable throwable) -> {
+                    LOGGER.error("异步多级缓存写入失败: cache={}, key={}, error={}",
                             cacheName, key, throwable.getMessage());
                     return null;
                 });
@@ -220,7 +225,7 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
             l2Cache.evict(key);
         }
 
-        log.debug("缓存删除: cache={}, key={}", cacheName, key);
+        LOGGER.debug("缓存删除: cache={}, key={}", cacheName, key);
     }
 
     @Override
@@ -234,7 +239,7 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
             l2Cache.clear();
         }
 
-        log.info("缓存清空: cache={}", cacheName);
+        LOGGER.info("缓存清空: cache={}", cacheName);
     }
 
     @Override
@@ -244,9 +249,7 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
         Map<K, V> result = new LinkedHashMap<>();
         for (K key : keys) {
             Optional<V> value = get(key);
-            if (value.isPresent()) {
-                result.put(key, value.get());
-            }
+            value.ifPresent(v -> result.put(key, v));
         }
         return result;
     }
@@ -267,7 +270,7 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
             l2Cache.putAll(entries);
         }
 
-        log.debug("批量写入完成: cache={}, size={}", cacheName, entries.size());
+        LOGGER.debug("批量写入完成: cache={}, size={}", cacheName, entries.size());
     }
 
     @Override
@@ -287,8 +290,10 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
             return l2Cache.size();
         } else if (l1Cache != null) {
             return l1Cache.size();
+        } else {
+            // 无可用缓存层时返回0
+            return 0;
         }
-        return 0;
     }
 
     @Override
@@ -308,7 +313,7 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
                 l2Cache.close();
             }
 
-            log.info("函数式缓存已关闭: {}", cacheName);
+            LOGGER.info("函数式缓存已关闭: {}", cacheName);
         }
     }
 
@@ -341,13 +346,6 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
     }
 
     /**
-     * 获取缓存管道Function（用于测试）
-     */
-    public Function<K, V> getCachePipeline() {
-        return cachePipeline;
-    }
-
-    /**
      * 刷新指定key的缓存
      */
     public CompletableFuture<V> refresh(K key) {
@@ -355,10 +353,10 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
             throw new UnsupportedOperationException("未配置缓存加载器，无法刷新");
         }
 
-        return loader.loadAsync(key).thenApply(newValue -> {
+        return loader.loadAsync(key).thenApply((V newValue) -> {
             if (newValue != null) {
                 put(key, newValue);
-                log.debug("缓存刷新完成: cache={}, key={}", cacheName, key);
+                LOGGER.debug("缓存刷新完成: cache={}, key={}", cacheName, key);
             }
             return newValue;
         });
@@ -372,10 +370,10 @@ public class FunctionalCache<K, V> implements Cache<K, V> {
             throw new UnsupportedOperationException("未配置缓存加载器，无法预热");
         }
 
-        return loader.loadAllAsync(keys).thenApply(loadedData -> {
+        return loader.loadAllAsync(keys).thenApply((Map<K, V> loadedData) -> {
             if (loadedData != null && !loadedData.isEmpty()) {
                 putAll(loadedData);
-                log.info("缓存预热完成: cache={}, 条目数={}", cacheName, loadedData.size());
+                LOGGER.info("缓存预热完成: cache={}, 条目数={}", cacheName, loadedData.size());
             }
             return loadedData;
         });

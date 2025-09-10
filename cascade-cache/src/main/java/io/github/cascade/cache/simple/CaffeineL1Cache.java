@@ -29,12 +29,12 @@ import java.util.function.Function;
  */
 public class CaffeineL1Cache<K, V> implements Cache<K, V> {
 
-    private static final Logger log = LoggerFactory.getLogger(CaffeineL1Cache.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(CaffeineL1Cache.class);
 
     private final String cacheName;
     private final com.github.benmanes.caffeine.cache.Cache<K, V> caffeineCache;
     private final CascadeCacheProperties config;
-    private volatile boolean closed = false;
+    private volatile boolean closed;
 
     /**
      * 构造器
@@ -44,7 +44,7 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
         this.config = config;
         this.caffeineCache = buildCaffeineCache();
 
-        log.info("创建L1缓存: {} - 配置: 最大条目={}, 写后过期={}s, 访问后过期={}s",
+        LOGGER.info("创建L1缓存: {} - 配置: 最大条目={}, 写后过期={}s, 访问后过期={}s",
                 cacheName, config.getL1MaxSize(),
                 config.getL1ExpireAfterWriteSeconds(),
                 config.getL1ExpireAfterAccessSeconds());
@@ -74,7 +74,7 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
 
         // 添加移除监听器用于调试
         builder.removalListener((Object key, Object value, RemovalCause cause) ->
-                log.debug("L1缓存项被移除: cache={}, key={}, cause={}", cacheName, key, cause));
+                LOGGER.debug("L1缓存项被移除: cache={}, key={}, cause={}", cacheName, key, cause));
 
         return builder.build();
     }
@@ -87,8 +87,8 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
         try {
             V value = caffeineCache.getIfPresent(key);
             return Optional.ofNullable(value);
-        } catch (Exception e) {
-            log.error("L1缓存获取失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
+        } catch (RuntimeException e) {
+            LOGGER.error("L1缓存获取失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
             return Optional.empty();
         }
     }
@@ -98,13 +98,13 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
         checkNotClosed();
         try {
             return caffeineCache.get(key, loader);
-        } catch (Exception e) {
-            log.error("L1缓存加载失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
+        } catch (RuntimeException e) {
+            LOGGER.error("L1缓存加载失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
             // 尝试直接调用loader作为fallback
             try {
                 return loader.apply(key);
-            } catch (Exception loaderException) {
-                log.error("Loader fallback失败: cache={}, key={}, error={}", 
+            } catch (RuntimeException loaderException) {
+                LOGGER.error("Loader fallback失败: cache={}, key={}, error={}",
                         cacheName, key, loaderException.getMessage());
                 return null;
             }
@@ -122,11 +122,11 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
         checkNotClosed();
         try {
             caffeineCache.put(key, value);
-            if (log.isTraceEnabled()) {
-                log.trace("L1缓存存储: cache={}, key={}", cacheName, key);
+            if (LOGGER.isTraceEnabled()) {
+                LOGGER.trace("L1缓存存储: cache={}, key={}", cacheName, key);
             }
-        } catch (Exception e) {
-            log.error("L1缓存存储失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
+        } catch (RuntimeException e) {
+            LOGGER.error("L1缓存存储失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
         }
     }
 
@@ -134,15 +134,15 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
     public void put(K key, V value, long ttlSeconds) {
         // Caffeine不支持单独设置TTL，使用全局配置
         put(key, value);
-        log.debug("L1缓存存储(忽略TTL): cache={}, key={}, ttl={}s", cacheName, key, ttlSeconds);
+        LOGGER.debug("L1缓存存储(忽略TTL): cache={}, key={}, ttl={}s", cacheName, key, ttlSeconds);
     }
 
     @Override
     public CompletableFuture<Void> putAsync(K key, V value) {
         checkNotClosed();
         return CompletableFuture.runAsync(() -> put(key, value))
-                .exceptionally(throwable -> {
-                    log.error("L1缓存异步存储失败: cache={}, key={}, error={}", 
+                .exceptionally((Throwable throwable) -> {
+                    LOGGER.error("L1缓存异步存储失败: cache={}, key={}, error={}",
                             cacheName, key, throwable.getMessage());
                     return null;
                 });
@@ -153,11 +153,11 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
         checkNotClosed();
         try {
             caffeineCache.invalidate(key);
-            if (log.isTraceEnabled()) {
-                log.trace("L1缓存删除: cache={}, key={}", cacheName, key);
+            if (LOGGER.isTraceEnabled()) {
+                LOGGER.trace("L1缓存删除: cache={}, key={}", cacheName, key);
             }
-        } catch (Exception e) {
-            log.error("L1缓存删除失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
+        } catch (RuntimeException e) {
+            LOGGER.error("L1缓存删除失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
         }
     }
 
@@ -167,9 +167,9 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
         try {
             long sizeBefore = caffeineCache.estimatedSize();
             caffeineCache.invalidateAll();
-            log.info("L1缓存清空: cache={}, 删除条目数={}", cacheName, sizeBefore);
-        } catch (Exception e) {
-            log.error("L1缓存清空失败: cache={}, error={}", cacheName, e.getMessage(), e);
+            LOGGER.info("L1缓存清空: cache={}, 删除条目数={}", cacheName, sizeBefore);
+        } catch (RuntimeException e) {
+            LOGGER.error("L1缓存清空失败: cache={}, error={}", cacheName, e.getMessage(), e);
         }
     }
 
@@ -180,13 +180,13 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
             List<K> keyList = new ArrayList<>();
             keys.forEach(keyList::add);
             Map<K, V> result = caffeineCache.getAllPresent(keyList);
-            if (log.isTraceEnabled()) {
-                log.trace("L1缓存批量获取: cache={}, 请求数={}, 返回数={}", 
+            if (LOGGER.isTraceEnabled()) {
+                LOGGER.trace("L1缓存批量获取: cache={}, 请求数={}, 返回数={}",
                         cacheName, keyList.size(), result.size());
             }
             return result;
-        } catch (Exception e) {
-            log.error("L1缓存批量获取失败: cache={}, error={}", cacheName, e.getMessage(), e);
+        } catch (RuntimeException e) {
+            LOGGER.error("L1缓存批量获取失败: cache={}, error={}", cacheName, e.getMessage(), e);
             return Map.of(); // 返回空Map而不是null
         }
     }
@@ -199,11 +199,11 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
         }
         try {
             caffeineCache.putAll(entries);
-            if (log.isTraceEnabled()) {
-                log.trace("L1缓存批量存储: cache={}, 条目数={}", cacheName, entries.size());
+            if (LOGGER.isTraceEnabled()) {
+                LOGGER.trace("L1缓存批量存储: cache={}, 条目数={}", cacheName, entries.size());
             }
-        } catch (Exception e) {
-            log.error("L1缓存批量存储失败: cache={}, 条目数={}, error={}", 
+        } catch (RuntimeException e) {
+            LOGGER.error("L1缓存批量存储失败: cache={}, 条目数={}, error={}",
                     cacheName, entries.size(), e.getMessage(), e);
         }
     }
@@ -213,8 +213,8 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
         checkNotClosed();
         try {
             return caffeineCache.getIfPresent(key) != null;
-        } catch (Exception e) {
-            log.error("L1缓存检查键失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
+        } catch (RuntimeException e) {
+            LOGGER.error("L1缓存检查键失败: cache={}, key={}, error={}", cacheName, key, e.getMessage(), e);
             return false;
         }
     }
@@ -224,8 +224,8 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
         checkNotClosed();
         try {
             return caffeineCache.estimatedSize();
-        } catch (Exception e) {
-            log.error("L1缓存获取大小失败: cache={}, error={}", cacheName, e.getMessage(), e);
+        } catch (RuntimeException e) {
+            LOGGER.error("L1缓存获取大小失败: cache={}, error={}", cacheName, e.getMessage(), e);
             return 0;
         }
     }
@@ -241,7 +241,7 @@ public class CaffeineL1Cache<K, V> implements Cache<K, V> {
             closed = true;
             caffeineCache.invalidateAll();
             caffeineCache.cleanUp();
-            log.info("L1缓存已关闭: {}", cacheName);
+            LOGGER.info("L1缓存已关闭: {}", cacheName);
         }
     }
 

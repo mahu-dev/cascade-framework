@@ -26,7 +26,7 @@ import java.util.function.Function;
 @RequiredArgsConstructor
 public class SyncAwareCache<K, V> implements Cache<K, V> {
 
-    private static final Logger log = LoggerFactory.getLogger(SyncAwareCache.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(SyncAwareCache.class);
 
     /**
      * -- GETTER --
@@ -160,13 +160,13 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
 
                 cacheSync.publishEvent(event)
                         .exceptionally(throwable -> {
-                            log.warn("发布同步事件失败: cache={}, event={}, error={}",
+                            LOGGER.warn("发布同步事件失败: cache={}, event={}, error={}",
                                     getName(), event, throwable.getMessage());
                             return null;
                         });
 
             } catch (Exception e) {
-                log.warn("创建同步事件失败: cache={}, eventType={}, error={}",
+                LOGGER.warn("创建同步事件失败: cache={}, eventType={}, error={}",
                         getName(), eventType, e.getMessage());
             }
         });
@@ -187,7 +187,7 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
             throw new IllegalArgumentException("缓存不能为null");
         }
         if (cacheSync == null) {
-            log.warn("同步器为null，将创建无同步功能的装饰器: cache={}", cache.getName());
+            LOGGER.warn("同步器为null，将创建无同步功能的装饰器: cache={}", cache.getName());
         }
 
         return new SyncAwareCache<>(cache, cacheSync, nodeId);
@@ -198,7 +198,7 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
      */
     public static <K, V> Cache<K, V> wrapIfNeeded(Cache<K, V> cache, CacheSync<K, V> cacheSync, String nodeId) {
         if (cache instanceof SyncAwareCache) {
-            log.debug("缓存已经是同步感知的，跳过包装: cache={}", cache.getName());
+            LOGGER.debug("缓存已经是同步感知的，跳过包装: cache={}", cache.getName());
             return cache;
         }
 

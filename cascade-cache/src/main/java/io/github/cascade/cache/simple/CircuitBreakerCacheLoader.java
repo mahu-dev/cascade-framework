@@ -1,5 +1,7 @@
 package io.github.cascade.cache.simple;
 
+import io.github.cascade.cache.exception.CacheLoadException;
+
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
@@ -15,7 +17,7 @@ import java.util.function.Function;
  * @author cascade
  */
 public final class CircuitBreakerCacheLoader<K, V> implements CacheLoader<K, V> {
-    
+
     private final Function<K, V> loader;
     private final int failureThreshold;
     private final Duration recoveryTime;

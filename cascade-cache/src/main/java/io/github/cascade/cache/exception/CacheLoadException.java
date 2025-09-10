@@ -1,6 +1,4 @@
-package io.github.cascade.cache.simple;
-
-import io.github.cascade.cache.exception.CacheException;
+package io.github.cascade.cache.exception;
 
 /**
  * 缓存加载异常
@@ -11,15 +9,15 @@ import io.github.cascade.cache.exception.CacheException;
  * @author cascade
  */
 public class CacheLoadException extends CacheException {
-    
+
     public CacheLoadException(String message) {
         super(message);
     }
-    
+
     public CacheLoadException(String message, Throwable cause) {
         super(message, cause);
     }
-    
+
     public CacheLoadException(String cacheName, String operation, String message, Throwable cause) {
         super(cacheName, operation, message, cause);
     }

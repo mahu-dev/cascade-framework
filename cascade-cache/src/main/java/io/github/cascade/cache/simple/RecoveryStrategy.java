@@ -15,7 +15,7 @@ import java.util.function.Supplier;
  */
 @FunctionalInterface
 public interface RecoveryStrategy<T> {
-    
+
     /**
      * 执行错误恢复逻辑
      *
@@ -71,7 +71,7 @@ public interface RecoveryStrategy<T> {
      * 组合策略
      */
     default RecoveryStrategy<T> orElse(RecoveryStrategy<T> other) {
-        return (error, attemptCount) -> {
+        return (Exception error, int attemptCount) -> {
             AbstractTry<T> result = this.recover(error, attemptCount);
             return result.isSuccess() ? result : other.recover(error, attemptCount);
         };

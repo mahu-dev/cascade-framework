@@ -1,11 +1,13 @@
 package io.github.cascade.cache.simple;
 
 import io.github.cascade.cache.config.CascadeCacheProperties;
+import lombok.Getter;
 
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
-import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 
 /**
  * 函数式缓存定义 - 不可变Builder模式实现
@@ -22,13 +24,18 @@ import java.util.function.Supplier;
  */
 public final class CacheDefinition<K, V> {
 
+    @Getter
     private final String name;
+    @Getter
     private final Class<K> keyType;
+    @Getter
     private final Class<V> valueType;
+    @Getter
     private final CacheType type;
+    @Getter
     private final CascadeCacheProperties config;
     private final Function<K, V> loader;
-    private final CacheLoaderResolver loaderResolver;
+    private final CacheLoaderResolver<K, V> loaderResolver;
 
     // 私有构造函数，只能通过Builder创建
     private CacheDefinition(Builder<K, V> builder) {
@@ -46,31 +53,11 @@ public final class CacheDefinition<K, V> {
 
     // ==================== Getter方法 ====================
 
-    public String getName() {
-        return name;
-    }
-
-    public Class<K> getKeyType() {
-        return keyType;
-    }
-
-    public Class<V> getValueType() {
-        return valueType;
-    }
-
-    public CacheType getType() {
-        return type;
-    }
-
-    public CascadeCacheProperties getConfig() {
-        return config;
-    }
-
     public Optional<Function<K, V>> getLoader() {
         return Optional.ofNullable(loader);
     }
 
-    public Optional<CacheLoaderResolver> getLoaderResolver() {
+    public Optional<CacheLoaderResolver<K, V>> getLoaderResolver() {
         return Optional.ofNullable(loaderResolver);
     }
 
@@ -114,8 +101,8 @@ public final class CacheDefinition<K, V> {
     /**
      * 通用验证方法
      */
-    private void validateWith(String message, Supplier<Boolean> condition) {
-        if (Boolean.FALSE.equals(condition.get())) {
+    private void validateWith(String message, BooleanSupplier condition) {
+        if (!condition.getAsBoolean()) {
             throw new IllegalArgumentException(message + ": " + name);
         }
     }
@@ -133,9 +120,15 @@ public final class CacheDefinition<K, V> {
         boolean l1Enabled = config.isL1Enabled();
         boolean l2Enabled = config.isL2Enabled();
 
-        if (l1Enabled && l2Enabled) return CacheType.TIERED;
-        if (l1Enabled) return CacheType.L1_ONLY;
-        if (l2Enabled) return CacheType.L2_ONLY;
+        if (l1Enabled && l2Enabled) {
+            return CacheType.TIERED;
+        }
+        if (l1Enabled) {
+            return CacheType.L1_ONLY;
+        }
+        if (l2Enabled) {
+            return CacheType.L2_ONLY;
+        }
 
         throw new IllegalArgumentException("至少需要启用L1或L2缓存之一: " + name);
     }
@@ -166,7 +159,7 @@ public final class CacheDefinition<K, V> {
         private CacheType type;
         private CascadeCacheProperties config;
         private Function<K, V> loader;
-        private CacheLoaderResolver loaderResolver;
+        private CacheLoaderResolver<K, V> loaderResolver;
 
         private Builder() {
         }
@@ -201,7 +194,7 @@ public final class CacheDefinition<K, V> {
             return this;
         }
 
-        public Builder<K, V> loaderResolver(CacheLoaderResolver loaderResolver) {
+        public Builder<K, V> loaderResolver(CacheLoaderResolver<K, V> loaderResolver) {
             this.loaderResolver = loaderResolver;
             return this;
         }
@@ -219,24 +212,44 @@ public final class CacheDefinition<K, V> {
         }
 
         /**
-         * 条件设置 - 函数式API
+         * 条件执行操作（当条件为真时）
          */
-        public Builder<K, V> when(boolean condition, Function<Builder<K, V>, Builder<K, V>> action) {
-            return condition ? action.apply(this) : this;
+        public Builder<K, V> whenTrue(boolean condition, UnaryOperator<Builder<K, V>> action) {
+            if (condition) {
+                return action.apply(this);
+            }
+            return this;
         }
 
         /**
-         * 条件设置加载器
+         * 无条件执行操作
          */
-        public Builder<K, V> loaderIf(boolean condition, Function<K, V> loader) {
-            return condition ? loader(loader) : this;
+        public Builder<K, V> apply(UnaryOperator<Builder<K, V>> action) {
+            return action.apply(this);
+        }
+
+        /**
+         * 设置加载器（当条件为真时）
+         */
+        public Builder<K, V> loaderWhenTrue(boolean condition, Function<K, V> loader) {
+            if (condition) {
+                return loader(loader);
+            }
+            return this;
+        }
+
+        /**
+         * 设置加载器（无条件）
+         */
+        public Builder<K, V> withLoader(Function<K, V> loader) {
+            return loader(loader);
         }
 
         /**
          * 使用默认配置
          */
-        public Builder<K, V> withDefaultConfig() {
-            return config(CascadeCacheProperties.defaults());
+        public void withDefaultConfig() {
+            config(CascadeCacheProperties.defaults());
         }
 
         /**
@@ -259,12 +272,15 @@ public final class CacheDefinition<K, V> {
         private static CacheType inferTypeFromConfig(CascadeCacheProperties config) {
             boolean l1Enabled = config.isL1Enabled();
             boolean l2Enabled = config.isL2Enabled();
-
-            if (l1Enabled && l2Enabled) return CacheType.TIERED;
-            if (l1Enabled) return CacheType.L1_ONLY;
-            if (l2Enabled) return CacheType.L2_ONLY;
-
-            return CacheType.TIERED; // 默认值，让validate方法处理错误
+            CacheType result = CacheType.TIERED; // 默认值
+            if (l1Enabled && l2Enabled) {
+                result = CacheType.TIERED;
+            } else if (l1Enabled) {
+                result = CacheType.L1_ONLY;
+            } else if (l2Enabled) {
+                result = CacheType.L2_ONLY;
+            }
+            return result;
         }
     }
 
@@ -272,8 +288,12 @@ public final class CacheDefinition<K, V> {
 
     @Override
     public boolean equals(Object obj) {
-        if (this == obj) return true;
-        if (obj == null || getClass() != obj.getClass()) return false;
+        if (this == obj) {
+            return true;
+        }
+        if (obj == null || getClass() != obj.getClass()) {
+            return false;
+        }
 
         CacheDefinition<?, ?> that = (CacheDefinition<?, ?>) obj;
         return Objects.equals(name, that.name) &&
@@ -289,7 +309,8 @@ public final class CacheDefinition<K, V> {
 
     @Override
     public String toString() {
-        return String.format("CacheDefinition{name='%s', keyType=%s, valueType=%s, type=%s, hasLoader=%s, hasResolver=%s}",
+        return String.format(
+                "CacheDefinition{name='%s', keyType=%s, valueType=%s, type=%s, hasLoader=%s, hasResolver=%s}",
                 name,
                 keyType.getSimpleName(),
                 valueType.getSimpleName(),

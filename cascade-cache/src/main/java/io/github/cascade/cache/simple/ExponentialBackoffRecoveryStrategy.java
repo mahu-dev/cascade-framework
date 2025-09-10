@@ -11,18 +11,9 @@ import java.time.Duration;
  * @param <T> 操作返回值类型
  * @author cascade
  */
-final class ExponentialBackoffRecoveryStrategy<T> implements RecoveryStrategy<T> {
-    
-    private final int maxRetries;
-    private final Duration initialDelay;
-    private final double multiplier;
-    
-    ExponentialBackoffRecoveryStrategy(int maxRetries, Duration initialDelay, double multiplier) {
-        this.maxRetries = maxRetries;
-        this.initialDelay = initialDelay;
-        this.multiplier = multiplier;
-    }
-    
+record ExponentialBackoffRecoveryStrategy<T>(int maxRetries, Duration initialDelay,
+                                             double multiplier) implements RecoveryStrategy<T> {
+
     @Override
     public AbstractTry<T> recover(Exception error, int attemptCount) {
         if (attemptCount <= maxRetries) {

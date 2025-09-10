@@ -1,5 +1,7 @@
 package io.github.cascade.cache.simple;
 
+import io.github.cascade.cache.exception.CacheException;
+
 import java.time.Duration;
 
 /**
@@ -12,36 +14,26 @@ import java.time.Duration;
  * @param <V> 值类型
  * @author cascade
  */
-final class RetryingCacheLoader<K, V> implements CacheLoader<K, V> {
-    
-    private final CacheLoader<K, V> delegate;
-    private final int maxRetries;
-    private final Duration delay;
-    
-    RetryingCacheLoader(CacheLoader<K, V> delegate, int maxRetries, Duration delay) {
-        this.delegate = delegate;
-        this.maxRetries = maxRetries;
-        this.delay = delay;
-    }
-    
+record RetryingCacheLoader<K, V>(CacheLoader<K, V> delegate, int maxRetries,
+                                 Duration delay) implements CacheLoader<K, V> {
     @Override
     public V apply(K key) {
         Exception lastException = null;
         for (int i = 0; i <= maxRetries; i++) {
             try {
                 return delegate.apply(key);
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
                 lastException = e;
                 if (i < maxRetries) {
                     try {
                         Thread.sleep(delay.toMillis());
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
-                        throw new RuntimeException("加载器重试中断: " + key, ie);
+                        throw new CacheException("加载器重试中断: " + key, ie);
                     }
                 }
             }
         }
-        throw new RuntimeException("加载器重试失败: " + key + ", 次数: " + maxRetries, lastException);
+        throw new CacheException("加载器重试失败: " + key + ", 次数: " + maxRetries, lastException);
     }
 }

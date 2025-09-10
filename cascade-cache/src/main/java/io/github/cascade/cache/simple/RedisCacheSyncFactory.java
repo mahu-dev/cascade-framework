@@ -4,7 +4,6 @@ import io.github.cascade.cache.config.SyncProperties;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -21,18 +20,9 @@ import java.util.function.Consumer;
  *
  * @author cascade
  */
-public class RedisCacheSyncFactory implements CacheSyncFactory {
+public record RedisCacheSyncFactory(RedissonClient redissonClient) implements CacheSyncFactory {
 
-    private static final Logger log = LoggerFactory.getLogger(RedisCacheSyncFactory.class);
-
-    private final Optional<RedissonClient> redissonClient;
-
-    // Spring构造函数注入
-    public RedisCacheSyncFactory(@Autowired(required = false) RedissonClient redissonClient) {
-        this.redissonClient = Optional.ofNullable(redissonClient);
-        log.debug("RedisCacheSyncFactory创建: redisClient={}",
-                this.redissonClient.isPresent() ? "已配置" : "未配置");
-    }
+    private static final Logger LOGGER = LoggerFactory.getLogger(RedisCacheSyncFactory.class);
 
     @Override
     public <K, V> CacheSync<K, V> createCacheSync(SyncProperties syncConfig) {
@@ -41,15 +31,15 @@ public class RedisCacheSyncFactory implements CacheSyncFactory {
         }
 
         if (!syncConfig.isEnabled()) {
-            log.debug("同步功能未启用，返回空同步器");
+            LOGGER.debug("同步功能未启用，返回空同步器");
             return createNoOpCacheSync();
         }
 
-        return (CacheSync<K, V>) redissonClient
-                .filter(client -> isRedisAvailable(client))
-                .map(client -> createRedisCacheSync(client, syncConfig))
+        return Optional.ofNullable(redissonClient)
+                .filter(RedisCacheSyncFactory::isRedisAvailable)
+                .<CacheSync<K, V>>map(client -> createRedisCacheSync(client, syncConfig))
                 .orElseGet(() -> {
-                    log.warn("Redis不可用，使用空同步器实现");
+                    LOGGER.warn("Redis不可用，使用空同步器实现");
                     return createNoOpCacheSync();
                 });
     }
@@ -64,13 +54,13 @@ public class RedisCacheSyncFactory implements CacheSyncFactory {
     /**
      * 创建Redis缓存同步器
      */
-    private <K, V> CacheSync<K, V> createRedisCacheSync(RedissonClient client, SyncProperties config) {
+    private static <K, V> CacheSync<K, V> createRedisCacheSync(RedissonClient client, SyncProperties config) {
         try {
             RedisCacheSync<K, V> sync = new RedisCacheSync<>(client, config.getTopicPrefix());
-            log.info("创建Redis缓存同步器成功: topicPrefix={}", config.getTopicPrefix());
+            LOGGER.info("创建Redis缓存同步器成功: topicPrefix={}", config.getTopicPrefix());
             return sync;
-        } catch (Exception e) {
-            log.error("创建Redis缓存同步器失败: {}", e.getMessage(), e);
+        } catch (RuntimeException e) {
+            LOGGER.error("创建Redis缓存同步器失败: {}", e.getMessage(), e);
             return createNoOpCacheSync();
         }
     }
@@ -78,22 +68,22 @@ public class RedisCacheSyncFactory implements CacheSyncFactory {
     /**
      * 创建空操作同步器
      */
-    private <K, V> CacheSync<K, V> createNoOpCacheSync() {
+    private static <K, V> CacheSync<K, V> createNoOpCacheSync() {
         return new NoOpCacheSync<>();
     }
 
     /**
      * 检查Redis是否可用
      */
-    private boolean isRedisAvailable(RedissonClient client) {
+    private static boolean isRedisAvailable(RedissonClient client) {
         try {
             // 使用简单的测试操作来检查Redis连接
             // 尝试获取一个测试键的存在性，这是轻量级操作
             String testKey = "cascade:cache:ping:" + System.currentTimeMillis();
             client.getBucket(testKey).isExists();
             return true;
-        } catch (Exception e) {
-            log.warn("Redis连接检查失败: {}", e.getMessage());
+        } catch (RuntimeException e) {
+            LOGGER.warn("Redis连接检查失败: {}", e.getMessage());
             return false;
         }
     }
@@ -106,28 +96,28 @@ public class RedisCacheSyncFactory implements CacheSyncFactory {
 
         @Override
         public CompletableFuture<Void> publishEvent(SyncEvent<K, V> event) {
-            log.trace("空同步器忽略事件: {}", event);
+            LOGGER.trace("空同步器忽略事件: {}", event);
             return CompletableFuture.completedFuture(null);
         }
 
         @Override
         public void subscribe(String cacheName, Consumer<SyncEvent<K, V>> eventHandler) {
-            log.debug("空同步器忽略订阅: cacheName={}", cacheName);
+            LOGGER.debug("空同步器忽略订阅: cacheName={}", cacheName);
         }
 
         @Override
         public void unsubscribe(String cacheName) {
-            log.debug("空同步器忽略取消订阅: cacheName={}", cacheName);
+            LOGGER.debug("空同步器忽略取消订阅: cacheName={}", cacheName);
         }
 
         @Override
         public void start() {
-            log.debug("空同步器启动（无操作）");
+            LOGGER.debug("空同步器启动（无操作）");
         }
 
         @Override
         public void stop() {
-            log.debug("空同步器停止（无操作）");
+            LOGGER.debug("空同步器停止（无操作）");
         }
 
         @Override

@@ -11,16 +11,8 @@ import java.time.Duration;
  * @param <T> 操作返回值类型
  * @author cascade
  */
-final class RetryRecoveryStrategy<T> implements RecoveryStrategy<T> {
-    
-    private final int maxRetries;
-    private final Duration delay;
-    
-    RetryRecoveryStrategy(int maxRetries, Duration delay) {
-        this.maxRetries = maxRetries;
-        this.delay = delay;
-    }
-    
+record RetryRecoveryStrategy<T>(int maxRetries, Duration delay) implements RecoveryStrategy<T> {
+
     @Override
     public AbstractTry<T> recover(Exception error, int attemptCount) {
         if (attemptCount <= maxRetries) {
