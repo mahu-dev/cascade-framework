@@ -259,7 +259,9 @@ public class CacheAspect<K, V> {
      */
     private void scheduleRefresh(Cache<K, V> cache, K key, long intervalSeconds) {
         try {
+            LOGGER.info("🚀 [CacheAspect调试] scheduleRefresh被调用: cache={}, key={}", cache.getName(), key);
             CacheRefresher<K, V> refresher = cacheManager.getOrCreateCacheRefresher(cache.getName());
+            LOGGER.info("🎯 [CacheAspect调试] getOrCreateCacheRefresher返回: refresher={}", refresher != null ? "非空" : "空");
 
             if (refresher != null) {
                 refresher.addKey(key, intervalSeconds);

@@ -29,6 +29,7 @@ public class FunctionalCacheManager<K, V> implements CacheManager<K, V> {
 
     // 核心组件
     private final ConcurrentHashMap<String, Cache<K, V>> cacheRegistry = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, CacheRefresher<?, ?>> refresherRegistry = new ConcurrentHashMap<>();
     private final FunctionalCacheFactory cacheFactory;
     private final CascadeCacheProperties defaultConfig;
     private final CacheLoaderResolver<K, V> loaderResolver;
@@ -145,6 +146,16 @@ public class FunctionalCacheManager<K, V> implements CacheManager<K, V> {
 
         Cache<?, ?> removed = cacheRegistry.remove(cacheName);
         if (removed != null) {
+            // 同时移除对应的刷新器
+            CacheRefresher<?, ?> refresher = refresherRegistry.remove(cacheName);
+            if (refresher != null && refresher instanceof ScheduledCacheRefresher) {
+                try {
+                    ((ScheduledCacheRefresher<?, ?>) refresher).stop();
+                } catch (RuntimeException e) {
+                    LOGGER.warn("停止刷新器失败: cache={}, error={}", cacheName, e.getMessage());
+                }
+            }
+
             // 关闭缓存
             if (!removed.isClosed()) {
                 removed.close();
@@ -210,6 +221,20 @@ public class FunctionalCacheManager<K, V> implements CacheManager<K, V> {
         int closedCount = 0;
         int errorCount = 0;
 
+        // 先关闭所有刷新器
+        for (CacheRefresher<?, ?> refresher : refresherRegistry.values()) {
+            try {
+                if (refresher instanceof ScheduledCacheRefresher) {
+                    refresher.stop();
+                }
+            } catch (RuntimeException e) {
+                errorCount++;
+                LOGGER.error("关闭刷新器失败: error={}", e.getMessage());
+            }
+        }
+        refresherRegistry.clear();
+
+        // 再关闭所有缓存
         for (Cache<?, ?> cache : cacheRegistry.values()) {
             try {
                 if (!cache.isClosed()) {
@@ -236,25 +261,50 @@ public class FunctionalCacheManager<K, V> implements CacheManager<K, V> {
     // ==================== 扩展功能 ====================
 
     @Override
+    @SuppressWarnings("unchecked")
     public CacheRefresher<K, V> getOrCreateCacheRefresher(String cacheName) {
         checkNotClosed();
 
-        CacheRefresher<K, V> result = null;
+        LOGGER.info("🔍 [调试] getOrCreateCacheRefresher被调用: cacheName={}, 当前registry大小={}",
+                cacheName, refresherRegistry.size());
+        LOGGER.info("🔍 [调试] registry中的键: {}", refresherRegistry.keySet());
 
-        Cache<K, V> cache = getCache(cacheName);
-        if (cache == null) {
-            LOGGER.warn("缓存不存在，无法创建刷新器: {}", cacheName);
-        } else {
+        // 首先检查是否已存在刷新器实例
+        CacheRefresher<?, ?> existingRefresher = refresherRegistry.get(cacheName);
+        LOGGER.info("🔍 [调试] 检查existing refresher: cacheName={}, exists={}",
+                cacheName, existingRefresher != null);
+
+        if (existingRefresher != null) {
+            LOGGER.info("✅ 返回已存在的缓存刷新器: {}", cacheName);
+            return (CacheRefresher<K, V>) existingRefresher;
+        }
+
+        LOGGER.info("🆕 开始创建新的缓存刷新器: {}", cacheName);
+
+        // 使用双重检查锁定模式创建刷新器
+        CacheRefresher<?, ?> refresher = refresherRegistry.computeIfAbsent(cacheName, name -> {
+            LOGGER.info("🔧 [computeIfAbsent内部] 正在创建刷新器: {}", name);
+
+            Cache<K, V> cache = getCache(name);
+            if (cache == null) {
+                LOGGER.warn("缓存不存在，无法创建刷新器: {}", name);
+                return null;
+            }
+
             // 穿透装饰器获取底层的FunctionalCache
             FunctionalCache<K, V> functionalCache = extractFunctionalCache(cache);
             if (functionalCache == null) {
-                LOGGER.warn("不是函数式缓存，无法创建刷新器: {}", cacheName);
-            } else {
-                result = createRefresherFromFunctionalCache(cacheName, cache, functionalCache);
+                LOGGER.warn("不是函数式缓存，无法创建刷新器: {}", name);
+                return null;
             }
-        }
 
-        return result;
+            return createRefresherFromFunctionalCache(name, cache, functionalCache);
+        });
+
+        LOGGER.info("🎯 缓存刷新器创建/获取完成: cacheName={}, registry大小={}",
+                cacheName, refresherRegistry.size());
+
+        return (CacheRefresher<K, V>) refresher;
     }
 
     /**

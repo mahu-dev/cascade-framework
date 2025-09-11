@@ -175,14 +175,42 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
             throw new IllegalArgumentException("刷新间隔必须大于0");
         }
 
-        KeyRefreshInfo info = new KeyRefreshInfo(key, refreshIntervalSeconds);
-        monitoredKeys.put(key, info);
-
-        if (running) {
-            scheduleKeyRefresh(key, info);
+        KeyRefreshInfo newInfo = new KeyRefreshInfo(key, refreshIntervalSeconds);
+        
+        // 使用同步块确保线程安全
+        synchronized (stateLock) {
+            KeyRefreshInfo existingInfo = monitoredKeys.get(key);
+            
+            LOGGER.info("🔍 [调试] 检查key是否已存在: cache={}, key={}, existingInfo={}", 
+                    cacheName, key, existingInfo != null ? "存在" : "不存在");
+            
+            if (existingInfo != null) {
+                // key已存在，检查刷新间隔是否相同
+                LOGGER.debug("🔍 [调试] 现有间隔={}s, 新间隔={}s", existingInfo.refreshIntervalSeconds(), refreshIntervalSeconds);
+                
+                if (existingInfo.refreshIntervalSeconds() == refreshIntervalSeconds) {
+                    LOGGER.info("⏭️ 刷新键已存在且间隔相同，跳过: cache={}, key={}, interval={}s", 
+                            cacheName, key, refreshIntervalSeconds);
+                    return;
+                } else {
+                    // 间隔不同，需要更新
+                    monitoredKeys.put(key, newInfo);
+                    if (running) {
+                        scheduleKeyRefresh(key, newInfo);
+                    }
+                    LOGGER.info("🔄 更新刷新键间隔: cache={}, key={}, oldInterval={}s, newInterval={}s", 
+                            cacheName, key, existingInfo.refreshIntervalSeconds(), refreshIntervalSeconds);
+                    return;
+                }
+            }
+            
+            // key不存在，添加新的
+            monitoredKeys.put(key, newInfo);
+            if (running) {
+                scheduleKeyRefresh(key, newInfo);
+            }
+            LOGGER.info("➕ 添加新刷新键: cache={}, key={}, interval={}s", cacheName, key, refreshIntervalSeconds);
         }
-
-        LOGGER.info("添加刷新键: cache={}, key={}, interval={}s", cacheName, key, refreshIntervalSeconds);
     }
 
     @Override
@@ -347,7 +375,10 @@ public class ScheduledCacheRefresher<K, V> implements CacheRefresher<K, V> {
     private void scheduleKeyRefresh(K key, KeyRefreshInfo info) {
         // 取消已存在的任务
         ScheduledFuture<?> existingTask = scheduledTasks.get(key);
+        LOGGER.debug("检查已存在的任务: cache={}, key={},task = {}", cacheName, key, existingTask);
+        LOGGER.debug("task keys = {}", scheduledTasks.keySet());
         if (existingTask != null) {
+            LOGGER.debug("取消已存在的任务: cache={}, key={}", cacheName, key);
             existingTask.cancel(false);
         }
 
