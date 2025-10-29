@@ -32,3 +32,12 @@ hs_err_pid*
 ._*
 .Spotlight-V100
 .Trashes
+
+# Markdown files
+*.md
+*/*.md
+*/**.md
+
+# Specific documentation files
+CLAUDE.md
+cascade-jetcache-架构对比分析报告.md

@@ -1,6 +1,11 @@
 package io.github.cascade.cache.config;
 
-import io.github.cascade.cache.simple.*;
+import io.github.cascade.cache.core.CacheManager;
+import io.github.cascade.cache.aspect.CacheAspect;
+import io.github.cascade.cache.loader.CacheLoaderResolver;
+import io.github.cascade.cache.sync.RedisCacheSyncFactory;
+import io.github.cascade.cache.definition.CacheSyncFactory;
+import io.github.cascade.cache.impl.FunctionalCacheManager;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,6 +22,14 @@ import org.springframework.context.annotation.Primary;
 import java.util.List;
 
 /**
+ * @author lionel lionelk@163.com
+ * =============================
+ * Date: 2025/7/10
+ * Time: 13:23
+ * =============================
+ */
+
+/**
  * Cascade 框架函数式缓存自动配置
  * <p>
  * 基于函数式设计思想的缓存架构，提供多级缓存、分布式同步、自动刷新等核心功能
@@ -26,8 +39,11 @@ import java.util.List;
  * 2. 简洁优雅：去除复杂的工厂注册中心架构
  * 3. 功能完整：支持L1+L2多级缓存、Redis同步、定时刷新
  * 4. 注解支持：@Cacheable、@CacheEvict、@CachePut注解
- *
- * @author cascade
+ * <p>
+ * P0级重构优化（2025-10-29）：
+ * - 修复泛型类型推导问题
+ * - 统一Logger命名规范
+ * - 简化Bean创建逻辑
  */
 @AutoConfiguration
 @ConditionalOnClass({CacheManager.class, FunctionalCacheManager.class})
@@ -35,7 +51,7 @@ import java.util.List;
 @EnableConfigurationProperties(CascadeCacheProperties.class)
 public class CacheAutoConfiguration {
 
-    private static final Logger log = LoggerFactory.getLogger(CacheAutoConfiguration.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(CacheAutoConfiguration.class);
 
     /**
      * CacheLoader自动解析器
@@ -45,11 +61,11 @@ public class CacheAutoConfiguration {
     @ConditionalOnProperty(prefix = "cascade.loader", name = "auto-discover", havingValue = "true",
             matchIfMissing = true)
     public CacheLoaderResolver<?, ?> cacheLoaderResolver(ApplicationContext applicationContext) {
-        log.info("创建CacheLoaderResolver用于自动发现CacheLoader实现");
+        LOGGER.info("创建CacheLoaderResolver用于自动发现CacheLoader实现");
         CacheLoaderResolver<?, ?> resolver = new CacheLoaderResolver<>();
         resolver.setApplicationContext(applicationContext);
 
-        log.info("CacheLoaderResolver已创建并设置ApplicationContext");
+        LOGGER.info("CacheLoaderResolver已创建并设置ApplicationContext");
         return resolver;
     }
 
@@ -59,32 +75,33 @@ public class CacheAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnClass(RedissonClient.class)
-    public RedisCacheSyncFactory redisCacheSyncFactory(@Autowired(required = false) RedissonClient redissonClient) {
-        log.info("创建Redis缓存同步工厂: redisClient={}", redissonClient != null ? "已配置" : "未配置");
+    public CacheSyncFactory redisCacheSyncFactory(@Autowired(required = false) RedissonClient redissonClient) {
+        LOGGER.info("创建Redis缓存同步工厂: redisClient={}", redissonClient != null ? "已配置" : "未配置");
         return new RedisCacheSyncFactory(redissonClient);
     }
 
     /**
      * 函数式缓存管理器配置
+     * P0级重构修复：移除方法级别泛型约束
      */
     @Bean
     @Primary
     @ConditionalOnMissingBean
-    public <K, V> FunctionalCacheManager<K, V> functionalCacheManager(
+    public FunctionalCacheManager functionalCacheManager(
             @Autowired(required = false) RedissonClient redissonClient,
             CascadeCacheProperties defaultConfig,
             @Autowired(required = false) CacheLoaderResolver<?, ?> cacheLoaderResolver,
             @Autowired(required = false) List<CacheSyncFactory> cacheSyncFactories) {
-        log.info("配置函数式缓存管理器");
+        LOGGER.info("配置函数式缓存管理器");
 
-        FunctionalCacheManager<K, V> cacheManager = new FunctionalCacheManager(
+        FunctionalCacheManager cacheManager = new FunctionalCacheManager(
                 redissonClient,
                 defaultConfig,
                 cacheLoaderResolver,
                 cacheSyncFactories
         );
 
-        log.info("✅ 函数式缓存管理器配置完成，同步工厂数: {}",
+        LOGGER.info("✅ 函数式缓存管理器配置完成，同步工厂数: {}",
                 cacheSyncFactories != null ? cacheSyncFactories.size() : 0);
         return cacheManager;
     }
@@ -98,53 +115,7 @@ public class CacheAutoConfiguration {
     @ConditionalOnProperty(prefix = "cascade.cache.annotation", name = "enabled",
             havingValue = "true", matchIfMissing = true)
     public CacheAspect cacheAspect(FunctionalCacheManager cacheManager) {
-
-        log.info("配置缓存切面");
-
-        CacheAspect aspect = new CacheAspect(cacheManager);
-
-        log.info("✅ 缓存切面配置完成");
-        return aspect;
-    }
-
-    /**
-     * 配置信息日志初始化
-     */
-    @Bean
-    @ConditionalOnProperty(prefix = "cascade.cache.logging", name = "config-info",
-            havingValue = "true", matchIfMissing = true)
-    public Object cacheConfigurationInfoInitializer(
-            FunctionalCacheManager cacheManager,
-            CascadeCacheProperties defaultConfig,
-            @Autowired(required = false) RedissonClient redissonClient) {
-
-        CacheConfigurationInfoLogger.logConfigurationInfo(cacheManager, defaultConfig, redissonClient);
-        return new Object(); // 返回一个简单对象满足Bean要求
-    }
-
-    /**
-     * 配置信息记录器
-     */
-    public static final class CacheConfigurationInfoLogger {
-
-        private static final Logger LOG = LoggerFactory.getLogger(CacheConfigurationInfoLogger.class);
-
-        private CacheConfigurationInfoLogger() {
-            // 工具类不允许实例化
-        }
-
-        public static void logConfigurationInfo(FunctionalCacheManager cacheManager,
-                                                CascadeCacheProperties defaultConfig,
-                                                RedissonClient redissonClient) {
-
-            LOG.info("=== Cascade 函数式缓存架构配置信息 ===");
-            LOG.info("✅ 缓存管理器: {}", cacheManager.getClass().getSimpleName());
-            LOG.info("✅ 默认配置: {}", defaultConfig);
-            LOG.info("✅ Redis客户端: {}", redissonClient != null ? "已配置" : "未配置");
-            LOG.info("✅ 支持功能: 函数式管道, 多级缓存(L1+L2), 分布式同步, 定时刷新, 注解支持");
-            LOG.info("✅ 架构特性: Function组合设计, orElse管道, 装饰器模式");
-            LOG.info("✅ 缓存类型: L1(Caffeine) + L2(Redisson) + 分布式同步(Redis Pub/Sub)");
-            LOG.info("=====================================");
-        }
+        LOGGER.info("创建缓存切面");
+        return new CacheAspect(cacheManager);
     }
 }

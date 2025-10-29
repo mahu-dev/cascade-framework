@@ -3,6 +3,7 @@ spring:
   application:
     name: cascade-cache-demo
 
+
   # Redis配置 - 使用Redisson
   redis:
     redisson:
@@ -97,3 +98,5 @@ logging:
     io.github.cascade: DEBUG
     org.redisson: INFO
     root: INFO
+server:
+  port: 8081

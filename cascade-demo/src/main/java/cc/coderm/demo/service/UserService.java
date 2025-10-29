@@ -1,9 +1,9 @@
 package cc.coderm.demo.service;
 
 import cc.coderm.demo.model.User;
-import io.github.cascade.cache.simple.CacheEvict;
-import io.github.cascade.cache.simple.CachePut;
-import io.github.cascade.cache.simple.Cacheable;
+import io.github.cascade.cache.annotation.CacheEvict;
+import io.github.cascade.cache.annotation.CachePut;
+import io.github.cascade.cache.annotation.Cacheable;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 

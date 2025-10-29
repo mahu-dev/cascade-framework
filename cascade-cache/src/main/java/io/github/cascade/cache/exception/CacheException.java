@@ -3,13 +3,20 @@ package io.github.cascade.cache.exception;
 import lombok.Getter;
 
 /**
+ * @author lionel lionelk@163.com
+ * =============================
+ * Date: 2025/10/29
+ * Time: 16:23
+ * =============================
+ */
+/**
  * 缓存操作异常基类
  *
  * @author cascade
  */
 @Getter
 public class CacheException extends RuntimeException {
-    
+
     private final String cacheName;
     private final String operation;
 
@@ -27,6 +34,13 @@ public class CacheException extends RuntimeException {
 
     public CacheException(String cacheName, String operation, String message, Throwable cause) {
         super(buildMessage(cacheName, operation, message), cause);
+        this.cacheName = cacheName;
+        this.operation = operation;
+    }
+
+    // 兼容性构造器，用于子类
+    public CacheException(String cacheName, String operation, String message) {
+        super(buildMessage(cacheName, operation, message));
         this.cacheName = cacheName;
         this.operation = operation;
     }
