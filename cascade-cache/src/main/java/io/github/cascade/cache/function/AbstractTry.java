@@ -9,11 +9,7 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
-/**
- * Try模式接口 - 封装可能失败的计算
- *
- * @author cascade
- */
+
 public interface AbstractTry<T> {
 
     boolean isSuccess();
@@ -37,7 +33,6 @@ public interface AbstractTry<T> {
 
     Optional<T> toOptional();
 
-    AbstractEither<Exception, T> toEither();
 
     // 带超时的操作
     default AbstractTry<T> timeout(Duration timeout) {
@@ -131,10 +126,6 @@ public interface AbstractTry<T> {
             return Optional.of(value);
         }
 
-        @Override
-        public AbstractEither<Exception, T> toEither() {
-            return AbstractEither.right(value);
-        }
 
         @Override
         public String toString() {
@@ -203,10 +194,6 @@ public interface AbstractTry<T> {
             return Optional.empty();
         }
 
-        @Override
-        public AbstractEither<Exception, T> toEither() {
-            return AbstractEither.left(exception);
-        }
 
         @Override
         public String toString() {
