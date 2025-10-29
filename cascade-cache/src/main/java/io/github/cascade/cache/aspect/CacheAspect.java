@@ -1,17 +1,15 @@
 package io.github.cascade.cache.aspect;
 
-import io.github.cascade.cache.annotation.Cacheable;
-import io.github.cascade.cache.annotation.CachePut;
 import io.github.cascade.cache.annotation.CacheEvict;
+import io.github.cascade.cache.annotation.CachePut;
+import io.github.cascade.cache.annotation.Cacheable;
 import io.github.cascade.cache.core.Cache;
 import io.github.cascade.cache.core.CacheManager;
-import io.github.cascade.cache.exception.CacheException;
 import io.github.cascade.cache.exception.CacheExceptionHandler;
 import io.github.cascade.cache.impl.FunctionalCacheManager;
 import io.github.cascade.cache.util.CacheTypeResolver;
 import org.aspectj.lang.JoinPoint;
 import org.aspectj.lang.ProceedingJoinPoint;
-import org.aspectj.lang.annotation.AfterReturning;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.slf4j.Logger;
@@ -20,7 +18,6 @@ import org.springframework.core.annotation.Order;
 import org.springframework.util.StringUtils;
 
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
 /**
@@ -120,7 +117,7 @@ public class CacheAspect {
 
         logCachePutStart(cacheName, cacheKey);
 
-        return CacheExceptionHandler.<Object>safeExecute((Supplier<Object>) () -> {
+        return CacheExceptionHandler.safeExecute(() -> {
             try {
                 if (!evaluateCondition(joinPoint, cachePut.condition(), null)) {
                     LOGGER.debug("@CachePut条件不满足，跳过缓存: condition={}", cachePut.condition());
@@ -238,12 +235,12 @@ public class CacheAspect {
             Class<?> valueType = typeResolver.inferValueType(joinPoint);
 
             LOGGER.debug("推断的缓存类型: cacheName={}, keyType={}, valueType={}",
-                cacheName, keyType.getSimpleName(), valueType.getSimpleName());
+                    cacheName, keyType.getSimpleName(), valueType.getSimpleName());
 
             if (annotation instanceof Cacheable) {
-                return (Cache<Object, Object>) cacheManager.getOrCreateCache(cacheName, keyType, valueType);
+                return (Cache<Object, Object>) cacheManager.getOrCreateDistributedAutoRefreshCache(cacheName, keyType, valueType);
             } else if (annotation instanceof CachePut) {
-                return (Cache<Object, Object>) cacheManager.getOrCreateCache(cacheName, keyType, valueType);
+                return (Cache<Object, Object>) cacheManager.getOrCreateDistributedAutoRefreshCache(cacheName, keyType, valueType);
             } else if (annotation instanceof CacheEvict) {
                 return (Cache<Object, Object>) cacheManager.getCache(cacheName);
             }

@@ -127,7 +127,7 @@ public class DistributedAutoRefreshCache<K, V> implements Cache<K, V> {
         this.delegate = delegate;
         this.refresher = refresher;
         this.cacheSync = cacheSync;
-        this.nodeId = nodeId;
+        this.nodeId = nodeId != null ? nodeId : NodeIdManager.getInstance().getNodeId();
         this.defaultRefreshIntervalSeconds = defaultRefreshIntervalSeconds;
         this.autoStart = autoStart;
 
@@ -135,7 +135,7 @@ public class DistributedAutoRefreshCache<K, V> implements Cache<K, V> {
         initSyncListeners();
 
         LOGGER.info("DistributedAutoRefreshCache 已创建: cache={}, nodeId={}, defaultRefreshInterval={}秒, autoStart={}",
-                delegate.getName(), nodeId, defaultRefreshIntervalSeconds, autoStart);
+                delegate.getName(), this.nodeId, defaultRefreshIntervalSeconds, autoStart);
     }
 
     /**
@@ -146,6 +146,26 @@ public class DistributedAutoRefreshCache<K, V> implements Cache<K, V> {
                                        CacheSync<K, V> cacheSync,
                                        String nodeId) {
         this(delegate, refresher, cacheSync, nodeId, 300L, true);
+    }
+
+    /**
+     * 便捷构造函数（使用NodeIdManager获取nodeId）
+     */
+    public DistributedAutoRefreshCache(Cache<K, V> delegate,
+                                       CacheRefresher<K, V> refresher,
+                                       CacheSync<K, V> cacheSync,
+                                       long defaultRefreshIntervalSeconds,
+                                       boolean autoStart) {
+        this(delegate, refresher, cacheSync, null, defaultRefreshIntervalSeconds, autoStart);
+    }
+
+    /**
+     * 便捷构造函数（使用NodeIdManager获取nodeId和默认配置）
+     */
+    public DistributedAutoRefreshCache(Cache<K, V> delegate,
+                                       CacheRefresher<K, V> refresher,
+                                       CacheSync<K, V> cacheSync) {
+        this(delegate, refresher, cacheSync, null, 300L, true);
     }
 
     // ==================== 初始化 ====================

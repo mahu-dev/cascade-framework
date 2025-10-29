@@ -13,8 +13,6 @@ import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.net.InetAddress;
-import java.net.UnknownHostException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -61,30 +59,13 @@ public class RedisCacheSync<K, V> implements CacheSync<K, V> {
     public RedisCacheSync(RedissonClient redissonClient, String topicPrefix) {
         this.redissonClient = redissonClient;
         this.topicPrefix = topicPrefix != null ? topicPrefix : "cascade:cache:sync:";
-        this.nodeId = generateNodeId();
+        this.nodeId = NodeIdManager.getInstance().getNodeId();
         this.objectMapper = new ObjectMapper();
 
         LOGGER.info("创建Redis缓存同步器: topicPrefix={}, nodeId={}", this.topicPrefix, this.nodeId);
     }
 
-    /**
-     * 生成节点ID
-     */
-    private static String generateNodeId() {
-        try {
-            String hostName = InetAddress.getLocalHost().getHostName();
-            String pid = ProcessHandle.current().pid() + "";
-            long timestamp = System.currentTimeMillis();
-            return hostName + "-" + pid + "-" + timestamp;
-        } catch (RuntimeException e) {
-            LOGGER.warn("Failed to generate node id, using fallback", e);
-            return "node-" + System.currentTimeMillis() + "-" + Thread.currentThread().getId();
-        } catch (UnknownHostException e) {
-            throw new CacheException("获取节点ID错误", e);
-        }
-
-    }
-
+    
     // ==================== CacheSync接口实现 ====================
 
     @Override

@@ -93,7 +93,7 @@ public class FunctionalCacheManager implements CacheManager {
         this.defaultConfig = defaultConfig != null ? defaultConfig : CascadeCacheProperties.defaults();
         this.loaderResolver = loaderResolver;
         this.syncFactories = syncFactories != null ? syncFactories : List.of();
-        this.nodeId = generateNodeId();
+        this.nodeId = NodeIdManager.getInstance().getNodeId();
 
         validateConfiguration();
 
@@ -113,7 +113,7 @@ public class FunctionalCacheManager implements CacheManager {
         this.defaultConfig = defaultConfig != null ? defaultConfig : CascadeCacheProperties.defaults();
         this.loaderResolver = loaderResolver;
         this.syncFactories = syncFactories != null ? syncFactories : List.of();
-        this.nodeId = generateNodeId();
+        this.nodeId = NodeIdManager.getInstance().getNodeId();
 
         validateConfiguration();
 
@@ -738,15 +738,7 @@ public class FunctionalCacheManager implements CacheManager {
         }
     }
 
-    /**
-     * 生成节点ID
-     */
-    private static String generateNodeId() {
-        String appName = System.getProperty("spring.application.name", "functional-cache");
-        long timestamp = System.currentTimeMillis() % 100000;
-        return String.format("%s-%d", appName, timestamp);
-    }
-
+    
     /**
      * 从函数式缓存创建刷新器
      */

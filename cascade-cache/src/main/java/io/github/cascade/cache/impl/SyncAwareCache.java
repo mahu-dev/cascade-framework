@@ -25,7 +25,6 @@ import java.util.function.Function;
  * @param <V> 值类型
  * @author cascade
  */
-@RequiredArgsConstructor
 public class SyncAwareCache<K, V> implements Cache<K, V> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SyncAwareCache.class);
@@ -43,6 +42,15 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
     @Getter
     private final CacheSync<K, V> cacheSync;
     private final String nodeId;
+
+    /**
+     * 私有构造函数
+     */
+    private SyncAwareCache(Cache<K, V> delegate, CacheSync<K, V> cacheSync, String nodeId) {
+        this.delegate = delegate;
+        this.cacheSync = cacheSync;
+        this.nodeId = nodeId != null ? nodeId : NodeIdManager.getInstance().getNodeId();
+    }
 
     // ==================== Cache接口实现（只读操作直接代理） ====================
 
@@ -177,11 +185,22 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
     // ==================== 工厂方法 ====================
 
     /**
+     * 创建同步感知缓存装饰器（使用NodeIdManager获取nodeId）
+     *
+     * @param cache     原始缓存
+     * @param cacheSync 缓存同步器
+     * @return 装饰后的缓存
+     */
+    public static <K, V> SyncAwareCache<K, V> wrap(Cache<K, V> cache, CacheSync<K, V> cacheSync) {
+        return wrap(cache, cacheSync, null);
+    }
+
+    /**
      * 创建同步感知缓存装饰器
      *
      * @param cache     原始缓存
      * @param cacheSync 缓存同步器
-     * @param nodeId    节点ID
+     * @param nodeId    节点ID（可选，为null时使用NodeIdManager）
      * @return 装饰后的缓存
      */
     public static <K, V> SyncAwareCache<K, V> wrap(Cache<K, V> cache, CacheSync<K, V> cacheSync, String nodeId) {
@@ -193,6 +212,13 @@ public class SyncAwareCache<K, V> implements Cache<K, V> {
         }
 
         return new SyncAwareCache<>(cache, cacheSync, nodeId);
+    }
+
+    /**
+     * 安全包装：如果缓存已经是同步感知的，直接返回（使用NodeIdManager获取nodeId）
+     */
+    public static <K, V> Cache<K, V> wrapIfNeeded(Cache<K, V> cache, CacheSync<K, V> cacheSync) {
+        return wrapIfNeeded(cache, cacheSync, null);
     }
 
     /**
