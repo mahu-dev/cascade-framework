@@ -1,7 +1,7 @@
 package cc.coderm.demo.service;
 
 import cc.coderm.demo.model.User;
-import io.github.cascade.cache.core.CacheLoader;
+import io.github.cascade.cache.api.CacheLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
