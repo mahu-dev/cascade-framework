@@ -18,10 +18,6 @@ import java.util.Arrays;
  */
 public record ComposedCacheLoader<K, V>(CacheLoader<K, V>... loaders) implements CacheLoader<K, V> {
 
-    @SafeVarargs
-    public ComposedCacheLoader {
-    }
-
     @Override
     public V apply(K key) {
         Exception lastException = null;
