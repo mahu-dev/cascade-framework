@@ -237,10 +237,12 @@ public class CacheAspect {
             LOGGER.debug("推断的缓存类型: cacheName={}, keyType={}, valueType={}",
                     cacheName, keyType.getSimpleName(), valueType.getSimpleName());
 
+            // 注意：新的设计中，通过配置自动应用装饰器（自动刷新、分布式同步等）
+            // 不再需要显式调用 getOrCreateDistributedAutoRefreshCache()
             if (annotation instanceof Cacheable) {
-                return (Cache<Object, Object>) cacheManager.getOrCreateDistributedAutoRefreshCache(cacheName, keyType, valueType);
+                return (Cache<Object, Object>) cacheManager.getOrCreateCache(cacheName, keyType, valueType);
             } else if (annotation instanceof CachePut) {
-                return (Cache<Object, Object>) cacheManager.getOrCreateDistributedAutoRefreshCache(cacheName, keyType, valueType);
+                return (Cache<Object, Object>) cacheManager.getOrCreateCache(cacheName, keyType, valueType);
             } else if (annotation instanceof CacheEvict) {
                 return (Cache<Object, Object>) cacheManager.getCache(cacheName);
             }
@@ -299,6 +301,9 @@ public class CacheAspect {
 
     /**
      * 启用自动刷新（如果需要）
+     * <p>
+     * 注意：在新的设计中，自动刷新通过配置自动应用，不需要显式调用
+     * 此方法保留用于兼容性，但实际上不再需要手动启用刷新器
      */
     private void enableRefreshIfNeeded(Cache<Object, Object> cache, String cacheName, Object key, Object annotation) {
         CacheExceptionHandler.safeExecute(() -> {
@@ -317,12 +322,9 @@ public class CacheAspect {
             }
 
             if (enableRefresh && refreshInterval > 0) {
-                // 尝试获取或创建缓存刷新器
-                if (cacheManager instanceof FunctionalCacheManager) {
-                    FunctionalCacheManager manager = (FunctionalCacheManager) cacheManager;
-                    manager.getOrCreateCacheRefresher(cacheName);
-                    LOGGER.debug("自动刷新已启用: cache={}, interval={}s", cacheName, refreshInterval);
-                }
+                // 新设计：刷新器在缓存创建时自动应用，无需手动启用
+                LOGGER.debug("自动刷新配置已检测: cache={}, interval={}s（通过配置自动应用）",
+                        cacheName, refreshInterval);
             }
             return null;
         }, null);

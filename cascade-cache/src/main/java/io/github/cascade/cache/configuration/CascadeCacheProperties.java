@@ -162,6 +162,14 @@ public class CascadeCacheProperties {
         private long maxRefreshIntervalSeconds = 1800; // 1小时
 
         /**
+         * 是否启用分布式刷新
+         * <p>
+         * 当启用时，缓存刷新后会自动通知其他节点同步更新
+         * 需要同时启用 sync.enabled = true
+         */
+        private boolean distributedRefresh = false;
+
+        /**
          * 刷新线程池大小
          */
         private int threadPoolSize = 2;

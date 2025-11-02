@@ -431,26 +431,20 @@ public class FunctionalCacheOperations {
 
     /**
      * 启用缓存自动刷新功能
-     * P0级重构修复：使用原始CacheManager接口
+     * <p>
+     * 注意：在新的设计中（2025-11-01重构），自动刷新通过配置自动应用，
+     * 不需要显式调用此方法。此方法保留用于兼容性。
+     *
+     * @deprecated 使用配置方式启用自动刷新（cascade.refresh.enabled=true）
      */
+    @Deprecated
     @SuppressWarnings("unchecked")
     public static <K, V> void enableCacheRefresh(Cache<K, V> cache, K key,
                                                  CacheManager cacheManager,
                                                  long refreshIntervalSeconds) {
-        try {
-            CacheRefresher<K, V> refresher = cacheManager.getOrCreateCacheRefresher(cache.getName());
-
-            if (refresher != null) {
-                refresher.addKey(key, refreshIntervalSeconds);
-                LOGGER.info("函数式缓存自动刷新已启用: cache={}, key={}, interval={}s",
-                        cache.getName(), key, refreshIntervalSeconds);
-            } else {
-                LOGGER.warn("无法创建或获取缓存刷新器: cache={}", cache.getName());
-            }
-        } catch (CacheException e) {
-            LOGGER.error("启用函数式缓存自动刷新失败: cache={}, key={}, error={}",
-                    cache.getName(), key, e.getMessage(), e);
-        }
+        LOGGER.warn("enableCacheRefresh 方法已过时，请使用配置方式启用自动刷新: cache={}, key={}",
+                cache.getName(), key);
+        LOGGER.info("提示：在 application.yml 中配置 cascade.refresh.enabled=true 来启用自动刷新");
     }
 
     /**

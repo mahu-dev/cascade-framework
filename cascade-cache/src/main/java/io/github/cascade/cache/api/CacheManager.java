@@ -37,15 +37,6 @@ public interface CacheManager {
      */
     <K, V> Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType);
 
-    <K, V> Cache<K, V> getOrCreateAutoRefreshCache(String cacheName,
-                                                   Class<K> keyType,
-                                                   Class<V> valueType);
-
-
-    <K, V> Cache<K, V> getOrCreateDistributedAutoRefreshCache(String cacheName,
-                                                              Class<K> keyType,
-                                                              Class<V> valueType);
-
     /**
      * 获取或创建缓存（使用自定义配置）
      */
@@ -60,6 +51,11 @@ public interface CacheManager {
 
     /**
      * 获取或创建缓存（完整配置）
+     * <p>
+     * 说明：根据配置自动应用以下装饰器：
+     * - 如果配置了自动刷新，自动包装为 AutoRefreshCache
+     * - 如果启用了同步，自动包装为 SyncAwareCache
+     * - 如果需要分布式刷新，自动包装为 DistributedAutoRefreshCache
      */
     <K, V> Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType,
                                         CascadeCacheProperties config, Function<K, V> loader);
@@ -115,14 +111,4 @@ public interface CacheManager {
      * 检查是否已关闭
      */
     boolean isClosed();
-
-    // ==================== 扩展功能 ====================
-
-    /**
-     * 获取或创建缓存刷新器
-     *
-     * @param cacheName 缓存名称
-     * @return 缓存刷新器，创建失败返回null
-     */
-    <K, V> CacheRefresher<K, V> getOrCreateCacheRefresher(String cacheName);
 }
