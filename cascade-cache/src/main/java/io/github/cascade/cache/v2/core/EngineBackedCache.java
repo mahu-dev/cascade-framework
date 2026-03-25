@@ -1,8 +1,15 @@
 package io.github.cascade.cache.v2.core;
 
 import io.github.cascade.cache.api.Cache;
+import io.github.cascade.cache.v2.consistency.VersionManager;
+import io.github.cascade.cache.v2.engine.ReadPipeline;
+import io.github.cascade.cache.v2.engine.RefreshPipeline;
+import io.github.cascade.cache.v2.engine.WritePipeline;
+import io.github.cascade.cache.v2.loader.DistLockCoordinator;
 import io.github.cascade.cache.v2.model.CacheRecord;
 import io.github.cascade.cache.v2.model.InvalidationEvent;
+import io.github.cascade.cache.v2.observability.CacheMetricsCollector;
+import io.github.cascade.cache.v2.observability.CacheStatsSnapshot;
 import io.github.cascade.cache.v2.policy.CachePolicy;
 import io.github.cascade.cache.v2.policy.SyncMode;
 import io.github.cascade.cache.v2.store.L1CacheStore;
@@ -39,14 +46,34 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     private final L1CacheStore<K, V> l1Store;
     private final L2CacheStore<K, V> l2Store;
     private final InvalidationBus<K> invalidationBus;
+    private final VersionManager<K> versionManager;
+    private final DistLockCoordinator<K> lockCoordinator;
+    private final CacheMetricsCollector metricsCollector;
     private final String nodeId;
     private final ExecutorService asyncExecutor;
     private final ScheduledExecutorService refreshScheduler;
     private final SingleFlight<K, V> singleFlight = new SingleFlight<>();
+    private final ReadPipeline<K, V> readPipeline = new ReadPipeline<>();
+    private final WritePipeline<V> writePipeline = new WritePipeline<>();
+    private final RefreshPipeline refreshPipeline = new RefreshPipeline();
     private final Set<K> trackedKeys = ConcurrentHashMap.newKeySet();
     private final Set<K> refreshingKeys = ConcurrentHashMap.newKeySet();
     private final Map<K, Long> localVersion = new ConcurrentHashMap<>();
+    private final Map<K, AtomicLong> readCounter = new ConcurrentHashMap<>();
     private final AtomicLong clearVersion = new AtomicLong(0L);
+    private final AtomicLong l1Hit = new AtomicLong(0L);
+    private final AtomicLong l2Hit = new AtomicLong(0L);
+    private final AtomicLong miss = new AtomicLong(0L);
+    private final AtomicLong backfillL1 = new AtomicLong(0L);
+    private final AtomicLong backfillL2 = new AtomicLong(0L);
+    private final AtomicLong refreshSuccess = new AtomicLong(0L);
+    private final AtomicLong refreshFail = new AtomicLong(0L);
+    private final AtomicLong invalidatePublish = new AtomicLong(0L);
+    private final AtomicLong invalidateConsume = new AtomicLong(0L);
+    private final AtomicLong singleFlightJoin = new AtomicLong(0L);
+    private final AtomicLong distLockDegrade = new AtomicLong(0L);
+    private final AtomicLong eventLagMs = new AtomicLong(0L);
+    private final AtomicLong droppedEvents = new AtomicLong(0L);
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicBoolean subscribed = new AtomicBoolean(false);
 
@@ -58,13 +85,32 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
                              L2CacheStore<K, V> l2Store,
                              Function<K, V> loader,
                              InvalidationBus<K> invalidationBus,
+                             VersionManager<K> versionManager,
+                             DistLockCoordinator<K> lockCoordinator,
                              String nodeId) {
+        this(cacheName, policy, l1Store, l2Store, loader, invalidationBus, versionManager, lockCoordinator, nodeId,
+                CacheMetricsCollector.create(cacheName, null));
+    }
+
+    public EngineBackedCache(String cacheName,
+                             CachePolicy policy,
+                             L1CacheStore<K, V> l1Store,
+                             L2CacheStore<K, V> l2Store,
+                             Function<K, V> loader,
+                             InvalidationBus<K> invalidationBus,
+                             VersionManager<K> versionManager,
+                             DistLockCoordinator<K> lockCoordinator,
+                             String nodeId,
+                             CacheMetricsCollector metricsCollector) {
         this.cacheName = cacheName;
         this.policy = policy;
         this.l1Store = l1Store;
         this.l2Store = l2Store;
         this.loader = loader;
         this.invalidationBus = invalidationBus;
+        this.versionManager = versionManager;
+        this.lockCoordinator = lockCoordinator;
+        this.metricsCollector = metricsCollector != null ? metricsCollector : CacheMetricsCollector.create(cacheName, null);
         this.nodeId = nodeId;
         this.asyncExecutor = Executors.newCachedThreadPool(r -> {
             Thread thread = new Thread(r, "cascade-async-" + cacheName);
@@ -76,6 +122,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
             thread.setDaemon(true);
             return thread;
         });
+        this.clearVersion.set(versionManager.currentClearVersion());
 
         startSyncIfNeeded();
         startRefreshIfNeeded();
@@ -100,31 +147,31 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         }
         trackKey(key);
 
-        Optional<CacheRecord<V>> l1Hit = readFromL1(key);
-        if (l1Hit.isPresent()) {
-            CacheRecord<V> record = l1Hit.get();
-            if (isHardExpired(record)) {
-                l1Store.evict(key);
-            } else {
-                triggerRefreshIfSoftExpired(key, record);
-                return Optional.ofNullable(record.getValue());
-            }
+        ReadPipeline.ReadResult<V> readResult = readPipeline.read(
+                key,
+                this::readFromL1,
+                this::readFromL2,
+                this::isHardExpired
+        );
+        if (readResult.l1HardExpired() && l1Store != null) {
+            l1Store.evict(key);
         }
-
-        Optional<CacheRecord<V>> l2Hit = readFromL2(key);
-        if (l2Hit.isPresent()) {
-            CacheRecord<V> record = l2Hit.get();
-            if (isHardExpired(record)) {
-                if (l2Store != null) {
-                    l2Store.evict(key);
-                }
-            } else {
+        if (readResult.l2HardExpired() && l2Store != null) {
+            l2Store.evict(key);
+        }
+        if (readResult.hit()) {
+            CacheRecord<V> record = readResult.record();
+            if (readResult.level() == ReadPipeline.HitLevel.L2) {
+                markL2Hit();
                 writeBackL1(key, record);
-                triggerRefreshIfSoftExpired(key, record);
-                return Optional.ofNullable(record.getValue());
+            } else {
+                markL1Hit();
             }
+            triggerRefreshIfSoftExpired(key, record);
+            return Optional.ofNullable(record.getValue());
         }
 
+        markMiss();
         V loaded = loadAndWriteBack(key, policy.getHardTtlSeconds());
         return Optional.ofNullable(loaded);
     }
@@ -198,6 +245,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
             l1Store.evict(key);
         }
         trackedKeys.remove(key);
+        readCounter.remove(key);
         localVersion.put(key, version);
         publishInvalidation(key, version);
     }
@@ -212,9 +260,11 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
             l1Store.clear();
         }
         trackedKeys.clear();
+        readCounter.clear();
         localVersion.clear();
 
-        long version = clearVersion.incrementAndGet();
+        long version = versionManager.nextClearVersion();
+        clearVersion.set(version);
         publishClear(version);
     }
 
@@ -315,42 +365,69 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         long now = System.currentTimeMillis();
         long hardTtl = ttlSeconds > 0 ? ttlSeconds : policy.getHardTtlSeconds();
         long softTtl = policy.getSoftTtlSeconds() > 0 ? policy.getSoftTtlSeconds() : Math.max(1, hardTtl / 3);
-        if (hardTtl > 0 && softTtl > hardTtl) {
-            softTtl = hardTtl;
-        }
-
-        long hardExpireAt = hardTtl > 0 ? now + hardTtl * 1000 : Long.MAX_VALUE;
-        long softExpireAt = softTtl > 0 ? now + softTtl * 1000 : hardExpireAt;
         long version = nextVersion(key);
 
-        CacheRecord<V> record = new CacheRecord<>(value, version, now, softExpireAt, hardExpireAt, nodeId);
+        CacheRecord<V> record = writePipeline.createRecord(value, version, now, hardTtl, softTtl, nodeId);
 
         if (l2Store != null) {
             l2Store.put(key, record, hardTtl);
+            markBackfillL2();
         }
-        writeBackL1(key, record);
         localVersion.put(key, version);
-        publishInvalidation(key, version);
+        publishWriteEvent(key, record);
+        writeBackL1(key, record);
     }
 
     private V loadAndWriteBack(K key, long ttlSeconds) {
+        if (loader == null) {
+            return null;
+        }
+
+        if (policy.isSingleFlightEnabled()) {
+            return singleFlight.execute(key, () -> {
+                markSingleFlightJoin();
+                return loadWithProtection(key, ttlSeconds);
+            });
+        }
+        return loadWithProtection(key, ttlSeconds);
+    }
+
+    private V loadWithProtection(K key, long ttlSeconds) {
+        if (!policy.isDistributedLockEnabled()) {
+            return invokeLoaderAndWrite(key, ttlSeconds);
+        }
+        return lockCoordinator.withLock(
+                cacheName,
+                key,
+                policy.getDistributedLockWaitMs(),
+                policy.getDistributedLockLeaseMs(),
+                () -> {
+                    Optional<CacheRecord<V>> latest = readFromL2(key);
+                    if (latest.isPresent() && !isHardExpired(latest.get())) {
+                        writeBackL1(key, latest.get());
+                        return latest.get().getValue();
+                    }
+                    return invokeLoaderAndWrite(key, ttlSeconds);
+                },
+                this::markDistLockDegrade
+        );
+    }
+
+    private V invokeLoaderAndWrite(K key, long ttlSeconds) {
         Function<K, V> loadFunction = this.loader;
         if (loadFunction == null) {
             return null;
         }
-
-        return singleFlight.execute(key, () -> {
-            try {
-                V loaded = loadFunction.apply(key);
-                if (loaded != null) {
-                    writeThrough(key, loaded, ttlSeconds);
-                }
-                return loaded;
-            } catch (Exception e) {
-                LOGGER.warn("加载器执行失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
-                return null;
+        try {
+            V loaded = loadFunction.apply(key);
+            if (loaded != null) {
+                writeThrough(key, loaded, ttlSeconds);
             }
-        });
+            return loaded;
+        } catch (Exception e) {
+            LOGGER.warn("加载器执行失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
+            return null;
+        }
     }
 
     private void startSyncIfNeeded() {
@@ -391,14 +468,15 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
             if (record.isEmpty()) {
                 record = readFromL2(key);
             }
-            if (record.isPresent() && isSoftExpired(record.get())) {
+            if (record.isPresent()
+                    && refreshPipeline.shouldRefresh(policy.isAutoRefreshEnabled(), record.get(), System.currentTimeMillis())) {
                 triggerRefresh(key);
             }
         }
     }
 
     private void triggerRefreshIfSoftExpired(K key, CacheRecord<V> record) {
-        if (policy.isAutoRefreshEnabled() && isSoftExpired(record)) {
+        if (refreshPipeline.shouldRefresh(policy.isAutoRefreshEnabled(), record, System.currentTimeMillis())) {
             triggerRefresh(key);
         }
     }
@@ -410,13 +488,31 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         if (!refreshingKeys.add(key)) {
             return;
         }
-        CompletableFuture.runAsync(() -> loadAndWriteBack(key, policy.getHardTtlSeconds()), asyncExecutor)
-                .whenComplete((unused, throwable) -> refreshingKeys.remove(key));
+        long startNanos = System.nanoTime();
+        CompletableFuture.supplyAsync(() -> loadAndWriteBack(key, policy.getHardTtlSeconds()), asyncExecutor)
+                .whenComplete((value, throwable) -> {
+                    long latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+                    metricsCollector.recordRefreshLatency(latencyMs);
+                    if (throwable != null || value == null) {
+                        markRefreshFail();
+                    } else {
+                        markRefreshSuccess();
+                    }
+                    refreshingKeys.remove(key);
+                });
     }
 
     private void trackKey(K key) {
         if (policy.isAutoRefreshEnabled() && key != null) {
-            trackedKeys.add(key);
+            long accessCount = readCounter.computeIfAbsent(key, ignored -> new AtomicLong(0L)).incrementAndGet();
+            if (refreshPipeline.shouldTrack(
+                    policy.isAutoRefreshEnabled(),
+                    accessCount,
+                    policy.getHotKeyAccessThreshold(),
+                    trackedKeys.size(),
+                    policy.getMaxTrackedKeys())) {
+                trackedKeys.add(key);
+            }
         }
     }
 
@@ -435,14 +531,14 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     }
 
     private void writeBackL1(K key, CacheRecord<V> record) {
-        if (l1Store != null && key != null && record != null) {
-            l1Store.put(key, record);
+        if (key == null || record == null) {
+            return;
         }
-    }
-
-    private boolean isSoftExpired(CacheRecord<V> record) {
-        long softExpire = record.getSoftExpireAtMs();
-        return softExpire > 0 && System.currentTimeMillis() >= softExpire;
+        localVersion.put(key, record.getVersion());
+        if (l1Store != null) {
+            l1Store.put(key, record);
+            markBackfillL1();
+        }
     }
 
     private boolean isHardExpired(CacheRecord<V> record) {
@@ -451,16 +547,16 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     }
 
     private long nextVersion(K key) {
-        if (l2Store != null) {
-            return l2Store.nextVersion(key);
-        }
-        return localVersion.merge(key, 1L, Long::sum);
+        long version = versionManager.nextVersion(key);
+        localVersion.put(key, version);
+        return version;
     }
 
     private void publishInvalidation(K key, long version) {
         if (policy.getSyncMode() == SyncMode.NONE) {
             return;
         }
+        markSyncPublish();
         invalidationBus.publishInvalidation(cacheName, key, version, nodeId)
                 .exceptionally(throwable -> {
                     LOGGER.debug("发布失效事件失败: cache={}, key={}, error={}", cacheName, key, throwable.getMessage());
@@ -468,10 +564,31 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
                 });
     }
 
+    private void publishUpdate(K key, CacheRecord<V> record) {
+        if (policy.getSyncMode() == SyncMode.NONE || record == null) {
+            return;
+        }
+        markSyncPublish();
+        invalidationBus.publishUpdate(cacheName, key, record, nodeId)
+                .exceptionally(throwable -> {
+                    LOGGER.debug("发布更新事件失败: cache={}, key={}, error={}", cacheName, key, throwable.getMessage());
+                    return null;
+                });
+    }
+
+    private void publishWriteEvent(K key, CacheRecord<V> record) {
+        if (policy.getSyncMode() == SyncMode.UPDATE) {
+            publishUpdate(key, record);
+        } else {
+            publishInvalidation(key, record != null ? record.getVersion() : 0L);
+        }
+    }
+
     private void publishClear(long version) {
         if (policy.getSyncMode() == SyncMode.NONE) {
             return;
         }
+        markSyncPublish();
         invalidationBus.publishClear(cacheName, version, nodeId)
                 .exceptionally(throwable -> {
                     LOGGER.debug("发布清空事件失败: cache={}, error={}", cacheName, throwable.getMessage());
@@ -483,25 +600,170 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         if (event == null || event.getNodeId() == null || event.getNodeId().equals(nodeId)) {
             return;
         }
+        markSyncConsume();
+        if (event.getTimestamp() > 0) {
+            long lag = Math.max(0L, System.currentTimeMillis() - event.getTimestamp());
+            eventLagMs.set(lag);
+            metricsCollector.recordEventLag(lag);
+        }
         if (event.getOperation() == InvalidationEvent.Operation.CLEAR) {
+            long incomingClearVersion = event.getVersion();
+            long currentClearVersion = clearVersion.get();
+            if (incomingClearVersion <= currentClearVersion) {
+                droppedEvents.incrementAndGet();
+                return;
+            }
+            clearVersion.set(incomingClearVersion);
             if (l1Store != null) {
                 l1Store.clear();
             }
             trackedKeys.clear();
+            readCounter.clear();
+            localVersion.clear();
             return;
         }
         K key = event.getKey();
-        if (key == null || l1Store == null) {
+        if (key == null) {
             return;
         }
 
         long incoming = event.getVersion();
         long current = readFromL1(key).map(CacheRecord::getVersion)
                 .orElseGet(() -> localVersion.getOrDefault(key, 0L));
-        if (incoming > current) {
-            l1Store.evict(key);
-            localVersion.put(key, incoming);
+        if (incoming <= current) {
+            droppedEvents.incrementAndGet();
+            return;
         }
+
+        localVersion.put(key, incoming);
+        if (event.getOperation() == InvalidationEvent.Operation.UPDATE) {
+            CacheRecord<Object> payload = event.getRecord();
+            if (payload == null || l1Store == null) {
+                return;
+            }
+            @SuppressWarnings("unchecked")
+            CacheRecord<V> casted = new CacheRecord<>(
+                    (V) payload.getValue(),
+                    payload.getVersion(),
+                    payload.getWriteTimeMs(),
+                    payload.getSoftExpireAtMs(),
+                    payload.getHardExpireAtMs(),
+                    payload.getSourceNodeId()
+            );
+            l1Store.put(key, casted);
+            markBackfillL1();
+            return;
+        }
+
+        if (l1Store != null) {
+            l1Store.evict(key);
+        }
+    }
+
+    public CacheStatsSnapshot statsSnapshot() {
+        return new CacheStatsSnapshot(
+                l1Hit.get(),
+                l2Hit.get(),
+                miss.get(),
+                backfillL1.get(),
+                backfillL2.get(),
+                refreshSuccess.get(),
+                refreshFail.get(),
+                invalidatePublish.get(),
+                invalidateConsume.get(),
+                singleFlightJoin.get(),
+                distLockDegrade.get()
+        );
+    }
+
+    public Map<String, Object> diagnosticsSnapshot() {
+        CacheStatsSnapshot stats = statsSnapshot();
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("cacheName", cacheName);
+        snapshot.put("nodeId", nodeId);
+        snapshot.put("policy.syncMode", policy.getSyncMode().name());
+        snapshot.put("policy.autoRefresh", policy.isAutoRefreshEnabled());
+        snapshot.put("policy.hardTtlSeconds", policy.getHardTtlSeconds());
+        snapshot.put("policy.softTtlSeconds", policy.getSoftTtlSeconds());
+        snapshot.put("policy.singleFlight", policy.isSingleFlightEnabled());
+        snapshot.put("policy.distributedLock", policy.isDistributedLockEnabled());
+        snapshot.put("trackedKeys", trackedKeys.size());
+        snapshot.put("refreshingKeys", refreshingKeys.size());
+        snapshot.put("localVersionKeys", localVersion.size());
+        snapshot.put("eventLagMs", eventLagMs.get());
+        snapshot.put("droppedEvents", droppedEvents.get());
+        snapshot.put("hotKeysTopN", readCounter.entrySet().stream()
+                .sorted((a, b) -> Long.compare(b.getValue().get(), a.getValue().get()))
+                .limit(10)
+                .map(entry -> Map.of("key", String.valueOf(entry.getKey()), "count", entry.getValue().get()))
+                .toList());
+        snapshot.put("stats.l1Hit", stats.l1Hit());
+        snapshot.put("stats.l2Hit", stats.l2Hit());
+        snapshot.put("stats.miss", stats.miss());
+        snapshot.put("stats.backfillL1", stats.backfillL1());
+        snapshot.put("stats.backfillL2", stats.backfillL2());
+        snapshot.put("stats.refreshSuccess", stats.refreshSuccess());
+        snapshot.put("stats.refreshFail", stats.refreshFail());
+        snapshot.put("stats.syncPublish", stats.invalidatePublish());
+        snapshot.put("stats.syncConsume", stats.invalidateConsume());
+        snapshot.put("stats.singleFlightJoin", stats.singleFlightJoin());
+        snapshot.put("stats.distLockDegrade", stats.distLockDegrade());
+        return snapshot;
+    }
+
+    private void markL1Hit() {
+        l1Hit.incrementAndGet();
+        metricsCollector.incL1Hit();
+    }
+
+    private void markL2Hit() {
+        l2Hit.incrementAndGet();
+        metricsCollector.incL2Hit();
+    }
+
+    private void markMiss() {
+        miss.incrementAndGet();
+        metricsCollector.incMiss();
+    }
+
+    private void markBackfillL1() {
+        backfillL1.incrementAndGet();
+        metricsCollector.incBackfillL1();
+    }
+
+    private void markBackfillL2() {
+        backfillL2.incrementAndGet();
+        metricsCollector.incBackfillL2();
+    }
+
+    private void markRefreshSuccess() {
+        refreshSuccess.incrementAndGet();
+        metricsCollector.incRefreshSuccess();
+    }
+
+    private void markRefreshFail() {
+        refreshFail.incrementAndGet();
+        metricsCollector.incRefreshFail();
+    }
+
+    private void markSyncPublish() {
+        invalidatePublish.incrementAndGet();
+        metricsCollector.incSyncPublish();
+    }
+
+    private void markSyncConsume() {
+        invalidateConsume.incrementAndGet();
+        metricsCollector.incSyncConsume();
+    }
+
+    private void markSingleFlightJoin() {
+        singleFlightJoin.incrementAndGet();
+        metricsCollector.incSingleFlightJoin();
+    }
+
+    private void markDistLockDegrade() {
+        distLockDegrade.incrementAndGet();
+        metricsCollector.incDistLockDegrade();
     }
 
     private void checkNotClosed() {

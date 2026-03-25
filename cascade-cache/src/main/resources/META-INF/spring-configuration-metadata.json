@@ -19,9 +19,15 @@
     },
     {
       "name": "cascade.sync",
-      "type": "io.github.cascade.cache.configuration.CascadeCacheProperties$SyncProperties",
+      "type": "io.github.cascade.cache.configuration.SyncProperties",
       "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties",
       "sourceMethod": "getSync()"
+    },
+    {
+      "name": "cascade.protection",
+      "type": "io.github.cascade.cache.configuration.CascadeCacheProperties$ProtectionConfig",
+      "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties",
+      "sourceMethod": "getProtection()"
     },
     {
       "name": "cascade.refresh",
@@ -83,14 +89,42 @@
       "name": "cascade.sync.enabled",
       "type": "java.lang.Boolean",
       "description": "是否启用分布式同步",
-      "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$SyncProperties",
+      "sourceType": "io.github.cascade.cache.configuration.SyncProperties",
       "defaultValue": true
+    },
+    {
+      "name": "cascade.sync.mode",
+      "type": "io.github.cascade.cache.v2.policy.SyncMode",
+      "description": "同步模式（NONE/INVALIDATE/UPDATE）",
+      "sourceType": "io.github.cascade.cache.configuration.SyncProperties",
+      "defaultValue": "INVALIDATE"
     },
     {
       "name": "cascade.refresh.enabled",
       "type": "java.lang.Boolean",
       "description": "是否启用自动刷新",
       "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$RefreshConfig",
+      "defaultValue": true
+    },
+    {
+      "name": "cascade.refresh.default-refresh-interval-seconds",
+      "type": "java.lang.Long",
+      "description": "默认软TTL/刷新间隔（秒）",
+      "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$RefreshConfig",
+      "defaultValue": 300
+    },
+    {
+      "name": "cascade.protection.single-flight-enabled",
+      "type": "java.lang.Boolean",
+      "description": "是否启用同key并发合并",
+      "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$ProtectionConfig",
+      "defaultValue": true
+    },
+    {
+      "name": "cascade.protection.distributed-lock-enabled",
+      "type": "java.lang.Boolean",
+      "description": "是否启用分布式锁防击穿",
+      "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$ProtectionConfig",
       "defaultValue": true
     },
     {

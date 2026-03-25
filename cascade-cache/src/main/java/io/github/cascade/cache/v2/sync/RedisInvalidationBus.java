@@ -2,6 +2,7 @@ package io.github.cascade.cache.v2.sync;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.cascade.cache.v2.model.CacheRecord;
 import io.github.cascade.cache.v2.model.InvalidationEvent;
 import org.redisson.api.RTopic;
 import org.redisson.api.RedissonClient;
@@ -41,6 +42,15 @@ public class RedisInvalidationBus<K> implements InvalidationBus<K> {
             return CompletableFuture.completedFuture(null);
         }
         InvalidationEvent<K> event = InvalidationEvent.invalidate(cacheName, key, version, nodeId);
+        return publish(cacheName, event);
+    }
+
+    @Override
+    public CompletableFuture<Void> publishUpdate(String cacheName, K key, CacheRecord<?> record, String nodeId) {
+        if (!running) {
+            return CompletableFuture.completedFuture(null);
+        }
+        InvalidationEvent<K> event = InvalidationEvent.update(cacheName, key, record, nodeId);
         return publish(cacheName, event);
     }
 
@@ -130,6 +140,11 @@ public class RedisInvalidationBus<K> implements InvalidationBus<K> {
                     casted.setNodeId(raw.getNodeId());
                     casted.setTimestamp(raw.getTimestamp());
                     casted.setKey((K) raw.getKey());
+                    CacheRecord<Object> record = null;
+                    if (raw.getRecord() != null) {
+                        record = objectMapper.convertValue(raw.getRecord(), CacheRecord.class);
+                    }
+                    casted.setRecord(record);
                     handler.accept(casted);
                 } catch (Exception e) {
                     LOGGER.warn("失效事件消费失败: cache={}, error={}", cacheName, e.getMessage());
@@ -146,4 +161,3 @@ public class RedisInvalidationBus<K> implements InvalidationBus<K> {
         return topicPrefix.endsWith(":") ? topicPrefix + cacheName : topicPrefix + ":" + cacheName;
     }
 }
-

@@ -1,5 +1,7 @@
 package io.github.cascade.cache.annotation;
 
+import io.github.cascade.cache.v2.policy.SyncMode;
+
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -70,12 +72,17 @@ public @interface Cacheable {
     /**
      * 是否启用定时刷新
      */
-    boolean enableRefresh() default false;
+    boolean enableRefresh() default true;
 
     /**
      * 是否启用自动刷新（别名，为了向后兼容）
      */
-    boolean autoRefresh() default false;
+    boolean autoRefresh() default true;
+
+    /**
+     * 同步模式（默认失效同步）
+     */
+    SyncMode syncMode() default SyncMode.INVALIDATE;
 
     /**
      * 刷新间隔（秒）

@@ -6,6 +6,9 @@ import io.github.cascade.cache.annotation.Cacheable;
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheManager;
 import io.github.cascade.cache.configuration.CascadeCacheProperties;
+import io.github.cascade.cache.v2.api.annotations.CascadeCached;
+import io.github.cascade.cache.v2.policy.SyncMode;
+import io.github.cascade.cache.v2.support.DurationParser;
 import io.github.cascade.cache.v2.support.DefaultCacheKeyGenerator;
 import org.aspectj.lang.JoinPoint;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -92,6 +95,43 @@ public class CacheAspect {
         return result;
     }
 
+    @Around("@annotation(cascadeCached)")
+    public Object handleCascadeCached(ProceedingJoinPoint joinPoint, CascadeCached cascadeCached) throws Throwable {
+        if (Boolean.TRUE.equals(internalInvocation.get())) {
+            return joinPoint.proceed();
+        }
+
+        String cacheName = resolveCacheName(cascadeCached.name(), joinPoint);
+        Object cacheKey = evaluateCacheKey(joinPoint, cascadeCached.key());
+
+        if (!evaluateCondition(joinPoint, cascadeCached.condition(), null)) {
+            return joinPoint.proceed();
+        }
+
+        registerSnapshot(cacheName, cacheKey, joinPoint);
+
+        Cache<Object, Object> cache = getOrCreateCache(joinPoint, cacheName, cascadeCached, cacheKey);
+        if (cache == null) {
+            return joinPoint.proceed();
+        }
+
+        try {
+            Optional<Object> cached = cache.get(cacheKey);
+            if (cached.isPresent()) {
+                return cached.get();
+            }
+        } catch (Exception e) {
+            LOGGER.warn("@CascadeCached读取缓存失败，降级执行方法: cache={}, key={}, error={}",
+                    cacheName, cacheKey, e.getMessage());
+        }
+
+        Object result = joinPoint.proceed();
+        if (result != null) {
+            safePut(cache, cacheName, cacheKey, result, cascadeCached.ttlSeconds());
+        }
+        return result;
+    }
+
     @Around("@annotation(cachePut)")
     public Object handleCachePut(ProceedingJoinPoint joinPoint, CachePut cachePut) throws Throwable {
         String cacheName = resolveCacheName(cachePut.value(), joinPoint);
@@ -147,6 +187,13 @@ public class CacheAspect {
             }
             if (annotation instanceof CachePut cachePut) {
                 CascadeCacheProperties config = buildConfig(cachePut);
+                Function<Object, Object> loader = key -> invokeSnapshot(cacheName, key);
+                return (Cache<Object, Object>) cacheManager.getOrCreateCache(
+                        cacheName, keyType, valueType, config, loader
+                );
+            }
+            if (annotation instanceof CascadeCached cascadeCached) {
+                CascadeCacheProperties config = buildConfig(cascadeCached);
                 Function<Object, Object> loader = key -> invokeSnapshot(cacheName, key);
                 return (Cache<Object, Object>) cacheManager.getOrCreateCache(
                         cacheName, keyType, valueType, config, loader
@@ -235,6 +282,7 @@ public class CacheAspect {
         config.getL1().setEnabled(annotation.enableL1());
         config.getL2().setEnabled(annotation.enableL2());
         config.getSync().setEnabled(annotation.enableSync());
+        config.getSync().setMode(annotation.enableSync() ? annotation.syncMode() : SyncMode.NONE);
         config.getRefresh().setEnabled(annotation.enableRefresh() || annotation.autoRefresh());
         config.getRefresh().setDefaultRefreshIntervalSeconds(annotation.refreshInterval());
         if (annotation.ttl() > 0) {
@@ -248,10 +296,29 @@ public class CacheAspect {
         config.getL1().setEnabled(annotation.enableL1());
         config.getL2().setEnabled(annotation.enableL2());
         config.getSync().setEnabled(annotation.sync());
+        config.getSync().setMode(annotation.sync() ? annotation.syncMode() : SyncMode.NONE);
         config.getRefresh().setEnabled(annotation.autoRefresh());
         config.getRefresh().setDefaultRefreshIntervalSeconds(annotation.refreshInterval());
         if (annotation.ttl() > 0) {
             config.getL2().setDefaultTtlSeconds(annotation.ttl());
+        }
+        return config;
+    }
+
+    private CascadeCacheProperties buildConfig(CascadeCached annotation) {
+        CascadeCacheProperties config = copyDefaultConfig();
+        config.getL1().setEnabled(annotation.enableL1());
+        config.getL2().setEnabled(annotation.enableL2());
+        config.getSync().setEnabled(annotation.syncMode() != SyncMode.NONE);
+        config.getSync().setMode(annotation.syncMode());
+        config.getRefresh().setEnabled(annotation.autoRefresh());
+        long softTtl = DurationParser.parseToSeconds(annotation.softTtl(), annotation.softTtlSeconds());
+        if (softTtl > 0) {
+            config.getRefresh().setDefaultRefreshIntervalSeconds(softTtl);
+        }
+        long ttl = DurationParser.parseToSeconds(annotation.ttl(), annotation.ttlSeconds());
+        if (ttl > 0) {
+            config.getL2().setDefaultTtlSeconds(ttl);
         }
         return config;
     }
@@ -280,6 +347,7 @@ public class CacheAspect {
         target.getL2().setTimeoutSeconds(source.getL2().getTimeoutSeconds());
 
         target.getSync().setEnabled(source.getSync().isEnabled());
+        target.getSync().setMode(source.getSync().getMode());
         target.getSync().setType(source.getSync().getType());
         target.getSync().setTopicPrefix(source.getSync().getTopicPrefix());
         target.getSync().setAsyncPublish(source.getSync().isAsyncPublish());
@@ -303,6 +371,13 @@ public class CacheAspect {
         target.getLoader().setAutoDiscover(source.getLoader().isAutoDiscover());
         target.getLoader().setEnableStats(source.getLoader().isEnableStats());
         target.getLoader().setTimeoutSeconds(source.getLoader().getTimeoutSeconds());
+
+        target.getProtection().setSingleFlightEnabled(source.getProtection().isSingleFlightEnabled());
+        target.getProtection().setDistributedLockEnabled(source.getProtection().isDistributedLockEnabled());
+        target.getProtection().setDistributedLockWaitMs(source.getProtection().getDistributedLockWaitMs());
+        target.getProtection().setDistributedLockLeaseMs(source.getProtection().getDistributedLockLeaseMs());
+        target.getProtection().setHotKeyAccessThreshold(source.getProtection().getHotKeyAccessThreshold());
+        target.getProtection().setMaxTrackedKeys(source.getProtection().getMaxTrackedKeys());
 
         return target;
     }

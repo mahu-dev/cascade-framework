@@ -1,5 +1,6 @@
 package io.github.cascade.cache.configuration;
 
+import io.github.cascade.cache.v2.policy.SyncMode;
 import lombok.Data;
 import lombok.Getter;
 
@@ -21,6 +22,11 @@ public class SyncProperties {
      * 是否启用缓存同步
      */
     private boolean enabled = true;
+
+    /**
+     * V2 同步策略（默认 INVALIDATE）
+     */
+    private SyncMode mode = SyncMode.INVALIDATE;
 
     /**
      * 同步类型
@@ -111,6 +117,14 @@ public class SyncProperties {
     }
 
     /**
+     * 设置V2同步策略
+     */
+    public SyncProperties mode(SyncMode mode) {
+        this.mode = mode;
+        return this;
+    }
+
+    /**
      * 设置Redis主题前缀
      */
     public SyncProperties topicPrefix(String topicPrefix) {
@@ -196,7 +210,7 @@ public class SyncProperties {
 
     @Override
     public String toString() {
-        return String.format("SyncProperties{enabled=%s, type=%s, topicPrefix='%s', async=%s}",
-                enabled, type, topicPrefix, asyncPublish);
+        return String.format("SyncProperties{enabled=%s, mode=%s, type=%s, topicPrefix='%s', async=%s}",
+                enabled, mode, type, topicPrefix, asyncPublish);
     }
 }

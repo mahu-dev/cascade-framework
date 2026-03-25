@@ -1,5 +1,6 @@
 package io.github.cascade.cache.v2.sync;
 
+import io.github.cascade.cache.v2.model.CacheRecord;
 import io.github.cascade.cache.v2.model.InvalidationEvent;
 
 import java.util.concurrent.CompletableFuture;
@@ -11,6 +12,8 @@ import java.util.function.Consumer;
 public interface InvalidationBus<K> {
 
     CompletableFuture<Void> publishInvalidation(String cacheName, K key, long version, String nodeId);
+
+    CompletableFuture<Void> publishUpdate(String cacheName, K key, CacheRecord<?> record, String nodeId);
 
     CompletableFuture<Void> publishClear(String cacheName, long version, String nodeId);
 
@@ -31,6 +34,11 @@ public interface InvalidationBus<K> {
     final class NoOpInvalidationBus<K> implements InvalidationBus<K> {
         @Override
         public CompletableFuture<Void> publishInvalidation(String cacheName, K key, long version, String nodeId) {
+            return CompletableFuture.completedFuture(null);
+        }
+
+        @Override
+        public CompletableFuture<Void> publishUpdate(String cacheName, K key, CacheRecord<?> record, String nodeId) {
             return CompletableFuture.completedFuture(null);
         }
 
@@ -65,4 +73,3 @@ public interface InvalidationBus<K> {
         }
     }
 }
-

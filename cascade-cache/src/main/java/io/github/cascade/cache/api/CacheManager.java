@@ -1,8 +1,10 @@
 package io.github.cascade.cache.api;
 
 import io.github.cascade.cache.configuration.CascadeCacheProperties;
+import io.github.cascade.cache.v2.policy.SyncMode;
 
 import java.util.Collection;
+import java.util.Map;
 import java.util.function.Function;
 
 /**
@@ -30,6 +32,13 @@ import java.util.function.Function;
  */
 public interface CacheManager {
 
+    /**
+     * 编程式 Builder 入口。
+     */
+    default CacheBuilderKeyStage newCache(String cacheName) {
+        throw new UnsupportedOperationException("当前CacheManager不支持Builder API");
+    }
+
     // ==================== 缓存创建与获取 ====================
 
     /**
@@ -52,10 +61,10 @@ public interface CacheManager {
     /**
      * 获取或创建缓存（完整配置）
      * <p>
-     * 说明：根据配置自动应用以下装饰器：
-     * - 如果配置了自动刷新，自动包装为 AutoRefreshCache
-     * - 如果启用了同步，自动包装为 SyncAwareCache
-     * - 如果需要分布式刷新，自动包装为 DistributedAutoRefreshCache
+     * 说明：根据配置在统一引擎中开启：
+     * - 多级缓存回填（L2 -> L1）
+     * - 自动刷新（软TTL触发异步刷新）
+     * - 多节点失效同步（Redis topic 失效广播）
      */
     <K, V> Cache<K, V> getOrCreateCache(String cacheName, Class<K> keyType, Class<V> valueType,
                                         CascadeCacheProperties config, Function<K, V> loader);
@@ -111,4 +120,37 @@ public interface CacheManager {
      * 检查是否已关闭
      */
     boolean isClosed();
+
+    /**
+     * 诊断快照（配置 + 运行时指标）。
+     */
+    default Map<String, Object> diagnostics(String cacheName) {
+        return Map.of();
+    }
+
+    interface CacheBuilderKeyStage {
+        <K> CacheBuilderValueStage<K> keyType(Class<K> keyType);
+    }
+
+    interface CacheBuilderValueStage<K> {
+        <V> CacheBuilder<K, V> valueType(Class<V> valueType);
+    }
+
+    interface CacheBuilder<K, V> {
+        CacheBuilder<K, V> loader(Function<K, V> loader);
+
+        CacheBuilder<K, V> ttlSeconds(long ttlSeconds);
+
+        CacheBuilder<K, V> softTtlSeconds(long softTtlSeconds);
+
+        CacheBuilder<K, V> syncMode(SyncMode syncMode);
+
+        CacheBuilder<K, V> autoRefresh(boolean enabled);
+
+        CacheBuilder<K, V> enableL1(boolean enabled);
+
+        CacheBuilder<K, V> enableL2(boolean enabled);
+
+        Cache<K, V> build();
+    }
 }

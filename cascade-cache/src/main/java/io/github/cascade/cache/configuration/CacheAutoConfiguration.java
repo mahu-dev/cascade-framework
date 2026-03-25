@@ -2,10 +2,9 @@ package io.github.cascade.cache.configuration;
 
 import io.github.cascade.cache.api.CacheManager;
 import io.github.cascade.cache.aspect.CacheAspect;
-import io.github.cascade.cache.synchronization.CacheLoaderResolver;
-import io.github.cascade.cache.synchronization.RedisCacheSyncFactory;
-import io.github.cascade.cache.core.CacheSyncFactory;
 import io.github.cascade.cache.core.functional.FunctionalCacheManager;
+import io.github.cascade.cache.synchronization.CacheLoaderResolver;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,8 +17,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
-
-import java.util.List;
 
 /**
  * @author lionel lionelk@163.com
@@ -70,17 +67,6 @@ public class CacheAutoConfiguration {
     }
 
     /**
-     * Redis缓存同步工厂Bean
-     */
-    @Bean
-    @ConditionalOnMissingBean
-    @ConditionalOnClass(RedissonClient.class)
-    public CacheSyncFactory redisCacheSyncFactory(@Autowired(required = false) RedissonClient redissonClient) {
-        LOGGER.info("创建Redis缓存同步工厂: redisClient={}", redissonClient != null ? "已配置" : "未配置");
-        return new RedisCacheSyncFactory(redissonClient);
-    }
-
-    /**
      * 函数式缓存管理器配置
      * P0级重构修复：移除方法级别泛型约束
      */
@@ -91,18 +77,17 @@ public class CacheAutoConfiguration {
             @Autowired(required = false) RedissonClient redissonClient,
             CascadeCacheProperties defaultConfig,
             @Autowired(required = false) CacheLoaderResolver<?, ?> cacheLoaderResolver,
-            @Autowired(required = false) List<CacheSyncFactory> cacheSyncFactories) {
+            @Autowired(required = false) MeterRegistry meterRegistry) {
         LOGGER.info("配置函数式缓存管理器");
 
         FunctionalCacheManager cacheManager = new FunctionalCacheManager(
                 redissonClient,
                 defaultConfig,
                 cacheLoaderResolver,
-                cacheSyncFactories
+                meterRegistry
         );
 
-        LOGGER.info("✅ 函数式缓存管理器配置完成，同步工厂数: {}",
-                cacheSyncFactories != null ? cacheSyncFactories.size() : 0);
+        LOGGER.info("✅ 函数式缓存管理器配置完成");
         return cacheManager;
     }
 

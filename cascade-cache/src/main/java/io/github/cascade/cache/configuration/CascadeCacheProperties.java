@@ -46,6 +46,11 @@ public class CascadeCacheProperties {
     private RefreshConfig refresh = new RefreshConfig();
 
     /**
+     * 防护与加载协调配置
+     */
+    private ProtectionConfig protection = new ProtectionConfig();
+
+    /**
      * CacheLoader配置
      * -- GETTER --
      * 获取CacheLoader配置
@@ -149,7 +154,7 @@ public class CascadeCacheProperties {
         /**
          * 默认刷新间隔（秒）
          */
-        private long defaultRefreshIntervalSeconds = 10; // 10分钟
+        private long defaultRefreshIntervalSeconds = 300; // 5分钟
 
         /**
          * 最小刷新间隔（秒）
@@ -208,6 +213,42 @@ public class CascadeCacheProperties {
          * 调度器关闭超时时间（秒）
          */
         private long shutdownTimeoutSeconds = 10;
+    }
+
+    /**
+     * 防护配置
+     */
+    @Data
+    public static class ProtectionConfig {
+        /**
+         * 是否启用 singleflight（同 key 并发合并）
+         */
+        private boolean singleFlightEnabled = true;
+
+        /**
+         * 是否启用分布式锁加载保护
+         */
+        private boolean distributedLockEnabled = true;
+
+        /**
+         * 分布式锁等待时间（毫秒）
+         */
+        private long distributedLockWaitMs = 200;
+
+        /**
+         * 分布式锁租期（毫秒）
+         */
+        private long distributedLockLeaseMs = 3000;
+
+        /**
+         * 热点 key 追踪阈值（访问次数）
+         */
+        private int hotKeyAccessThreshold = 3;
+
+        /**
+         * 最大追踪 key 数量
+         */
+        private int maxTrackedKeys = 10000;
     }
 
     /**
@@ -319,6 +360,13 @@ public class CascadeCacheProperties {
     }
 
     /**
+     * 软TTL（秒）
+     */
+    public long getSoftTtlSeconds() {
+        return refresh.defaultRefreshIntervalSeconds;
+    }
+
+    /**
      * 是否并行刷新
      */
     public boolean isParallelRefresh() {
@@ -330,6 +378,30 @@ public class CascadeCacheProperties {
      */
     public boolean isStatsEnabled() {
         return l1.recordStats;
+    }
+
+    public boolean isSingleFlightEnabled() {
+        return protection.singleFlightEnabled;
+    }
+
+    public boolean isDistributedLockEnabled() {
+        return protection.distributedLockEnabled;
+    }
+
+    public long getDistributedLockWaitMs() {
+        return protection.distributedLockWaitMs;
+    }
+
+    public long getDistributedLockLeaseMs() {
+        return protection.distributedLockLeaseMs;
+    }
+
+    public int getHotKeyAccessThreshold() {
+        return protection.hotKeyAccessThreshold;
+    }
+
+    public int getMaxTrackedKeys() {
+        return protection.maxTrackedKeys;
     }
 
     // ==================== 便捷构建方法 ====================
