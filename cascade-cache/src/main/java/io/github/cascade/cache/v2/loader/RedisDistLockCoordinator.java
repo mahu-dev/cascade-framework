@@ -33,41 +33,31 @@ public class RedisDistLockCoordinator<K> implements DistLockCoordinator<K> {
     }
 
     @Override
-    public <T> T withLock(String cacheName,
-                          K key,
-                          long waitMs,
-                          long leaseMs,
-                          Supplier<T> supplier,
-                          Runnable onDegrade) {
+    public <T> LockResult<T> withLock(String cacheName,
+                                      K key,
+                                      long waitMs,
+                                      long leaseMs,
+                                      Supplier<T> supplier) {
         if (key == null) {
-            return supplier.get();
+            return LockResult.acquired(supplier.get());
         }
         RLock lock = redissonClient.getLock(lockPrefix + encodeKey(key));
         boolean locked = false;
         try {
             locked = lock.tryLock(Math.max(0L, waitMs), Math.max(1L, leaseMs), TimeUnit.MILLISECONDS);
             if (!locked) {
-                LOGGER.debug("分布式锁获取超时，降级继续执行: cache={}, key={}", cacheName, key);
-                if (onDegrade != null) {
-                    onDegrade.run();
-                }
-                return supplier.get();
+                LOGGER.debug("分布式锁获取超时: cache={}, key={}", cacheName, key);
+                return LockResult.notAcquired();
             }
-            return supplier.get();
+            return LockResult.acquired(supplier.get());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            LOGGER.debug("分布式锁等待中断，降级继续执行: cache={}, key={}", cacheName, key);
-            if (onDegrade != null) {
-                onDegrade.run();
-            }
-            return supplier.get();
+            LOGGER.debug("分布式锁等待中断: cache={}, key={}", cacheName, key);
+            return LockResult.error(e);
         } catch (Exception e) {
-            LOGGER.debug("分布式锁执行失败，降级继续执行: cache={}, key={}, error={}",
+            LOGGER.debug("分布式锁执行失败: cache={}, key={}, error={}",
                     cacheName, key, e.getMessage());
-            if (onDegrade != null) {
-                onDegrade.run();
-            }
-            return supplier.get();
+            return LockResult.error(e);
         } finally {
             if (locked) {
                 try {

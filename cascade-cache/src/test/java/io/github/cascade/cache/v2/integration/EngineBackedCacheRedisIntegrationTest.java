@@ -102,10 +102,10 @@ class EngineBackedCacheRedisIntegrationTest {
         CacheRecord<String> fresh = new CacheRecord<>("fresh", 20L, now, now + 60_000, now + 120_000, "external");
         CacheRecord<String> stale = new CacheRecord<>("stale", 10L, now, now + 60_000, now + 120_000, "external");
 
-        externalBus.publishUpdate(cacheName, "k2", fresh, "external").join();
+        externalBus.publishUpdate(cacheName, "k2", fresh, String.class.getName(), "external").join();
         assertTrue(waitUntil(() -> "fresh".equals(nodeB.get("k2").orElse(null)), Duration.ofMillis(500)));
 
-        externalBus.publishUpdate(cacheName, "k2", stale, "external").join();
+        externalBus.publishUpdate(cacheName, "k2", stale, String.class.getName(), "external").join();
         Thread.yield();
         assertEquals("fresh", nodeB.get("k2").orElse(null), "乱序旧事件不应覆盖新版本");
     }
@@ -123,6 +123,7 @@ class EngineBackedCacheRedisIntegrationTest {
                 .softTtlSeconds(300)
                 .autoRefreshEnabled(false)
                 .syncMode(syncMode)
+                .syncUpdateEnabled(syncMode == SyncMode.UPDATE)
                 .singleFlightEnabled(true)
                 .distributedLockEnabled(false)
                 .build();

@@ -12,8 +12,11 @@ public final class CachePolicy {
     private final long refreshIntervalSeconds;
     private final boolean autoRefreshEnabled;
     private final SyncMode syncMode;
+    private final boolean syncUpdateEnabled;
+    private final int syncUpdateMaxPayloadBytes;
     private final boolean singleFlightEnabled;
     private final boolean distributedLockEnabled;
+    private final LockFailureStrategy lockFailureStrategy;
     private final long distributedLockWaitMs;
     private final long distributedLockLeaseMs;
     private final int hotKeyAccessThreshold;
@@ -27,8 +30,11 @@ public final class CachePolicy {
         this.refreshIntervalSeconds = builder.refreshIntervalSeconds;
         this.autoRefreshEnabled = builder.autoRefreshEnabled;
         this.syncMode = builder.syncMode;
+        this.syncUpdateEnabled = builder.syncUpdateEnabled;
+        this.syncUpdateMaxPayloadBytes = builder.syncUpdateMaxPayloadBytes;
         this.singleFlightEnabled = builder.singleFlightEnabled;
         this.distributedLockEnabled = builder.distributedLockEnabled;
+        this.lockFailureStrategy = builder.lockFailureStrategy;
         this.distributedLockWaitMs = builder.distributedLockWaitMs;
         this.distributedLockLeaseMs = builder.distributedLockLeaseMs;
         this.hotKeyAccessThreshold = builder.hotKeyAccessThreshold;
@@ -67,12 +73,24 @@ public final class CachePolicy {
         return syncMode;
     }
 
+    public boolean isSyncUpdateEnabled() {
+        return syncUpdateEnabled;
+    }
+
+    public int getSyncUpdateMaxPayloadBytes() {
+        return syncUpdateMaxPayloadBytes;
+    }
+
     public boolean isSingleFlightEnabled() {
         return singleFlightEnabled;
     }
 
     public boolean isDistributedLockEnabled() {
         return distributedLockEnabled;
+    }
+
+    public LockFailureStrategy getLockFailureStrategy() {
+        return lockFailureStrategy;
     }
 
     public long getDistributedLockWaitMs() {
@@ -99,8 +117,11 @@ public final class CachePolicy {
         private long refreshIntervalSeconds = 300;
         private boolean autoRefreshEnabled = true;
         private SyncMode syncMode = SyncMode.INVALIDATE;
+        private boolean syncUpdateEnabled = false;
+        private int syncUpdateMaxPayloadBytes = 16 * 1024;
         private boolean singleFlightEnabled = true;
         private boolean distributedLockEnabled = true;
+        private LockFailureStrategy lockFailureStrategy = LockFailureStrategy.DEGRADE;
         private long distributedLockWaitMs = 200;
         private long distributedLockLeaseMs = 3000;
         private int hotKeyAccessThreshold = 3;
@@ -141,6 +162,16 @@ public final class CachePolicy {
             return this;
         }
 
+        public Builder syncUpdateEnabled(boolean syncUpdateEnabled) {
+            this.syncUpdateEnabled = syncUpdateEnabled;
+            return this;
+        }
+
+        public Builder syncUpdateMaxPayloadBytes(int syncUpdateMaxPayloadBytes) {
+            this.syncUpdateMaxPayloadBytes = syncUpdateMaxPayloadBytes;
+            return this;
+        }
+
         public Builder singleFlightEnabled(boolean singleFlightEnabled) {
             this.singleFlightEnabled = singleFlightEnabled;
             return this;
@@ -148,6 +179,11 @@ public final class CachePolicy {
 
         public Builder distributedLockEnabled(boolean distributedLockEnabled) {
             this.distributedLockEnabled = distributedLockEnabled;
+            return this;
+        }
+
+        public Builder lockFailureStrategy(LockFailureStrategy lockFailureStrategy) {
+            this.lockFailureStrategy = lockFailureStrategy;
             return this;
         }
 
@@ -186,6 +222,12 @@ public final class CachePolicy {
             }
             if (syncMode == null) {
                 syncMode = SyncMode.INVALIDATE;
+            }
+            if (syncUpdateMaxPayloadBytes <= 0) {
+                syncUpdateMaxPayloadBytes = 16 * 1024;
+            }
+            if (lockFailureStrategy == null) {
+                lockFailureStrategy = LockFailureStrategy.DEGRADE;
             }
             if (distributedLockWaitMs < 0) {
                 distributedLockWaitMs = 0;

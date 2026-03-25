@@ -24,6 +24,7 @@ public class InvalidationEvent<K> implements Serializable {
     private K key;
     private long version;
     private CacheRecord<Object> record;
+    private String valueTypeName;
     private String nodeId;
     private long timestamp;
 
@@ -35,6 +36,7 @@ public class InvalidationEvent<K> implements Serializable {
                              K key,
                              long version,
                              CacheRecord<Object> record,
+                             String valueTypeName,
                              String nodeId,
                              long timestamp) {
         this.cacheName = cacheName;
@@ -42,17 +44,22 @@ public class InvalidationEvent<K> implements Serializable {
         this.key = key;
         this.version = version;
         this.record = record;
+        this.valueTypeName = valueTypeName;
         this.nodeId = nodeId;
         this.timestamp = timestamp;
     }
 
     public static <K> InvalidationEvent<K> invalidate(String cacheName, K key, long version, String nodeId) {
         return new InvalidationEvent<>(
-                cacheName, Operation.INVALIDATE, key, version, null, nodeId, System.currentTimeMillis()
+                cacheName, Operation.INVALIDATE, key, version, null, null, nodeId, System.currentTimeMillis()
         );
     }
 
-    public static <K, V> InvalidationEvent<K> update(String cacheName, K key, CacheRecord<V> record, String nodeId) {
+    public static <K, V> InvalidationEvent<K> update(String cacheName,
+                                                     K key,
+                                                     CacheRecord<V> record,
+                                                     String valueTypeName,
+                                                     String nodeId) {
         CacheRecord<Object> payload = null;
         if (record != null) {
             payload = new CacheRecord<>(
@@ -66,12 +73,12 @@ public class InvalidationEvent<K> implements Serializable {
         }
         long version = record != null ? record.getVersion() : 0L;
         return new InvalidationEvent<>(
-                cacheName, Operation.UPDATE, key, version, payload, nodeId, System.currentTimeMillis()
+                cacheName, Operation.UPDATE, key, version, payload, valueTypeName, nodeId, System.currentTimeMillis()
         );
     }
 
     public static <K> InvalidationEvent<K> clear(String cacheName, long version, String nodeId) {
-        return new InvalidationEvent<>(cacheName, Operation.CLEAR, null, version, null, nodeId, System.currentTimeMillis());
+        return new InvalidationEvent<>(cacheName, Operation.CLEAR, null, version, null, null, nodeId, System.currentTimeMillis());
     }
 
     public String getCacheName() {
@@ -112,6 +119,14 @@ public class InvalidationEvent<K> implements Serializable {
 
     public void setRecord(CacheRecord<Object> record) {
         this.record = record;
+    }
+
+    public String getValueTypeName() {
+        return valueTypeName;
+    }
+
+    public void setValueTypeName(String valueTypeName) {
+        this.valueTypeName = valueTypeName;
     }
 
     public String getNodeId() {

@@ -46,11 +46,15 @@ public class RedisInvalidationBus<K> implements InvalidationBus<K> {
     }
 
     @Override
-    public CompletableFuture<Void> publishUpdate(String cacheName, K key, CacheRecord<?> record, String nodeId) {
+    public CompletableFuture<Void> publishUpdate(String cacheName,
+                                                 K key,
+                                                 CacheRecord<?> record,
+                                                 String valueTypeName,
+                                                 String nodeId) {
         if (!running) {
             return CompletableFuture.completedFuture(null);
         }
-        InvalidationEvent<K> event = InvalidationEvent.update(cacheName, key, record, nodeId);
+        InvalidationEvent<K> event = InvalidationEvent.update(cacheName, key, record, valueTypeName, nodeId);
         return publish(cacheName, event);
     }
 
@@ -139,6 +143,7 @@ public class RedisInvalidationBus<K> implements InvalidationBus<K> {
                     casted.setVersion(raw.getVersion());
                     casted.setNodeId(raw.getNodeId());
                     casted.setTimestamp(raw.getTimestamp());
+                    casted.setValueTypeName(raw.getValueTypeName());
                     casted.setKey((K) raw.getKey());
                     CacheRecord<Object> record = null;
                     if (raw.getRecord() != null) {

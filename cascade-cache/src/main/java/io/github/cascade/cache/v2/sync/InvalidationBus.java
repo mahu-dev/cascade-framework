@@ -13,7 +13,11 @@ public interface InvalidationBus<K> {
 
     CompletableFuture<Void> publishInvalidation(String cacheName, K key, long version, String nodeId);
 
-    CompletableFuture<Void> publishUpdate(String cacheName, K key, CacheRecord<?> record, String nodeId);
+    CompletableFuture<Void> publishUpdate(String cacheName,
+                                          K key,
+                                          CacheRecord<?> record,
+                                          String valueTypeName,
+                                          String nodeId);
 
     CompletableFuture<Void> publishClear(String cacheName, long version, String nodeId);
 
@@ -38,7 +42,11 @@ public interface InvalidationBus<K> {
         }
 
         @Override
-        public CompletableFuture<Void> publishUpdate(String cacheName, K key, CacheRecord<?> record, String nodeId) {
+        public CompletableFuture<Void> publishUpdate(String cacheName,
+                                                     K key,
+                                                     CacheRecord<?> record,
+                                                     String valueTypeName,
+                                                     String nodeId) {
             return CompletableFuture.completedFuture(null);
         }
 

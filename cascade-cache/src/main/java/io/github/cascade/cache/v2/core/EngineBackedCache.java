@@ -1,5 +1,6 @@
 package io.github.cascade.cache.v2.core;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.v2.consistency.VersionManager;
 import io.github.cascade.cache.v2.engine.ReadPipeline;
@@ -11,6 +12,7 @@ import io.github.cascade.cache.v2.model.InvalidationEvent;
 import io.github.cascade.cache.v2.observability.CacheMetricsCollector;
 import io.github.cascade.cache.v2.observability.CacheStatsSnapshot;
 import io.github.cascade.cache.v2.policy.CachePolicy;
+import io.github.cascade.cache.v2.policy.LockFailureStrategy;
 import io.github.cascade.cache.v2.policy.SyncMode;
 import io.github.cascade.cache.v2.store.L1CacheStore;
 import io.github.cascade.cache.v2.store.L2CacheStore;
@@ -49,6 +51,8 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     private final VersionManager<K> versionManager;
     private final DistLockCoordinator<K> lockCoordinator;
     private final CacheMetricsCollector metricsCollector;
+    private final Class<V> valueType;
+    private final ObjectMapper objectMapper = new ObjectMapper();
     private final String nodeId;
     private final ExecutorService asyncExecutor;
     private final ScheduledExecutorService refreshScheduler;
@@ -70,6 +74,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     private final AtomicLong refreshFail = new AtomicLong(0L);
     private final AtomicLong invalidatePublish = new AtomicLong(0L);
     private final AtomicLong invalidateConsume = new AtomicLong(0L);
+    private final AtomicLong syncUpdateFallback = new AtomicLong(0L);
     private final AtomicLong singleFlightJoin = new AtomicLong(0L);
     private final AtomicLong distLockDegrade = new AtomicLong(0L);
     private final AtomicLong eventLagMs = new AtomicLong(0L);
@@ -89,7 +94,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
                              DistLockCoordinator<K> lockCoordinator,
                              String nodeId) {
         this(cacheName, policy, l1Store, l2Store, loader, invalidationBus, versionManager, lockCoordinator, nodeId,
-                CacheMetricsCollector.create(cacheName, null));
+                null, CacheMetricsCollector.create(cacheName, null));
     }
 
     public EngineBackedCache(String cacheName,
@@ -102,6 +107,21 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
                              DistLockCoordinator<K> lockCoordinator,
                              String nodeId,
                              CacheMetricsCollector metricsCollector) {
+        this(cacheName, policy, l1Store, l2Store, loader, invalidationBus, versionManager, lockCoordinator, nodeId,
+                null, metricsCollector);
+    }
+
+    public EngineBackedCache(String cacheName,
+                             CachePolicy policy,
+                             L1CacheStore<K, V> l1Store,
+                             L2CacheStore<K, V> l2Store,
+                             Function<K, V> loader,
+                             InvalidationBus<K> invalidationBus,
+                             VersionManager<K> versionManager,
+                             DistLockCoordinator<K> lockCoordinator,
+                             String nodeId,
+                             Class<V> valueType,
+                             CacheMetricsCollector metricsCollector) {
         this.cacheName = cacheName;
         this.policy = policy;
         this.l1Store = l1Store;
@@ -111,6 +131,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         this.versionManager = versionManager;
         this.lockCoordinator = lockCoordinator;
         this.metricsCollector = metricsCollector != null ? metricsCollector : CacheMetricsCollector.create(cacheName, null);
+        this.valueType = valueType != null ? valueType : castObjectClass();
         this.nodeId = nodeId;
         this.asyncExecutor = Executors.newCachedThreadPool(r -> {
             Thread thread = new Thread(r, "cascade-async-" + cacheName);
@@ -126,6 +147,11 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
 
         startSyncIfNeeded();
         startRefreshIfNeeded();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> Class<T> castObjectClass() {
+        return (Class<T>) Object.class;
     }
 
     public void setLoaderIfAbsent(Function<K, V> loader) {
@@ -396,21 +422,35 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         if (!policy.isDistributedLockEnabled()) {
             return invokeLoaderAndWrite(key, ttlSeconds);
         }
-        return lockCoordinator.withLock(
+        DistLockCoordinator.LockResult<V> result = lockCoordinator.withLock(
                 cacheName,
                 key,
                 policy.getDistributedLockWaitMs(),
                 policy.getDistributedLockLeaseMs(),
-                () -> {
-                    Optional<CacheRecord<V>> latest = readFromL2(key);
-                    if (latest.isPresent() && !isHardExpired(latest.get())) {
-                        writeBackL1(key, latest.get());
-                        return latest.get().getValue();
-                    }
-                    return invokeLoaderAndWrite(key, ttlSeconds);
-                },
-                this::markDistLockDegrade
+                () -> loadWithL2RecheckThenSource(key, ttlSeconds)
         );
+        if (result.outcome() == DistLockCoordinator.Outcome.ACQUIRED) {
+            return result.value();
+        }
+
+        markDistLockDegrade();
+        if (policy.getLockFailureStrategy() == LockFailureStrategy.STRICT) {
+            if (result.error() != null) {
+                LOGGER.warn("分布式锁异常且采用STRICT策略，放弃加载: cache={}, key={}, error={}",
+                        cacheName, key, result.error().getMessage());
+            }
+            return null;
+        }
+        return loadWithL2RecheckThenSource(key, ttlSeconds);
+    }
+
+    private V loadWithL2RecheckThenSource(K key, long ttlSeconds) {
+        Optional<CacheRecord<V>> latest = readFromL2(key);
+        if (latest.isPresent() && !isHardExpired(latest.get())) {
+            writeBackL1(key, latest.get());
+            return latest.get().getValue();
+        }
+        return invokeLoaderAndWrite(key, ttlSeconds);
     }
 
     private V invokeLoaderAndWrite(K key, long ttlSeconds) {
@@ -569,7 +609,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
             return;
         }
         markSyncPublish();
-        invalidationBus.publishUpdate(cacheName, key, record, nodeId)
+        invalidationBus.publishUpdate(cacheName, key, record, valueType.getName(), nodeId)
                 .exceptionally(throwable -> {
                     LOGGER.debug("发布更新事件失败: cache={}, key={}, error={}", cacheName, key, throwable.getMessage());
                     return null;
@@ -577,10 +617,35 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     }
 
     private void publishWriteEvent(K key, CacheRecord<V> record) {
-        if (policy.getSyncMode() == SyncMode.UPDATE) {
+        if (shouldPublishUpdate(record)) {
             publishUpdate(key, record);
         } else {
             publishInvalidation(key, record != null ? record.getVersion() : 0L);
+        }
+    }
+
+    private boolean shouldPublishUpdate(CacheRecord<V> record) {
+        if (policy.getSyncMode() != SyncMode.UPDATE || !policy.isSyncUpdateEnabled() || record == null) {
+            return false;
+        }
+        Object value = record.getValue();
+        if (value == null) {
+            markSyncUpdateFallback();
+            return false;
+        }
+        try {
+            int payloadBytes = objectMapper.writeValueAsBytes(value).length;
+            if (payloadBytes > policy.getSyncUpdateMaxPayloadBytes()) {
+                markSyncUpdateFallback();
+                LOGGER.debug("UPDATE事件payload超限，降级为INVALIDATE: cache={}, keyPayloadBytes={}, limit={}",
+                        cacheName, payloadBytes, policy.getSyncUpdateMaxPayloadBytes());
+                return false;
+            }
+            return true;
+        } catch (Exception e) {
+            markSyncUpdateFallback();
+            LOGGER.debug("UPDATE事件payload序列化失败，降级为INVALIDATE: cache={}, error={}", cacheName, e.getMessage());
+            return false;
         }
     }
 
@@ -637,13 +702,38 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
 
         localVersion.put(key, incoming);
         if (event.getOperation() == InvalidationEvent.Operation.UPDATE) {
-            CacheRecord<Object> payload = event.getRecord();
-            if (payload == null || l1Store == null) {
+            applyUpdateOrInvalidate(key, event);
+            return;
+        }
+
+        if (l1Store != null) {
+            l1Store.evict(key);
+        }
+    }
+
+    private void applyUpdateOrInvalidate(K key, InvalidationEvent<K> event) {
+        CacheRecord<Object> payload = event.getRecord();
+        if (payload == null || l1Store == null) {
+            fallbackInvalidateOnUpdate(key, "payload为空或L1不可用");
+            return;
+        }
+        String eventType = event.getValueTypeName();
+        if (valueType != Object.class
+                && eventType != null
+                && !eventType.isBlank()
+                && !valueType.getName().equals(eventType)) {
+            fallbackInvalidateOnUpdate(key, "valueType不匹配: event=" + eventType + ", local=" + valueType.getName());
+            return;
+        }
+        try {
+            Object raw = payload.getValue();
+            if (raw == null) {
+                fallbackInvalidateOnUpdate(key, "payload.value为空");
                 return;
             }
-            @SuppressWarnings("unchecked")
+            V typedValue = valueType.isInstance(raw) ? valueType.cast(raw) : objectMapper.convertValue(raw, valueType);
             CacheRecord<V> casted = new CacheRecord<>(
-                    (V) payload.getValue(),
+                    typedValue,
                     payload.getVersion(),
                     payload.getWriteTimeMs(),
                     payload.getSoftExpireAtMs(),
@@ -652,12 +742,17 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
             );
             l1Store.put(key, casted);
             markBackfillL1();
-            return;
+        } catch (Exception e) {
+            fallbackInvalidateOnUpdate(key, "payload转换失败: " + e.getMessage());
         }
+    }
 
+    private void fallbackInvalidateOnUpdate(K key, String reason) {
+        markSyncUpdateFallback();
         if (l1Store != null) {
             l1Store.evict(key);
         }
+        LOGGER.debug("UPDATE事件降级为INVALIDATE: cache={}, key={}, reason={}", cacheName, key, reason);
     }
 
     public CacheStatsSnapshot statsSnapshot() {
@@ -671,6 +766,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
                 refreshFail.get(),
                 invalidatePublish.get(),
                 invalidateConsume.get(),
+                syncUpdateFallback.get(),
                 singleFlightJoin.get(),
                 distLockDegrade.get()
         );
@@ -682,11 +778,14 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         snapshot.put("cacheName", cacheName);
         snapshot.put("nodeId", nodeId);
         snapshot.put("policy.syncMode", policy.getSyncMode().name());
+        snapshot.put("policy.syncUpdateEnabled", policy.isSyncUpdateEnabled());
+        snapshot.put("policy.syncUpdateMaxPayloadBytes", policy.getSyncUpdateMaxPayloadBytes());
         snapshot.put("policy.autoRefresh", policy.isAutoRefreshEnabled());
         snapshot.put("policy.hardTtlSeconds", policy.getHardTtlSeconds());
         snapshot.put("policy.softTtlSeconds", policy.getSoftTtlSeconds());
         snapshot.put("policy.singleFlight", policy.isSingleFlightEnabled());
         snapshot.put("policy.distributedLock", policy.isDistributedLockEnabled());
+        snapshot.put("policy.lockFailureStrategy", policy.getLockFailureStrategy().name());
         snapshot.put("trackedKeys", trackedKeys.size());
         snapshot.put("refreshingKeys", refreshingKeys.size());
         snapshot.put("localVersionKeys", localVersion.size());
@@ -706,6 +805,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         snapshot.put("stats.refreshFail", stats.refreshFail());
         snapshot.put("stats.syncPublish", stats.invalidatePublish());
         snapshot.put("stats.syncConsume", stats.invalidateConsume());
+        snapshot.put("stats.syncUpdateFallback", stats.syncUpdateFallback());
         snapshot.put("stats.singleFlightJoin", stats.singleFlightJoin());
         snapshot.put("stats.distLockDegrade", stats.distLockDegrade());
         return snapshot;
@@ -754,6 +854,11 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     private void markSyncConsume() {
         invalidateConsume.incrementAndGet();
         metricsCollector.incSyncConsume();
+    }
+
+    private void markSyncUpdateFallback() {
+        syncUpdateFallback.incrementAndGet();
+        metricsCollector.incSyncUpdateFallback();
     }
 
     private void markSingleFlightJoin() {

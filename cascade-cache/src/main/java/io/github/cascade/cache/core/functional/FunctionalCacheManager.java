@@ -118,7 +118,7 @@ public class FunctionalCacheManager implements CacheManager {
         Function<K, V> finalLoader = resolveLoader(keyType, valueType, finalConfig, loader);
 
         Cache<K, V> cache = (Cache<K, V>) cacheRegistry.computeIfAbsent(cacheName, name ->
-                createCache(name, finalConfig, finalLoader));
+                createCache(name, valueType, finalConfig, finalLoader));
 
         if (cache instanceof EngineBackedCache<?, ?> && finalLoader != null) {
             ((EngineBackedCache<K, V>) cache).setLoaderIfAbsent(finalLoader);
@@ -248,6 +248,7 @@ public class FunctionalCacheManager implements CacheManager {
     }
 
     private <K, V> Cache<K, V> createCache(String cacheName,
+                                           Class<V> valueType,
                                            CascadeCacheProperties config,
                                            Function<K, V> loader) {
         CachePolicy policy = buildPolicy(config);
@@ -271,7 +272,7 @@ public class FunctionalCacheManager implements CacheManager {
         DistLockCoordinator<K> lockCoordinator = createDistLockCoordinator(cacheName, policy, config);
         CacheMetricsCollector metricsCollector = CacheMetricsCollector.create(cacheName, meterRegistry);
         EngineBackedCache<K, V> cache = new EngineBackedCache<>(
-                cacheName, policy, l1Store, l2Store, loader, bus, versionManager, lockCoordinator, nodeId,
+                cacheName, policy, l1Store, l2Store, loader, bus, versionManager, lockCoordinator, nodeId, valueType,
                 metricsCollector
         );
         LOGGER.info("V2缓存创建完成: cache={}, l1={}, l2={}, sync={}, refresh={}",
@@ -289,9 +290,15 @@ public class FunctionalCacheManager implements CacheManager {
 
         boolean l2Enabled = config.isL2Enabled() && redissonClient != null;
         SyncMode configuredSyncMode = config.getSyncConfig().getMode();
-        SyncMode syncMode = config.isSyncEnabled() && l2Enabled
-                ? (configuredSyncMode != null ? configuredSyncMode : SyncMode.INVALIDATE)
-                : SyncMode.NONE;
+        boolean syncEnabled = config.isSyncEnabled() && l2Enabled;
+        SyncMode syncMode = syncEnabled ? (configuredSyncMode != null ? configuredSyncMode : SyncMode.INVALIDATE) : SyncMode.NONE;
+        boolean syncUpdateEnabled = syncEnabled
+                && syncMode == SyncMode.UPDATE
+                && config.getSyncConfig().isUpdateEnabled();
+        if (syncMode == SyncMode.UPDATE && !syncUpdateEnabled) {
+            LOGGER.warn("检测到syncMode=UPDATE但未显式开启sync.updateEnabled，自动降级为INVALIDATE");
+            syncMode = SyncMode.INVALIDATE;
+        }
 
         return CachePolicy.builder()
                 .l1Enabled(config.isL1Enabled())
@@ -301,8 +308,11 @@ public class FunctionalCacheManager implements CacheManager {
                 .refreshIntervalSeconds(Math.max(1, config.getRefresh().getDefaultRefreshIntervalSeconds()))
                 .autoRefreshEnabled(config.isRefreshEnabled())
                 .syncMode(syncMode)
+                .syncUpdateEnabled(syncUpdateEnabled)
+                .syncUpdateMaxPayloadBytes(config.getSyncConfig().getUpdateMaxPayloadBytes())
                 .singleFlightEnabled(config.isSingleFlightEnabled())
                 .distributedLockEnabled(config.isDistributedLockEnabled())
+                .lockFailureStrategy(config.getLockFailureStrategy())
                 .distributedLockWaitMs(config.getDistributedLockWaitMs())
                 .distributedLockLeaseMs(config.getDistributedLockLeaseMs())
                 .hotKeyAccessThreshold(config.getHotKeyAccessThreshold())
@@ -410,6 +420,7 @@ public class FunctionalCacheManager implements CacheManager {
         public CacheBuilder<K, V> syncMode(SyncMode syncMode) {
             config.getSync().setMode(syncMode != null ? syncMode : SyncMode.INVALIDATE);
             config.getSync().setEnabled(syncMode != SyncMode.NONE);
+            config.getSync().setUpdateEnabled(syncMode == SyncMode.UPDATE);
             return this;
         }
 
@@ -465,6 +476,8 @@ public class FunctionalCacheManager implements CacheManager {
         target.getSync().setAsyncPublish(source.getSync().isAsyncPublish());
         target.getSync().setTimeoutMs(source.getSync().getTimeoutMs());
         target.getSync().setBatchSize(source.getSync().getBatchSize());
+        target.getSync().setUpdateEnabled(source.getSync().isUpdateEnabled());
+        target.getSync().setUpdateMaxPayloadBytes(source.getSync().getUpdateMaxPayloadBytes());
 
         target.getRefresh().setEnabled(source.getRefresh().isEnabled());
         target.getRefresh().setDefaultRefreshIntervalSeconds(source.getRefresh().getDefaultRefreshIntervalSeconds());
@@ -488,6 +501,7 @@ public class FunctionalCacheManager implements CacheManager {
         target.getProtection().setDistributedLockEnabled(source.getProtection().isDistributedLockEnabled());
         target.getProtection().setDistributedLockWaitMs(source.getProtection().getDistributedLockWaitMs());
         target.getProtection().setDistributedLockLeaseMs(source.getProtection().getDistributedLockLeaseMs());
+        target.getProtection().setLockFailureStrategy(source.getProtection().getLockFailureStrategy());
         target.getProtection().setHotKeyAccessThreshold(source.getProtection().getHotKeyAccessThreshold());
         target.getProtection().setMaxTrackedKeys(source.getProtection().getMaxTrackedKeys());
 

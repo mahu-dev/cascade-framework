@@ -283,6 +283,7 @@ public class CacheAspect {
         config.getL2().setEnabled(annotation.enableL2());
         config.getSync().setEnabled(annotation.enableSync());
         config.getSync().setMode(annotation.enableSync() ? annotation.syncMode() : SyncMode.NONE);
+        config.getSync().setUpdateEnabled(annotation.enableSync() && annotation.syncMode() == SyncMode.UPDATE);
         config.getRefresh().setEnabled(annotation.enableRefresh() || annotation.autoRefresh());
         config.getRefresh().setDefaultRefreshIntervalSeconds(annotation.refreshInterval());
         if (annotation.ttl() > 0) {
@@ -297,6 +298,7 @@ public class CacheAspect {
         config.getL2().setEnabled(annotation.enableL2());
         config.getSync().setEnabled(annotation.sync());
         config.getSync().setMode(annotation.sync() ? annotation.syncMode() : SyncMode.NONE);
+        config.getSync().setUpdateEnabled(annotation.sync() && annotation.syncMode() == SyncMode.UPDATE);
         config.getRefresh().setEnabled(annotation.autoRefresh());
         config.getRefresh().setDefaultRefreshIntervalSeconds(annotation.refreshInterval());
         if (annotation.ttl() > 0) {
@@ -311,6 +313,7 @@ public class CacheAspect {
         config.getL2().setEnabled(annotation.enableL2());
         config.getSync().setEnabled(annotation.syncMode() != SyncMode.NONE);
         config.getSync().setMode(annotation.syncMode());
+        config.getSync().setUpdateEnabled(annotation.syncMode() == SyncMode.UPDATE);
         config.getRefresh().setEnabled(annotation.autoRefresh());
         long softTtl = DurationParser.parseToSeconds(annotation.softTtl(), annotation.softTtlSeconds());
         if (softTtl > 0) {
@@ -353,6 +356,8 @@ public class CacheAspect {
         target.getSync().setAsyncPublish(source.getSync().isAsyncPublish());
         target.getSync().setTimeoutMs(source.getSync().getTimeoutMs());
         target.getSync().setBatchSize(source.getSync().getBatchSize());
+        target.getSync().setUpdateEnabled(source.getSync().isUpdateEnabled());
+        target.getSync().setUpdateMaxPayloadBytes(source.getSync().getUpdateMaxPayloadBytes());
 
         target.getRefresh().setEnabled(source.getRefresh().isEnabled());
         target.getRefresh().setDefaultRefreshIntervalSeconds(source.getRefresh().getDefaultRefreshIntervalSeconds());
@@ -376,6 +381,7 @@ public class CacheAspect {
         target.getProtection().setDistributedLockEnabled(source.getProtection().isDistributedLockEnabled());
         target.getProtection().setDistributedLockWaitMs(source.getProtection().getDistributedLockWaitMs());
         target.getProtection().setDistributedLockLeaseMs(source.getProtection().getDistributedLockLeaseMs());
+        target.getProtection().setLockFailureStrategy(source.getProtection().getLockFailureStrategy());
         target.getProtection().setHotKeyAccessThreshold(source.getProtection().getHotKeyAccessThreshold());
         target.getProtection().setMaxTrackedKeys(source.getProtection().getMaxTrackedKeys());
 

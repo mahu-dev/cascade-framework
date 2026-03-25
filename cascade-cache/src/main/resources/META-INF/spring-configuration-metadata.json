@@ -100,6 +100,20 @@
       "defaultValue": "INVALIDATE"
     },
     {
+      "name": "cascade.sync.update-enabled",
+      "type": "java.lang.Boolean",
+      "description": "是否显式开启UPDATE模式（默认false）",
+      "sourceType": "io.github.cascade.cache.configuration.SyncProperties",
+      "defaultValue": false
+    },
+    {
+      "name": "cascade.sync.update-max-payload-bytes",
+      "type": "java.lang.Integer",
+      "description": "UPDATE事件payload字节上限",
+      "sourceType": "io.github.cascade.cache.configuration.SyncProperties",
+      "defaultValue": 16384
+    },
+    {
       "name": "cascade.refresh.enabled",
       "type": "java.lang.Boolean",
       "description": "是否启用自动刷新",
@@ -126,6 +140,13 @@
       "description": "是否启用分布式锁防击穿",
       "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$ProtectionConfig",
       "defaultValue": true
+    },
+    {
+      "name": "cascade.protection.lock-failure-strategy",
+      "type": "io.github.cascade.cache.v2.policy.LockFailureStrategy",
+      "description": "分布式锁失败策略（DEGRADE/STRICT）",
+      "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$ProtectionConfig",
+      "defaultValue": "DEGRADE"
     },
     {
       "name": "cascade.loader.auto-discover",

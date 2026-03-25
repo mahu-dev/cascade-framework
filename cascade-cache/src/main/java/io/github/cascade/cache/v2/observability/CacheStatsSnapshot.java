@@ -13,6 +13,7 @@ public record CacheStatsSnapshot(
         long refreshFail,
         long invalidatePublish,
         long invalidateConsume,
+        long syncUpdateFallback,
         long singleFlightJoin,
         long distLockDegrade
 ) {

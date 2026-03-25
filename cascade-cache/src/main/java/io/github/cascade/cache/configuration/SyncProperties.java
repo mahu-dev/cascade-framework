@@ -54,6 +54,16 @@ public class SyncProperties {
     private int batchSize = 100;
 
     /**
+     * 是否允许 UPDATE 模式（默认关闭，需要显式开启）
+     */
+    private boolean updateEnabled = false;
+
+    /**
+     * UPDATE 模式最大 payload 字节数
+     */
+    private int updateMaxPayloadBytes = 16 * 1024;
+
+    /**
      * 同步类型枚举
      */
     @Getter
@@ -164,6 +174,22 @@ public class SyncProperties {
         return this;
     }
 
+    /**
+     * 设置是否允许 UPDATE 模式
+     */
+    public SyncProperties updateEnabled(boolean updateEnabled) {
+        this.updateEnabled = updateEnabled;
+        return this;
+    }
+
+    /**
+     * 设置 UPDATE payload 大小上限
+     */
+    public SyncProperties updateMaxPayloadBytes(int updateMaxPayloadBytes) {
+        this.updateMaxPayloadBytes = updateMaxPayloadBytes;
+        return this;
+    }
+
     // ==================== 静态工厂方法 ====================
 
     /**
@@ -201,16 +227,19 @@ public class SyncProperties {
             return true;
         }
 
-        return switch (type) {
+        boolean baseValid = switch (type) {
             case REDIS -> topicPrefix != null && !topicPrefix.trim().isEmpty();
             case LOCAL -> true;
             case CUSTOM -> true;
         };
+        return baseValid && updateMaxPayloadBytes > 0;
     }
 
     @Override
     public String toString() {
-        return String.format("SyncProperties{enabled=%s, mode=%s, type=%s, topicPrefix='%s', async=%s}",
-                enabled, mode, type, topicPrefix, asyncPublish);
+        return String.format(
+                "SyncProperties{enabled=%s, mode=%s, type=%s, topicPrefix='%s', async=%s, updateEnabled=%s, updateMaxPayloadBytes=%d}",
+                enabled, mode, type, topicPrefix, asyncPublish, updateEnabled, updateMaxPayloadBytes
+        );
     }
 }

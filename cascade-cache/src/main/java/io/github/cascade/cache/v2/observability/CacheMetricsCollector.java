@@ -65,6 +65,10 @@ public class CacheMetricsCollector {
         increment("cascade.cache.sync.consume");
     }
 
+    public void incSyncUpdateFallback() {
+        increment("cascade.cache.sync.update.fallback");
+    }
+
     public void recordEventLag(long lagMs) {
         if (registry == null || lagMs < 0) {
             return;

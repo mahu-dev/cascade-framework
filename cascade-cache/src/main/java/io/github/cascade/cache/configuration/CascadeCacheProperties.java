@@ -2,6 +2,7 @@ package io.github.cascade.cache.configuration;
 
 import lombok.Data;
 import lombok.experimental.Accessors;
+import io.github.cascade.cache.v2.policy.LockFailureStrategy;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 
@@ -241,6 +242,11 @@ public class CascadeCacheProperties {
         private long distributedLockLeaseMs = 3000;
 
         /**
+         * 分布式锁失败策略（默认降级）
+         */
+        private LockFailureStrategy lockFailureStrategy = LockFailureStrategy.DEGRADE;
+
+        /**
          * 热点 key 追踪阈值（访问次数）
          */
         private int hotKeyAccessThreshold = 3;
@@ -394,6 +400,10 @@ public class CascadeCacheProperties {
 
     public long getDistributedLockLeaseMs() {
         return protection.distributedLockLeaseMs;
+    }
+
+    public LockFailureStrategy getLockFailureStrategy() {
+        return protection.lockFailureStrategy;
     }
 
     public int getHotKeyAccessThreshold() {

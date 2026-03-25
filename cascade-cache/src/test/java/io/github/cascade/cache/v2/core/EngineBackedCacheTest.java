@@ -6,6 +6,7 @@ import io.github.cascade.cache.v2.loader.DistLockCoordinator;
 import io.github.cascade.cache.v2.model.CacheRecord;
 import io.github.cascade.cache.v2.model.InvalidationEvent;
 import io.github.cascade.cache.v2.policy.CachePolicy;
+import io.github.cascade.cache.v2.policy.LockFailureStrategy;
 import io.github.cascade.cache.v2.policy.SyncMode;
 import io.github.cascade.cache.v2.store.CaffeineL1Store;
 import io.github.cascade.cache.v2.store.L2CacheStore;
@@ -214,6 +215,7 @@ class EngineBackedCacheTest {
                 .l2Enabled(false)
                 .autoRefreshEnabled(false)
                 .syncMode(SyncMode.UPDATE)
+                .syncUpdateEnabled(true)
                 .build();
         CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
         VersionManager<String> versionManager = new LocalVersionManager<>();
@@ -230,9 +232,104 @@ class EngineBackedCacheTest {
                     "new", 2L, System.currentTimeMillis(), System.currentTimeMillis() + 60_000,
                     System.currentTimeMillis() + 120_000, "node-2"
             );
-            bus.emitUpdate("user", "k4", newRecord, "node-2");
+            bus.emitUpdate("user", "k4", newRecord, String.class.getName(), "node-2");
 
             assertEquals("new", l1.get("k4").map(CacheRecord::getValue).orElse(null));
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
+    void shouldFallbackToInvalidateWhenUpdateTypeMismatch() {
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(false)
+                .autoRefreshEnabled(false)
+                .syncMode(SyncMode.UPDATE)
+                .syncUpdateEnabled(true)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user", policy, l1, null, null, bus, versionManager, DistLockCoordinator.noop(), "node-1",
+                String.class, null
+        );
+        try {
+            long now = System.currentTimeMillis();
+            l1.put("k5", new CacheRecord<>("old", 1L, now, now + 60_000, now + 60_000, "node-1"));
+            CacheRecord<String> update = new CacheRecord<>("new", 2L, now, now + 60_000, now + 60_000, "node-2");
+
+            bus.emitUpdate("user", "k5", update, Integer.class.getName(), "node-2");
+
+            assertFalse(l1.get("k5").isPresent(), "UPDATE类型不匹配时应降级为失效");
+            assertEquals(1L, cache.statsSnapshot().syncUpdateFallback());
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
+    void shouldFallbackToInvalidateWhenUpdatePayloadTooLarge() {
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(false)
+                .autoRefreshEnabled(false)
+                .syncMode(SyncMode.UPDATE)
+                .syncUpdateEnabled(true)
+                .syncUpdateMaxPayloadBytes(4)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user", policy, l1, null, null, bus, versionManager, DistLockCoordinator.noop(), "node-1",
+                String.class, null
+        );
+        try {
+            cache.put("k6", "payload-too-large");
+            assertEquals(InvalidationEvent.Operation.INVALIDATE, bus.lastPublishedOperation,
+                    "超限payload应降级为INVALIDATE事件");
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
+    void shouldNotLoadWhenLockUnavailableAndStrictStrategy() {
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(false)
+                .autoRefreshEnabled(false)
+                .syncMode(SyncMode.NONE)
+                .singleFlightEnabled(false)
+                .distributedLockEnabled(true)
+                .lockFailureStrategy(LockFailureStrategy.STRICT)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+        AtomicInteger sourceCalls = new AtomicInteger(0);
+        DistLockCoordinator<String> denyLock = new DistLockCoordinator<>() {
+            @Override
+            public <T> LockResult<T> withLock(String cacheName,
+                                              String key,
+                                              long waitMs,
+                                              long leaseMs,
+                                              java.util.function.Supplier<T> supplier) {
+                return LockResult.notAcquired();
+            }
+        };
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user", policy, l1, null, k -> "v-" + sourceCalls.incrementAndGet(), bus, versionManager, denyLock, "node-1"
+        );
+        try {
+            assertTrue(cache.get("k7").isEmpty(), "STRICT策略下锁失败应放弃加载");
+            assertEquals(0, sourceCalls.get(), "STRICT策略下不应执行加载器");
         } finally {
             cache.close();
         }
@@ -284,9 +381,11 @@ class EngineBackedCacheTest {
     private static final class TestBus<K> implements InvalidationBus<K> {
 
         private final Map<String, Consumer<InvalidationEvent<K>>> handlers = new ConcurrentHashMap<>();
+        private volatile InvalidationEvent.Operation lastPublishedOperation;
 
         @Override
         public CompletableFuture<Void> publishInvalidation(String cacheName, K key, long version, String nodeId) {
+            lastPublishedOperation = InvalidationEvent.Operation.INVALIDATE;
             Consumer<InvalidationEvent<K>> handler = handlers.get(cacheName);
             if (handler != null) {
                 handler.accept(InvalidationEvent.invalidate(cacheName, key, version, nodeId));
@@ -295,16 +394,22 @@ class EngineBackedCacheTest {
         }
 
         @Override
-        public CompletableFuture<Void> publishUpdate(String cacheName, K key, CacheRecord<?> record, String nodeId) {
+        public CompletableFuture<Void> publishUpdate(String cacheName,
+                                                     K key,
+                                                     CacheRecord<?> record,
+                                                     String valueTypeName,
+                                                     String nodeId) {
+            lastPublishedOperation = InvalidationEvent.Operation.UPDATE;
             Consumer<InvalidationEvent<K>> handler = handlers.get(cacheName);
             if (handler != null) {
-                handler.accept(InvalidationEvent.update(cacheName, key, record, nodeId));
+                handler.accept(InvalidationEvent.update(cacheName, key, record, valueTypeName, nodeId));
             }
             return CompletableFuture.completedFuture(null);
         }
 
         @Override
         public CompletableFuture<Void> publishClear(String cacheName, long version, String nodeId) {
+            lastPublishedOperation = InvalidationEvent.Operation.CLEAR;
             Consumer<InvalidationEvent<K>> handler = handlers.get(cacheName);
             if (handler != null) {
                 handler.accept(InvalidationEvent.clear(cacheName, version, nodeId));
@@ -344,10 +449,14 @@ class EngineBackedCacheTest {
             }
         }
 
-        private void emitUpdate(String cacheName, K key, CacheRecord<?> record, String nodeId) {
+        private void emitUpdate(String cacheName,
+                                K key,
+                                CacheRecord<?> record,
+                                String valueTypeName,
+                                String nodeId) {
             Consumer<InvalidationEvent<K>> handler = handlers.get(cacheName);
             if (handler != null) {
-                handler.accept(InvalidationEvent.update(cacheName, key, record, nodeId));
+                handler.accept(InvalidationEvent.update(cacheName, key, record, valueTypeName, nodeId));
             }
         }
     }
