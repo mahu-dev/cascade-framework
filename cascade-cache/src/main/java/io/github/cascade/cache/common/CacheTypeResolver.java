@@ -1,5 +1,7 @@
 package io.github.cascade.cache.common;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import io.github.cascade.cache.common.exception.CacheConfigurationException;
 import org.aspectj.lang.JoinPoint;
 import org.aspectj.lang.reflect.MethodSignature;
@@ -13,7 +15,7 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * @author lionel lionelk@163.com
@@ -31,7 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>
  * 设计原则：
  * 1. 智能推断：通过方法签名自动推断泛型类型
- * 2. 缓存优化：缓存类型推断结果，避免重复反射
+ * 2. 缓存优化：使用Caffeine缓存类型推断结果，避免重复反射和内存泄漏
  * 3. 兼容性：支持各种复杂泛型场景
  * 4. 降级策略：推断失败时提供合理的默认类型
  *
@@ -41,8 +43,15 @@ public class CacheTypeResolver {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(CacheTypeResolver.class);
 
-    // 类型推断结果缓存
-    private static final Map<String, TypeInferenceResult> TYPE_INFERENCE_CACHE = new ConcurrentHashMap<>();
+    // 最大缓存大小
+    private static final int MAX_CACHE_SIZE = 10_000;
+
+    // 类型推断结果缓存 (使用Caffeine避免内存泄漏)
+    private static final Cache<String, TypeInferenceResult> TYPE_INFERENCE_CACHE = Caffeine.newBuilder()
+            .maximumSize(MAX_CACHE_SIZE)
+            .expireAfterAccess(1, TimeUnit.HOURS)
+            .recordStats()
+            .build();
 
     // 默认缓存类型
     private static final Class<?> DEFAULT_KEY_TYPE = String.class;
@@ -63,7 +72,7 @@ public class CacheTypeResolver {
             return inferKeyTypeFromMethod(method, joinPoint.getArgs());
         } catch (Exception e) {
             LOGGER.warn("无法推断键类型，使用默认类型: method={}, error={}",
-                joinPoint.getSignature().toShortString(), e.getMessage());
+                    joinPoint.getSignature().toShortString(), e.getMessage());
             return DEFAULT_KEY_TYPE;
         }
     }
@@ -77,7 +86,7 @@ public class CacheTypeResolver {
             return inferValueTypeFromMethod(method, joinPoint.getArgs());
         } catch (Exception e) {
             LOGGER.warn("无法推断值类型，使用默认类型: method={}, error={}",
-                joinPoint.getSignature().toShortString(), e.getMessage());
+                    joinPoint.getSignature().toShortString(), e.getMessage());
             return DEFAULT_VALUE_TYPE;
         }
     }
@@ -110,42 +119,26 @@ public class CacheTypeResolver {
     public static Class<?> inferValueTypeFromMethod(Method method, Object[] args) {
         String cacheKey = buildCacheKey(method);
 
-        // 尝试从缓存获取
-        TypeInferenceResult cached = TYPE_INFERENCE_CACHE.get(cacheKey);
-        if (cached != null) {
-            LOGGER.debug("从缓存获取值类型: method={}, valueType={}", method.getName(), cached.valueType.getSimpleName());
-            return cached.valueType;
-        }
+        // 使用 Caffeine 的 get 方法，原子性地获取或计算
+        TypeInferenceResult result = TYPE_INFERENCE_CACHE.get(cacheKey, key -> {
+            Class<?> valueType = doInferValueType(method);
+            LOGGER.debug("推断值类型: method={}, valueType={}", method.getName(), valueType.getSimpleName());
+            return new TypeInferenceResult(null, valueType);
+        });
 
-        // 执行类型推断
-        Class<?> valueType = doInferValueType(method);
-
-        // 缓存推断结果
-        TypeInferenceResult result = new TypeInferenceResult(null, valueType);
-        TYPE_INFERENCE_CACHE.put(cacheKey, result);
-
-        LOGGER.debug("推断值类型: method={}, valueType={}", method.getName(), valueType.getSimpleName());
-        return valueType;
+        return result != null ? result.valueType : DEFAULT_VALUE_TYPE;
     }
 
     // ==================== 类型验证方法 ====================
 
     /**
      * 验证键类型是否有效
+     * <p>
+     * 优化：大部分IDE和编译器会确保类型安全，此运行时检查可简化
      */
     public static boolean isValidKeyType(Class<?> keyType) {
-        if (keyType == null) {
-            return false;
-        }
-
-        // 键类型必须实现equals和hashCode
-        try {
-            keyType.getMethod("equals", Object.class);
-            keyType.getMethod("hashCode");
-            return true;
-        } catch (NoSuchMethodException e) {
-            return false;
-        }
+        // 只要不为null就是有效的，Java中所有对象都继承Object，都有equals和hashCode
+        return keyType != null;
     }
 
     /**
@@ -161,18 +154,18 @@ public class CacheTypeResolver {
     public static void validateTypePair(Class<?> keyType, Class<?> valueType) {
         if (!isValidKeyType(keyType)) {
             throw new CacheConfigurationException("keyType", keyType,
-                "键类型必须实现equals和hashCode方法", null);
+                    "键类型不能为空", null);
         }
 
         if (!isValidValueType(valueType)) {
             throw new CacheConfigurationException("valueType", valueType,
-                "值类型不能为基本类型", null);
+                    "值类型不能为基本类型 (请使用包装类)", null);
         }
 
         // 检查是否为void类型
         if (valueType == void.class || valueType == Void.class) {
             throw new CacheConfigurationException("valueType", valueType,
-                "值类型不能为void", null);
+                    "值类型不能为void", null);
         }
     }
 
@@ -201,7 +194,7 @@ public class CacheTypeResolver {
         }
 
         throw new CacheConfigurationException("keyType", targetType,
-            "无法将键从" + key.getClass().getSimpleName() + "转换为" + targetType.getSimpleName(), null);
+                "无法将键从" + key.getClass().getSimpleName() + "转换为" + targetType.getSimpleName(), null);
     }
 
     /**
@@ -344,7 +337,7 @@ public class CacheTypeResolver {
      */
     private static String buildCacheKey(Method method) {
         return method.getDeclaringClass().getName() + "." + method.getName() +
-               Arrays.toString(method.getParameterTypes());
+                Arrays.toString(method.getParameterTypes());
     }
 
     @SuppressWarnings("unchecked")
@@ -368,7 +361,7 @@ public class CacheTypeResolver {
         }
 
         throw new CacheConfigurationException("typeConversion", targetType,
-            "无法将值从" + value.getClass().getSimpleName() + "转换为" + targetType.getSimpleName(), null);
+                "无法将值从" + value.getClass().getSimpleName() + "转换为" + targetType.getSimpleName(), null);
     }
 
     // ==================== 缓存管理方法 ====================
@@ -377,9 +370,9 @@ public class CacheTypeResolver {
      * 清理类型推断缓存
      */
     public static void clearCache() {
-        int count = TYPE_INFERENCE_CACHE.size();
-        TYPE_INFERENCE_CACHE.clear();
-        LOGGER.info("类型推断缓存已清理，共清理: {} 个条目", count);
+        long count = TYPE_INFERENCE_CACHE.estimatedSize();
+        TYPE_INFERENCE_CACHE.invalidateAll();
+        LOGGER.info("类型推断缓存已清理，共清理约: {} 个条目", count);
     }
 
     /**
@@ -387,7 +380,7 @@ public class CacheTypeResolver {
      */
     public static TypeInferenceStats getStats() {
         return TypeInferenceStats.builder()
-                .cachedInferenceCount(TYPE_INFERENCE_CACHE.size())
+                .cachedInferenceCount((int) TYPE_INFERENCE_CACHE.estimatedSize())
                 .build();
     }
 

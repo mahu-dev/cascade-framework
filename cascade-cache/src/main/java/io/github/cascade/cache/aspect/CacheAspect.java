@@ -7,7 +7,6 @@ import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheManager;
 import io.github.cascade.cache.common.CacheTypeResolver;
 import io.github.cascade.cache.common.exception.CacheExceptionHandler;
-import io.github.cascade.cache.core.functional.FunctionalCacheManager;
 import org.aspectj.lang.JoinPoint;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
@@ -66,7 +65,7 @@ public class CacheAspect {
 
     @Around("@annotation(cacheable)")
     public Object handleCacheable(ProceedingJoinPoint joinPoint, Cacheable cacheable) throws Throwable {
-        String cacheName = resolveCacheName(joinPoint, cacheable.value());
+        String cacheName = resolveCacheName(cacheable.value());
         Object cacheKey = evaluateCacheKey(joinPoint, cacheable.key());
 
         logCacheableStart(cacheName, cacheKey);
@@ -92,7 +91,6 @@ public class CacheAspect {
 
                 if (result != null) {
                     putToCache(cache, cacheName, cacheKey, result, cacheable.ttl());
-                    enableRefreshIfNeeded(cache, cacheName, cacheKey, cacheable);
                 }
 
                 return result;
@@ -112,7 +110,7 @@ public class CacheAspect {
 
     @Around("@annotation(cachePut)")
     public Object handleCachePut(ProceedingJoinPoint joinPoint, CachePut cachePut) throws Throwable {
-        String cacheName = resolveCacheName(joinPoint, cachePut.value());
+        String cacheName = resolveCacheName(cachePut.value());
         Object cacheKey = evaluateCacheKey(joinPoint, cachePut.key());
 
         logCachePutStart(cacheName, cacheKey);
@@ -129,7 +127,6 @@ public class CacheAspect {
                 if (result != null) {
                     Cache<Object, Object> cache = getOrCreateCache(joinPoint, cacheName, cachePut);
                     putToCache(cache, cacheName, cacheKey, result, cachePut.ttl());
-                    enableRefreshIfNeeded(cache, cacheName, cacheKey, cachePut);
                 }
 
                 return result;
@@ -149,7 +146,7 @@ public class CacheAspect {
 
     @Around("@annotation(cacheEvict)")
     public Object handleCacheEvict(ProceedingJoinPoint joinPoint, CacheEvict cacheEvict) throws Throwable {
-        String cacheName = resolveCacheName(joinPoint, cacheEvict.value());
+        String cacheName = resolveCacheName(cacheEvict.value());
         Object cacheKey = evaluateCacheKey(joinPoint, cacheEvict.key());
 
         logCacheEvictStart(cacheName, cacheKey);
@@ -191,14 +188,13 @@ public class CacheAspect {
 
     /**
      * 解析缓存名称
+     * 优化：移除不必要的异常包装，直接检查
      */
-    private String resolveCacheName(JoinPoint joinPoint, String cacheName) {
-        return CacheExceptionHandler.safeExecute(() -> {
-            if (!StringUtils.hasText(cacheName)) {
-                throw new IllegalArgumentException("缓存名称不能为空");
-            }
-            return cacheName;
-        }, "default");
+    private String resolveCacheName(String cacheName) {
+        if (!StringUtils.hasText(cacheName)) {
+            throw new IllegalArgumentException("缓存名称不能为空");
+        }
+        return cacheName;
     }
 
     /**
@@ -238,7 +234,6 @@ public class CacheAspect {
                     cacheName, keyType.getSimpleName(), valueType.getSimpleName());
 
             // 注意：新的设计中，通过配置自动应用装饰器（自动刷新、分布式同步等）
-            // 不再需要显式调用 getOrCreateDistributedAutoRefreshCache()
             if (annotation instanceof Cacheable) {
                 return (Cache<Object, Object>) cacheManager.getOrCreateCache(cacheName, keyType, valueType);
             } else if (annotation instanceof CachePut) {
@@ -294,37 +289,6 @@ public class CacheAspect {
                 LOGGER.debug("缓存已全部清除: cache={}", cacheName);
             } else {
                 LOGGER.warn("缓存不存在，跳过清除: cache={}", cacheName);
-            }
-            return null;
-        }, null);
-    }
-
-    /**
-     * 启用自动刷新（如果需要）
-     * <p>
-     * 注意：在新的设计中，自动刷新通过配置自动应用，不需要显式调用
-     * 此方法保留用于兼容性，但实际上不再需要手动启用刷新器
-     */
-    private void enableRefreshIfNeeded(Cache<Object, Object> cache, String cacheName, Object key, Object annotation) {
-        CacheExceptionHandler.safeExecute(() -> {
-            // 检查是否启用自动刷新
-            boolean enableRefresh = false;
-            long refreshInterval = -1;
-
-            if (annotation instanceof Cacheable) {
-                Cacheable cacheable = (Cacheable) annotation;
-                enableRefresh = cacheable.autoRefresh();
-                refreshInterval = cacheable.refreshInterval();
-            } else if (annotation instanceof CachePut) {
-                CachePut cachePut = (CachePut) annotation;
-                enableRefresh = cachePut.autoRefresh();
-                refreshInterval = cachePut.refreshInterval();
-            }
-
-            if (enableRefresh && refreshInterval > 0) {
-                // 新设计：刷新器在缓存创建时自动应用，无需手动启用
-                LOGGER.debug("自动刷新配置已检测: cache={}, interval={}s（通过配置自动应用）",
-                        cacheName, refreshInterval);
             }
             return null;
         }, null);

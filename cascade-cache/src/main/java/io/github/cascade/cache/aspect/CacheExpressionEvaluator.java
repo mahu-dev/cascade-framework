@@ -1,5 +1,7 @@
 package io.github.cascade.cache.aspect;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import org.aspectj.lang.JoinPoint;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.slf4j.Logger;
@@ -13,28 +15,29 @@ import org.springframework.expression.spel.support.StandardEvaluationContext;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * @author lionel lionelk@163.com
- * =============================
- * Date: 2025/10/29
- * Time: 17:10
- * =============================
+ *         =============================
+ *         Date: 2025/10/29
+ *         Time: 17:10
+ *         =============================
  *
- * 缓存表达式求值器 - 专门处理SpEL表达式的解析和求值
- * <p>
- * 设计原则：
- * 1. 性能优先：缓存编译后的表达式，避免重复解析
- * 2. 线程安全：使用ConcurrentHashMap缓存表达式
- * 3. 错误处理：优雅处理表达式解析和求值异常
- * 4. 功能完整：支持变量、方法调用、条件判断等
- * <p>
- * 使用场景：
- * - @Cacheable注解的key和condition表达式求值
- * - @CachePut注解的condition表达式求值
- * - @CacheEvict注解的key表达式求值
+ *         缓存表达式求值器 - 专门处理SpEL表达式的解析和求值
+ *         <p>
+ *         设计原则：
+ *         1. 性能优先：缓存编译后的表达式，避免重复解析
+ *         2. 线程安全：使用Caffeine Cache (线程安全) 缓存表达式
+ *         3. 错误处理：优雅处理表达式解析和求值异常
+ *         4. 功能完整：支持变量、方法调用、条件判断等
+ *         5. 资源管理：有限的缓存容量，避免内存溢出
+ *
+ *         <p>
+ *         使用场景：
+ *         - @Cacheable注解的key和condition表达式求值
+ *         - @CachePut注解的condition表达式求值
+ *         - @CacheEvict注解的key表达式求值
  */
 public class CacheExpressionEvaluator {
 
@@ -44,21 +47,22 @@ public class CacheExpressionEvaluator {
     private static final ExpressionParser EXPRESSION_PARSER = new SpelExpressionParser();
 
     // 参数名发现器
-    private static final DefaultParameterNameDiscoverer PARAMETER_NAME_DISCOVERER =
-        new DefaultParameterNameDiscoverer();
+    private static final DefaultParameterNameDiscoverer PARAMETER_NAME_DISCOVERER = new DefaultParameterNameDiscoverer();
 
-    // 表达式缓存，避免重复解析
-    private static final Map<String, Expression> EXPRESSION_CACHE = new ConcurrentHashMap<>();
-
-    // 最大缓存表达式数量
-    private static final int MAX_CACHE_SIZE = 1000;
+    // 表达式缓存，避免重复解析 (使用Caffeine)
+    private static final int MAX_CACHE_SIZE = 5_000;
+    private static final Cache<String, Expression> EXPRESSION_CACHE = Caffeine.newBuilder()
+            .maximumSize(MAX_CACHE_SIZE)
+            .expireAfterAccess(2, TimeUnit.HOURS)
+            .recordStats()
+            .build();
 
     /**
      * 求值SpEL表达式
      *
      * @param expressionString SpEL表达式字符串
-     * @param joinPoint 切点信息
-     * @param result 方法执行结果（用于after-returning通知）
+     * @param joinPoint        切点信息
+     * @param result           方法执行结果（用于after-returning通知）
      * @return 求值结果
      */
     public Object evaluate(String expressionString, JoinPoint joinPoint, Object result) {
@@ -89,9 +93,9 @@ public class CacheExpressionEvaluator {
      * 求值SpEL表达式并返回指定类型
      *
      * @param expressionString SpEL表达式字符串
-     * @param joinPoint 切点信息
-     * @param result 方法执行结果
-     * @param desiredType 期望的返回类型
+     * @param joinPoint        切点信息
+     * @param result           方法执行结果
+     * @param desiredType      期望的返回类型
      * @return 求值结果
      */
     @SuppressWarnings("unchecked")
@@ -109,11 +113,11 @@ public class CacheExpressionEvaluator {
 
             // 尝试类型转换
             return EXPRESSION_PARSER.parseExpression(expressionString).getValue(
-                createEvaluationContext(joinPoint, result), desiredType);
+                    createEvaluationContext(joinPoint, result), desiredType);
 
         } catch (Exception e) {
             LOGGER.warn("SpEL表达式类型转换失败: expression={}, desiredType={}, actualType={}, error={}",
-                expressionString, desiredType.getSimpleName(), value.getClass().getSimpleName(), e.getMessage());
+                    expressionString, desiredType.getSimpleName(), value.getClass().getSimpleName(), e.getMessage());
             return null;
         }
     }
@@ -122,8 +126,8 @@ public class CacheExpressionEvaluator {
      * 求值布尔表达式
      *
      * @param expressionString 布尔表达式字符串
-     * @param joinPoint 切点信息
-     * @param result 方法执行结果
+     * @param joinPoint        切点信息
+     * @param result           方法执行结果
      * @return 布尔值，表达式无效时默认返回true
      */
     public boolean evaluateBoolean(String expressionString, JoinPoint joinPoint, Object result) {
@@ -144,13 +148,7 @@ public class CacheExpressionEvaluator {
      * @return 编译后的表达式
      */
     private Expression getOrCompileExpression(String expressionString) {
-        // 检查缓存大小限制
-        if (EXPRESSION_CACHE.size() >= MAX_CACHE_SIZE) {
-            LOGGER.warn("表达式缓存已达到上限: {}, 清理缓存", MAX_CACHE_SIZE);
-            EXPRESSION_CACHE.clear();
-        }
-
-        return EXPRESSION_CACHE.computeIfAbsent(expressionString, expr -> {
+        return EXPRESSION_CACHE.get(expressionString, expr -> {
             LOGGER.debug("编译SpEL表达式: {}", expr);
             return EXPRESSION_PARSER.parseExpression(expr);
         });
@@ -160,7 +158,7 @@ public class CacheExpressionEvaluator {
      * 创建求值上下文
      *
      * @param joinPoint 切点信息
-     * @param result 方法执行结果
+     * @param result    方法执行结果
      * @return 求值上下文
      */
     private EvaluationContext createEvaluationContext(JoinPoint joinPoint, Object result) {
@@ -201,9 +199,9 @@ public class CacheExpressionEvaluator {
      * 清理表达式缓存
      */
     public static void clearCache() {
-        int count = EXPRESSION_CACHE.size();
-        EXPRESSION_CACHE.clear();
-        LOGGER.info("SpEL表达式缓存已清理，共清理: {} 个表达式", count);
+        long count = EXPRESSION_CACHE.estimatedSize();
+        EXPRESSION_CACHE.invalidateAll();
+        LOGGER.info("SpEL表达式缓存已清理，共清理约: {} 个表达式", count);
     }
 
     /**
@@ -213,9 +211,9 @@ public class CacheExpressionEvaluator {
      */
     public static ExpressionCacheStats getCacheStats() {
         return ExpressionCacheStats.builder()
-                .cachedExpressionCount(EXPRESSION_CACHE.size())
+                .cachedExpressionCount((int) EXPRESSION_CACHE.estimatedSize())
                 .maxCacheSize(MAX_CACHE_SIZE)
-                .cacheUsageRatio((double) EXPRESSION_CACHE.size() / MAX_CACHE_SIZE)
+                .cacheUsageRatio((double) EXPRESSION_CACHE.estimatedSize() / MAX_CACHE_SIZE)
                 .build();
     }
 
@@ -252,7 +250,8 @@ public class CacheExpressionEvaluator {
 
         @Override
         public String toString() {
-            return String.format("ExpressionCacheStats{cachedExpressionCount=%d, maxCacheSize=%d, cacheUsageRatio=%.2f}",
+            return String.format(
+                    "ExpressionCacheStats{cachedExpressionCount=%d, maxCacheSize=%d, cacheUsageRatio=%.2f}",
                     cachedExpressionCount, maxCacheSize, cacheUsageRatio);
         }
 
