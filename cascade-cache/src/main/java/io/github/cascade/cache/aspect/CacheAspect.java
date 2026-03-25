@@ -5,314 +5,351 @@ import io.github.cascade.cache.annotation.CachePut;
 import io.github.cascade.cache.annotation.Cacheable;
 import io.github.cascade.cache.api.Cache;
 import io.github.cascade.cache.api.CacheManager;
-import io.github.cascade.cache.common.CacheTypeResolver;
-import io.github.cascade.cache.common.exception.CacheExceptionHandler;
+import io.github.cascade.cache.configuration.CascadeCacheProperties;
+import io.github.cascade.cache.v2.support.DefaultCacheKeyGenerator;
 import org.aspectj.lang.JoinPoint;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
+import org.aspectj.lang.reflect.MethodSignature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.Order;
 import org.springframework.util.StringUtils;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.util.Map;
 import java.util.Optional;
-import java.util.function.Supplier;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 /**
- * @author lionel lionelk@163.com
- * =============================
- * Date: 2025/10/29
- * Time: 17:32
- * =============================
- */
-
-/**
- * 统一缓存切面实现（重构版）
- * <p>
- * 设计原则：
- * 1. 统一处理：一个切面处理所有缓存注解
- * 2. 性能优先：优化热点路径，使用工具类减少复杂度
- * 3. 异常安全：缓存异常不影响业务方法执行
- * 4. 职责分离：使用专门工具类处理SpEL解析和类型推断
- * <p>
- * P1级重构优化（2025-10-29）：
- * - 使用CacheExceptionHandler统一异常处理
- * - 使用CacheTypeResolver优化类型推断
- * - 简化切面逻辑，专注AOP处理
- * - 统一Logger命名规范
- * - 增强异常处理和日志记录
- * - 支持自动刷新功能
+ * V2 统一缓存切面。
+ *
+ * 目标：
+ * 1. 注解式与编程式共享同一缓存引擎。
+ * 2. 默认 cacheName/key 行为与注释一致。
+ * 3. 修复 @CacheEvict 条件和 beforeInvocation 语义。
  */
 @Aspect
-@Order(1) // 高优先级，确保在其他切面之前执行
+@Order(1)
 public class CacheAspect {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(CacheAspect.class);
 
     private final CacheManager cacheManager;
+    private final CascadeCacheProperties defaultConfig;
     private final CacheExpressionEvaluator expressionEvaluator;
-    private final CacheTypeResolver typeResolver;
 
-    public CacheAspect(CacheManager cacheManager) {
+    /**
+     * cacheName -> key -> invocation snapshot
+     * 用于注解路径自动刷新时回放方法调用。
+     */
+    private final Map<String, Map<Object, InvocationSnapshot>> invocationSnapshots = new ConcurrentHashMap<>();
+    private final ThreadLocal<Boolean> internalInvocation = ThreadLocal.withInitial(() -> false);
+
+    public CacheAspect(CacheManager cacheManager, CascadeCacheProperties defaultConfig) {
         this.cacheManager = cacheManager;
+        this.defaultConfig = defaultConfig != null ? defaultConfig : CascadeCacheProperties.defaults();
         this.expressionEvaluator = new CacheExpressionEvaluator();
-        this.typeResolver = new CacheTypeResolver();
-        LOGGER.info("缓存切面已初始化，使用专用表达式求值器和类型解析器");
     }
-
-    // ==================== @Cacheable 处理 ====================
 
     @Around("@annotation(cacheable)")
     public Object handleCacheable(ProceedingJoinPoint joinPoint, Cacheable cacheable) throws Throwable {
-        String cacheName = resolveCacheName(cacheable.value());
+        if (Boolean.TRUE.equals(internalInvocation.get())) {
+            return joinPoint.proceed();
+        }
+
+        String cacheName = resolveCacheName(cacheable.value(), joinPoint);
         Object cacheKey = evaluateCacheKey(joinPoint, cacheable.key());
 
-        logCacheableStart(cacheName, cacheKey);
+        if (!evaluateCondition(joinPoint, cacheable.condition(), null)) {
+            return joinPoint.proceed();
+        }
 
-        return CacheExceptionHandler.<Object>safeExecute((Supplier<Object>) () -> {
-            try {
-                if (!evaluateCondition(joinPoint, cacheable.condition(), null)) {
-                    LOGGER.debug("@Cacheable条件不满足，跳过缓存: condition={}", cacheable.condition());
-                    return joinPoint.proceed();
-                }
+        registerSnapshot(cacheName, cacheKey, joinPoint);
 
-                // 动态获取或创建缓存
-                Cache<Object, Object> cache = getOrCreateCache(joinPoint, cacheName, cacheable);
-                Optional<Object> cachedValue = cache.get(cacheKey);
+        Cache<Object, Object> cache = getOrCreateCache(joinPoint, cacheName, cacheable, cacheKey);
+        if (cache == null) {
+            return joinPoint.proceed();
+        }
 
-                if (cachedValue.isPresent()) {
-                    logCacheHit(cacheName, cacheKey);
-                    return cachedValue.get();
-                }
-
-                logCacheMiss(cacheName, cacheKey);
-                Object result = joinPoint.proceed();
-
-                if (result != null) {
-                    putToCache(cache, cacheName, cacheKey, result, cacheable.ttl());
-                }
-
-                return result;
-            } catch (Throwable t) {
-                LOGGER.error("缓存操作异常: cache={}, key={}", cacheName, cacheKey, t);
-                try {
-                    return joinPoint.proceed();
-                } catch (Throwable t2) {
-                    LOGGER.error("业务方法执行失败", t2);
-                    throw new RuntimeException(t2);
-                }
+        try {
+            Optional<Object> cached = cache.get(cacheKey);
+            if (cached.isPresent()) {
+                return cached.get();
             }
-        }, null);
-    }
+        } catch (Exception e) {
+            LOGGER.warn("@Cacheable读取缓存失败，降级执行方法: cache={}, key={}, error={}",
+                    cacheName, cacheKey, e.getMessage());
+        }
 
-    // ==================== @CachePut 处理 ====================
+        Object result = joinPoint.proceed();
+        if (result != null) {
+            safePut(cache, cacheName, cacheKey, result, cacheable.ttl());
+        }
+        return result;
+    }
 
     @Around("@annotation(cachePut)")
     public Object handleCachePut(ProceedingJoinPoint joinPoint, CachePut cachePut) throws Throwable {
-        String cacheName = resolveCacheName(cachePut.value());
+        String cacheName = resolveCacheName(cachePut.value(), joinPoint);
         Object cacheKey = evaluateCacheKey(joinPoint, cachePut.key());
+        registerSnapshot(cacheName, cacheKey, joinPoint);
 
-        logCachePutStart(cacheName, cacheKey);
+        Object result = joinPoint.proceed();
+        if (!evaluateCondition(joinPoint, cachePut.condition(), result)) {
+            return result;
+        }
 
-        return CacheExceptionHandler.safeExecute(() -> {
-            try {
-                if (!evaluateCondition(joinPoint, cachePut.condition(), null)) {
-                    LOGGER.debug("@CachePut条件不满足，跳过缓存: condition={}", cachePut.condition());
-                    return joinPoint.proceed();
-                }
-
-                Object result = joinPoint.proceed();
-
-                if (result != null) {
-                    Cache<Object, Object> cache = getOrCreateCache(joinPoint, cacheName, cachePut);
-                    putToCache(cache, cacheName, cacheKey, result, cachePut.ttl());
-                }
-
-                return result;
-            } catch (Throwable t) {
-                LOGGER.error("缓存操作异常: cache={}, key={}", cacheName, cacheKey, t);
-                try {
-                    return joinPoint.proceed();
-                } catch (Throwable t2) {
-                    LOGGER.error("业务方法执行失败", t2);
-                    throw new RuntimeException(t2);
-                }
-            }
-        }, null);
+        Cache<Object, Object> cache = getOrCreateCache(joinPoint, cacheName, cachePut, cacheKey);
+        if (cache != null && result != null) {
+            safePut(cache, cacheName, cacheKey, result, cachePut.ttl());
+        }
+        return result;
     }
-
-    // ==================== @CacheEvict 处理 ====================
 
     @Around("@annotation(cacheEvict)")
     public Object handleCacheEvict(ProceedingJoinPoint joinPoint, CacheEvict cacheEvict) throws Throwable {
-        String cacheName = resolveCacheName(cacheEvict.value());
+        String cacheName = resolveCacheName(cacheEvict.value(), joinPoint);
         Object cacheKey = evaluateCacheKey(joinPoint, cacheEvict.key());
 
-        logCacheEvictStart(cacheName, cacheKey);
-
-        return CacheExceptionHandler.<Object>safeExecute((Supplier<Object>) () -> {
-            try {
-                // 根据allEntries属性决定处理方式
-                if (cacheEvict.allEntries()) {
-                    evictAllCache(cacheName);
-                } else if (cacheKey != null) {
-                    evictCache(cacheName, cacheKey);
-                }
-
-                // 根据beforeInvocation属性决定执行时机
-                if (cacheEvict.beforeInvocation()) {
-                    return joinPoint.proceed();
-                } else {
-                    try {
-                        return joinPoint.proceed();
-                    } catch (Exception e) {
-                        // 方法执行失败，记录警告但不回滚缓存清除操作
-                        LOGGER.warn("业务方法执行失败: cache={}, key={}, error={}", cacheName, cacheKey, e.getMessage());
-                        throw e;
-                    }
-                }
-            } catch (Throwable t) {
-                LOGGER.error("缓存操作异常: cache={}, key={}", cacheName, cacheKey, t);
-                try {
-                    return joinPoint.proceed();
-                } catch (Throwable t2) {
-                    LOGGER.error("业务方法执行失败", t2);
-                    throw new RuntimeException(t2);
-                }
+        if (cacheEvict.beforeInvocation()) {
+            if (evaluateCondition(joinPoint, cacheEvict.condition(), null)) {
+                safeEvict(cacheName, cacheKey, cacheEvict.allEntries());
             }
-        }, null);
-    }
-
-    // ==================== 工具方法 ====================
-
-    /**
-     * 解析缓存名称
-     * 优化：移除不必要的异常包装，直接检查
-     */
-    private String resolveCacheName(String cacheName) {
-        if (!StringUtils.hasText(cacheName)) {
-            throw new IllegalArgumentException("缓存名称不能为空");
+            return joinPoint.proceed();
         }
-        return cacheName;
+
+        Object result = joinPoint.proceed();
+        if (evaluateCondition(joinPoint, cacheEvict.condition(), result)) {
+            safeEvict(cacheName, cacheKey, cacheEvict.allEntries());
+        }
+        return result;
     }
 
-    /**
-     * 评估缓存键
-     */
+    @SuppressWarnings("unchecked")
+    private Cache<Object, Object> getOrCreateCache(JoinPoint joinPoint,
+                                                   String cacheName,
+                                                   Object annotation,
+                                                   Object cacheKey) {
+        Class<Object> keyType = (Class<Object>) (cacheKey != null ? cacheKey.getClass() : Object.class);
+        Class<Object> valueType = (Class<Object>) inferValueType(joinPoint);
+
+        try {
+            if (annotation instanceof Cacheable cacheable) {
+                CascadeCacheProperties config = buildConfig(cacheable);
+                Function<Object, Object> loader = key -> invokeSnapshot(cacheName, key);
+                return (Cache<Object, Object>) cacheManager.getOrCreateCache(
+                        cacheName, keyType, valueType, config, loader
+                );
+            }
+            if (annotation instanceof CachePut cachePut) {
+                CascadeCacheProperties config = buildConfig(cachePut);
+                Function<Object, Object> loader = key -> invokeSnapshot(cacheName, key);
+                return (Cache<Object, Object>) cacheManager.getOrCreateCache(
+                        cacheName, keyType, valueType, config, loader
+                );
+            }
+            if (annotation instanceof CacheEvict) {
+                return (Cache<Object, Object>) cacheManager.getCache(cacheName);
+            }
+        } catch (Exception e) {
+            LOGGER.warn("获取缓存失败: cache={}, error={}", cacheName, e.getMessage());
+        }
+
+        return null;
+    }
+
+    private void safePut(Cache<Object, Object> cache,
+                         String cacheName,
+                         Object key,
+                         Object value,
+                         long ttlSeconds) {
+        try {
+            if (ttlSeconds > 0) {
+                cache.put(key, value, ttlSeconds);
+            } else {
+                cache.put(key, value);
+            }
+        } catch (Exception e) {
+            LOGGER.warn("写缓存失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
+        }
+    }
+
+    private void safeEvict(String cacheName, Object cacheKey, boolean allEntries) {
+        try {
+            Cache<Object, Object> cache = (Cache<Object, Object>) cacheManager.getCache(cacheName);
+            if (cache == null) {
+                return;
+            }
+            if (allEntries) {
+                cache.clear();
+            } else if (cacheKey != null) {
+                cache.evict(cacheKey);
+            }
+        } catch (Exception e) {
+            LOGGER.warn("清理缓存失败: cache={}, key={}, error={}", cacheName, cacheKey, e.getMessage());
+        }
+    }
+
+    private String resolveCacheName(String configured, JoinPoint joinPoint) {
+        if (StringUtils.hasText(configured)) {
+            return configured;
+        }
+        String className = joinPoint.getTarget().getClass().getSimpleName();
+        String methodName = joinPoint.getSignature().getName();
+        return className + "." + methodName;
+    }
+
     private Object evaluateCacheKey(JoinPoint joinPoint, String keyExpression) {
-        return CacheExceptionHandler.<Object>safeExecute((Supplier<Object>) () -> {
-            return expressionEvaluator.evaluate(keyExpression, joinPoint, null);
-        }, joinPoint.getSignature().toShortString());
+        if (!StringUtils.hasText(keyExpression)) {
+            return DefaultCacheKeyGenerator.generate(joinPoint);
+        }
+        Object evaluated = expressionEvaluator.evaluate(keyExpression, joinPoint, null);
+        return evaluated != null ? evaluated : DefaultCacheKeyGenerator.generate(joinPoint);
     }
 
-    /**
-     * 评估条件表达式
-     */
     private boolean evaluateCondition(JoinPoint joinPoint, String condition, Object result) {
         if (!StringUtils.hasText(condition)) {
             return true;
         }
-
-        return CacheExceptionHandler.<Boolean>safeExecute((Supplier<Boolean>) () -> {
-            boolean value = expressionEvaluator.evaluateBoolean(condition, joinPoint, result);
-            LOGGER.debug("条件表达式求值结果: condition={}, result={}", condition, value);
-            return value;
-        }, true);
+        try {
+            return expressionEvaluator.evaluateBoolean(condition, joinPoint, result);
+        } catch (Exception e) {
+            LOGGER.warn("条件表达式求值失败，按true处理: condition={}, error={}", condition, e.getMessage());
+            return true;
+        }
     }
 
-    /**
-     * 获取或创建缓存
-     */
-    @SuppressWarnings("unchecked")
-    private Cache<Object, Object> getOrCreateCache(JoinPoint joinPoint, String cacheName, Object annotation) {
-        return CacheExceptionHandler.<Cache<Object, Object>>safeExecute((Supplier<Cache<Object, Object>>) () -> {
-            Class<?> keyType = typeResolver.inferKeyType(joinPoint);
-            Class<?> valueType = typeResolver.inferValueType(joinPoint);
-
-            LOGGER.debug("推断的缓存类型: cacheName={}, keyType={}, valueType={}",
-                    cacheName, keyType.getSimpleName(), valueType.getSimpleName());
-
-            // 注意：新的设计中，通过配置自动应用装饰器（自动刷新、分布式同步等）
-            if (annotation instanceof Cacheable) {
-                return (Cache<Object, Object>) cacheManager.getOrCreateCache(cacheName, keyType, valueType);
-            } else if (annotation instanceof CachePut) {
-                return (Cache<Object, Object>) cacheManager.getOrCreateCache(cacheName, keyType, valueType);
-            } else if (annotation instanceof CacheEvict) {
-                return (Cache<Object, Object>) cacheManager.getCache(cacheName);
-            }
-
-            throw new IllegalArgumentException("未知的缓存注解类型: " + annotation.getClass());
-        }, (Cache<Object, Object>) cacheManager.getOrCreateCache(cacheName, Object.class, Object.class));
+    private Class<?> inferValueType(JoinPoint joinPoint) {
+        if (joinPoint.getSignature() instanceof MethodSignature methodSignature) {
+            return methodSignature.getMethod().getReturnType();
+        }
+        return Object.class;
     }
 
-    /**
-     * 将值放入缓存
-     */
-    private void putToCache(Cache<Object, Object> cache, String cacheName, Object key, Object value, long ttl) {
-        CacheExceptionHandler.safeExecute(() -> {
-            if (ttl > 0) {
-                cache.put(key, value, ttl);
-                LOGGER.debug("缓存已更新（带TTL）: cache={}, key={}, ttl={}s", cacheName, key, ttl);
-            } else {
-                cache.put(key, value);
-                LOGGER.debug("缓存已更新: cache={}, key={}", cacheName, key);
-            }
+    private CascadeCacheProperties buildConfig(Cacheable annotation) {
+        CascadeCacheProperties config = copyDefaultConfig();
+        config.getL1().setEnabled(annotation.enableL1());
+        config.getL2().setEnabled(annotation.enableL2());
+        config.getSync().setEnabled(annotation.enableSync());
+        config.getRefresh().setEnabled(annotation.enableRefresh() || annotation.autoRefresh());
+        config.getRefresh().setDefaultRefreshIntervalSeconds(annotation.refreshInterval());
+        if (annotation.ttl() > 0) {
+            config.getL2().setDefaultTtlSeconds(annotation.ttl());
+        }
+        return config;
+    }
+
+    private CascadeCacheProperties buildConfig(CachePut annotation) {
+        CascadeCacheProperties config = copyDefaultConfig();
+        config.getL1().setEnabled(annotation.enableL1());
+        config.getL2().setEnabled(annotation.enableL2());
+        config.getSync().setEnabled(annotation.sync());
+        config.getRefresh().setEnabled(annotation.autoRefresh());
+        config.getRefresh().setDefaultRefreshIntervalSeconds(annotation.refreshInterval());
+        if (annotation.ttl() > 0) {
+            config.getL2().setDefaultTtlSeconds(annotation.ttl());
+        }
+        return config;
+    }
+
+    private CascadeCacheProperties copyDefaultConfig() {
+        CascadeCacheProperties target = CascadeCacheProperties.defaults();
+        CascadeCacheProperties source = this.defaultConfig;
+
+        target.setEnabled(source.isEnabled());
+        target.setDefaultCacheName(source.getDefaultCacheName());
+
+        target.getL1().setEnabled(source.getL1().isEnabled());
+        target.getL1().setMaximumSize(source.getL1().getMaximumSize());
+        target.getL1().setExpireAfterWriteSeconds(source.getL1().getExpireAfterWriteSeconds());
+        target.getL1().setExpireAfterAccessSeconds(source.getL1().getExpireAfterAccessSeconds());
+        target.getL1().setRecordStats(source.getL1().isRecordStats());
+        target.getL1().setInitialCapacity(source.getL1().getInitialCapacity());
+        target.getL1().setConcurrencyLevel(source.getL1().getConcurrencyLevel());
+
+        target.getL2().setEnabled(source.getL2().isEnabled());
+        target.getL2().setKeyPrefix(source.getL2().getKeyPrefix());
+        target.getL2().setDefaultTtlSeconds(source.getL2().getDefaultTtlSeconds());
+        target.getL2().setEnableBatch(source.getL2().isEnableBatch());
+        target.getL2().setBatchSize(source.getL2().getBatchSize());
+        target.getL2().setSerializer(source.getL2().getSerializer());
+        target.getL2().setTimeoutSeconds(source.getL2().getTimeoutSeconds());
+
+        target.getSync().setEnabled(source.getSync().isEnabled());
+        target.getSync().setType(source.getSync().getType());
+        target.getSync().setTopicPrefix(source.getSync().getTopicPrefix());
+        target.getSync().setAsyncPublish(source.getSync().isAsyncPublish());
+        target.getSync().setTimeoutMs(source.getSync().getTimeoutMs());
+        target.getSync().setBatchSize(source.getSync().getBatchSize());
+
+        target.getRefresh().setEnabled(source.getRefresh().isEnabled());
+        target.getRefresh().setDefaultRefreshIntervalSeconds(source.getRefresh().getDefaultRefreshIntervalSeconds());
+        target.getRefresh().setMinRefreshIntervalSeconds(source.getRefresh().getMinRefreshIntervalSeconds());
+        target.getRefresh().setMaxRefreshIntervalSeconds(source.getRefresh().getMaxRefreshIntervalSeconds());
+        target.getRefresh().setDistributedRefresh(source.getRefresh().isDistributedRefresh());
+        target.getRefresh().setThreadPoolSize(source.getRefresh().getThreadPoolSize());
+        target.getRefresh().setQueueCapacity(source.getRefresh().getQueueCapacity());
+        target.getRefresh().setAllowConcurrentRefresh(source.getRefresh().isAllowConcurrentRefresh());
+        target.getRefresh().setRefreshTimeoutSeconds(source.getRefresh().getRefreshTimeoutSeconds());
+        target.getRefresh().setMaxRetries(source.getRefresh().getMaxRetries());
+        target.getRefresh().setRetryIntervalSeconds(source.getRefresh().getRetryIntervalSeconds());
+        target.getRefresh().setStartOnInit(source.getRefresh().isStartOnInit());
+        target.getRefresh().setShutdownTimeoutSeconds(source.getRefresh().getShutdownTimeoutSeconds());
+
+        target.getLoader().setAutoDiscover(source.getLoader().isAutoDiscover());
+        target.getLoader().setEnableStats(source.getLoader().isEnableStats());
+        target.getLoader().setTimeoutSeconds(source.getLoader().getTimeoutSeconds());
+
+        return target;
+    }
+
+    private void registerSnapshot(String cacheName, Object cacheKey, JoinPoint joinPoint) {
+        if (cacheKey == null) {
+            return;
+        }
+        Method method = ((MethodSignature) joinPoint.getSignature()).getMethod();
+        if (!method.canAccess(joinPoint.getTarget())) {
+            method.setAccessible(true);
+        }
+        InvocationSnapshot snapshot = new InvocationSnapshot(joinPoint.getTarget(), method, joinPoint.getArgs());
+        invocationSnapshots.computeIfAbsent(cacheName, k -> new ConcurrentHashMap<>()).put(cacheKey, snapshot);
+    }
+
+    private Object invokeSnapshot(String cacheName, Object cacheKey) {
+        Map<Object, InvocationSnapshot> byKey = invocationSnapshots.get(cacheName);
+        if (byKey == null) {
             return null;
-        }, null);
-    }
-
-    /**
-     * 清除指定缓存
-     */
-    private void evictCache(String cacheName, Object key) {
-        CacheExceptionHandler.safeExecute(() -> {
-            Cache<Object, Object> cache = (Cache<Object, Object>) cacheManager.getCache(cacheName);
-            if (cache != null) {
-                cache.evict(key);
-                LOGGER.debug("缓存已清除: cache={}, key={}", cacheName, key);
-            } else {
-                LOGGER.warn("缓存不存在，跳过清除: cache={}", cacheName);
-            }
+        }
+        InvocationSnapshot snapshot = byKey.get(cacheKey);
+        if (snapshot == null) {
             return null;
-        }, null);
+        }
+        try {
+            internalInvocation.set(true);
+            return snapshot.method.invoke(snapshot.target, snapshot.args);
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getTargetException();
+            throw new RuntimeException(cause != null ? cause : e);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        } finally {
+            internalInvocation.set(false);
+        }
     }
 
-    /**
-     * 清除所有缓存
-     */
-    private void evictAllCache(String cacheName) {
-        CacheExceptionHandler.safeExecute(() -> {
-            Cache<Object, Object> cache = (Cache<Object, Object>) cacheManager.getCache(cacheName);
-            if (cache != null) {
-                cache.clear();
-                LOGGER.debug("缓存已全部清除: cache={}", cacheName);
-            } else {
-                LOGGER.warn("缓存不存在，跳过清除: cache={}", cacheName);
-            }
-            return null;
-        }, null);
-    }
+    private static final class InvocationSnapshot {
+        private final Object target;
+        private final Method method;
+        private final Object[] args;
 
-    // ==================== 日志方法 ====================
-
-    private void logCacheableStart(String cacheName, Object cacheKey) {
-        LOGGER.debug("@Cacheable开始处理: cache={}, key={}", cacheName, cacheKey);
-    }
-
-    private void logCacheHit(String cacheName, Object cacheKey) {
-        LOGGER.debug("缓存命中: cache={}, key={}", cacheName, cacheKey);
-    }
-
-    private void logCacheMiss(String cacheName, Object cacheKey) {
-        LOGGER.debug("缓存未命中: cache={}, key={}", cacheName, cacheKey);
-    }
-
-    private void logCachePutStart(String cacheName, Object cacheKey) {
-        LOGGER.debug("@CachePut开始处理: cache={}, key={}", cacheName, cacheKey);
-    }
-
-    private void logCacheEvictStart(String cacheName, Object cacheKey) {
-        LOGGER.debug("@CacheEvict开始处理: cache={}, key={}", cacheName, cacheKey);
+        private InvocationSnapshot(Object target, Method method, Object[] args) {
+            this.target = target;
+            this.method = method;
+            this.args = args;
+        }
     }
 }

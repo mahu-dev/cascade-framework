@@ -114,8 +114,8 @@ public class CacheAutoConfiguration {
     @ConditionalOnClass(name = "org.aspectj.lang.annotation.Aspect")
     @ConditionalOnProperty(prefix = "cascade.cache.annotation", name = "enabled",
             havingValue = "true", matchIfMissing = true)
-    public CacheAspect cacheAspect(FunctionalCacheManager cacheManager) {
+    public CacheAspect cacheAspect(CacheManager cacheManager, CascadeCacheProperties defaultConfig) {
         LOGGER.info("创建缓存切面");
-        return new CacheAspect(cacheManager);
+        return new CacheAspect(cacheManager, defaultConfig);
     }
 }

@@ -19,7 +19,7 @@ import org.springframework.context.event.EventListener;
  */
 @Configuration
 @ConditionalOnClass({CacheLoaderResolver.class, FunctionalCacheManager.class})
-@ConditionalOnProperty(prefix = "cascade.cache.loader", name = "auto-discover", havingValue = "true",
+@ConditionalOnProperty(prefix = "cascade.loader", name = "auto-discover", havingValue = "true",
         matchIfMissing = true)
 public class CacheLoaderAutoConfiguration {
 
