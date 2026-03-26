@@ -54,6 +54,26 @@ public class SyncProperties {
     private int batchSize = 100;
 
     /**
+     * 发布线程池大小
+     */
+    private int publishThreadPoolSize = 2;
+
+    /**
+     * 发布队列容量（有界队列）
+     */
+    private int publishQueueCapacity = 1024;
+
+    /**
+     * 发布最大重试次数（包含首次）
+     */
+    private int publishMaxRetries = 3;
+
+    /**
+     * 发布重试基础退避时间（毫秒）
+     */
+    private long publishRetryBackoffMs = 50L;
+
+    /**
      * 是否允许 UPDATE 模式（默认关闭，需要显式开启）
      */
     private boolean updateEnabled = false;
@@ -174,6 +194,26 @@ public class SyncProperties {
         return this;
     }
 
+    public SyncProperties publishThreadPoolSize(int publishThreadPoolSize) {
+        this.publishThreadPoolSize = publishThreadPoolSize;
+        return this;
+    }
+
+    public SyncProperties publishQueueCapacity(int publishQueueCapacity) {
+        this.publishQueueCapacity = publishQueueCapacity;
+        return this;
+    }
+
+    public SyncProperties publishMaxRetries(int publishMaxRetries) {
+        this.publishMaxRetries = publishMaxRetries;
+        return this;
+    }
+
+    public SyncProperties publishRetryBackoffMs(long publishRetryBackoffMs) {
+        this.publishRetryBackoffMs = publishRetryBackoffMs;
+        return this;
+    }
+
     /**
      * 设置是否允许 UPDATE 模式
      */
@@ -232,14 +272,21 @@ public class SyncProperties {
             case LOCAL -> true;
             case CUSTOM -> true;
         };
-        return baseValid && updateMaxPayloadBytes > 0;
+        return baseValid
+                && updateMaxPayloadBytes > 0
+                && publishThreadPoolSize > 0
+                && publishQueueCapacity > 0
+                && publishMaxRetries > 0
+                && publishRetryBackoffMs >= 0;
     }
 
     @Override
     public String toString() {
         return String.format(
-                "SyncProperties{enabled=%s, mode=%s, type=%s, topicPrefix='%s', async=%s, updateEnabled=%s, updateMaxPayloadBytes=%d}",
-                enabled, mode, type, topicPrefix, asyncPublish, updateEnabled, updateMaxPayloadBytes
+                "SyncProperties{enabled=%s, mode=%s, type=%s, topicPrefix='%s', async=%s, publishPool=%d, publishQueue=%d, retries=%d, backoffMs=%d, updateEnabled=%s, updateMaxPayloadBytes=%d}",
+                enabled, mode, type, topicPrefix, asyncPublish,
+                publishThreadPoolSize, publishQueueCapacity, publishMaxRetries, publishRetryBackoffMs,
+                updateEnabled, updateMaxPayloadBytes
         );
     }
 }

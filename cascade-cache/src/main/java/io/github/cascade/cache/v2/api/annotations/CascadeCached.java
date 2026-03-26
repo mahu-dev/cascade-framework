@@ -21,6 +21,12 @@ public @interface CascadeCached {
     String condition() default "";
 
     /**
+     * 后置否决表达式，支持 #result。
+     * 返回 true 时不写缓存。
+     */
+    String unless() default "";
+
+    /**
      * 支持 "30m"、"5m"、"120s" 等格式。
      */
     String ttl() default "";

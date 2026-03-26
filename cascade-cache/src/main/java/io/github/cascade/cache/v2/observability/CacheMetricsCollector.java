@@ -61,8 +61,28 @@ public class CacheMetricsCollector {
         increment("cascade.cache.sync.publish");
     }
 
+    public void incSyncPublishRetry() {
+        increment("cascade.cache.sync.publish.retry");
+    }
+
+    public void incSyncPublishReject() {
+        increment("cascade.cache.sync.publish.reject");
+    }
+
+    public void incSyncPublishFail() {
+        increment("cascade.cache.sync.publish.fail");
+    }
+
+    public void incSyncDeadLetter() {
+        increment("cascade.cache.sync.deadletter");
+    }
+
     public void incSyncConsume() {
         increment("cascade.cache.sync.consume");
+    }
+
+    public void incSyncConsumeFail() {
+        increment("cascade.cache.sync.consume.fail");
     }
 
     public void incSyncUpdateFallback() {

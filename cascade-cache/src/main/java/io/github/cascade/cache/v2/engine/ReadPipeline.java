@@ -1,6 +1,6 @@
 package io.github.cascade.cache.v2.engine;
 
-import io.github.cascade.cache.v2.model.CacheRecord;
+import io.github.cascade.cache.v2.store.model.CacheRecord;
 
 import java.util.Optional;
 import java.util.function.Function;

@@ -225,13 +225,13 @@ public class CacheAspect {
                                                                      Class<Object> valueType,
                                                                      CascadeCacheProperties config,
                                                                      Function<Object, Object> snapshotLoader) {
-        Cache<Object, Object> cache = (Cache<Object, Object>) cacheManager.getOrCreateCache(
+        Cache<Object, Object> cache = cacheManager.getOrCreateCache(
                 cacheName, keyType, valueType, config
         );
         if (cache == null) {
             return null;
         }
-        return (Cache<Object, Object>) cacheManager.getOrCreateCache(
+        return cacheManager.getOrCreateCache(
                 cacheName, keyType, valueType, config, snapshotLoader
         );
     }

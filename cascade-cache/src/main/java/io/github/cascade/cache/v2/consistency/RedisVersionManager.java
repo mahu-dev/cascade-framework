@@ -15,6 +15,7 @@ public class RedisVersionManager<K> implements VersionManager<K> {
 
     private final RedissonClient redissonClient;
     private final String keyPrefix;
+    private final String namespaceVersionKey;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public RedisVersionManager(String cacheName, RedissonClient redissonClient, String prefix) {
@@ -24,6 +25,7 @@ public class RedisVersionManager<K> implements VersionManager<K> {
             finalPrefix += ":";
         }
         this.keyPrefix = finalPrefix + cacheName + ":";
+        this.namespaceVersionKey = this.keyPrefix + "ns:version";
     }
 
     @Override
@@ -38,20 +40,16 @@ public class RedisVersionManager<K> implements VersionManager<K> {
 
     @Override
     public long nextClearVersion() {
-        return redissonClient.getAtomicLong(clearVersionKey()).incrementAndGet();
+        return redissonClient.getAtomicLong(namespaceVersionKey).incrementAndGet();
     }
 
     @Override
     public long currentClearVersion() {
-        return redissonClient.getAtomicLong(clearVersionKey()).get();
+        return redissonClient.getAtomicLong(namespaceVersionKey).get();
     }
 
     private String versionKey(K key) {
         return keyPrefix + "ver:" + encodeKey(key);
-    }
-
-    private String clearVersionKey() {
-        return keyPrefix + "ver:clear";
     }
 
     private String encodeKey(K key) {

@@ -1,16 +1,16 @@
 package io.github.cascade.cache.v2.integration;
 
-import io.github.cascade.cache.api.Cache;
+import io.github.cascade.cache.v2.api.Cache;
 import io.github.cascade.cache.v2.consistency.RedisVersionManager;
-import io.github.cascade.cache.v2.core.EngineBackedCache;
+import io.github.cascade.cache.v2.engine.EngineBackedCache;
 import io.github.cascade.cache.v2.loader.DistLockCoordinator;
-import io.github.cascade.cache.v2.model.CacheRecord;
+import io.github.cascade.cache.v2.store.model.CacheRecord;
 import io.github.cascade.cache.v2.observability.CacheMetricsCollector;
 import io.github.cascade.cache.v2.policy.CachePolicy;
 import io.github.cascade.cache.v2.policy.SyncMode;
-import io.github.cascade.cache.v2.store.CaffeineL1Store;
-import io.github.cascade.cache.v2.store.RedissonL2Store;
-import io.github.cascade.cache.v2.sync.RedisInvalidationBus;
+import io.github.cascade.cache.v2.store.l1.CaffeineL1Store;
+import io.github.cascade.cache.v2.store.l2.RedissonL2Store;
+import io.github.cascade.cache.v2.consistency.RedisInvalidationBus;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.redisson.Redisson;
@@ -58,8 +58,12 @@ class EngineBackedCacheRedisIntegrationTest {
         closers.add(clientA::shutdown);
         closers.add(clientB::shutdown);
 
-        Cache<String, String> nodeA = createCache(clientA, cacheName, keyPrefix, topicPrefix, SyncMode.INVALIDATE, "node-A");
-        Cache<String, String> nodeB = createCache(clientB, cacheName, keyPrefix, topicPrefix, SyncMode.INVALIDATE, "node-B");
+        Cache<String, String> nodeA = createCache(
+                clientA, cacheName, keyPrefix, topicPrefix, SyncMode.INVALIDATE, "node-A", String.class
+        );
+        Cache<String, String> nodeB = createCache(
+                clientB, cacheName, keyPrefix, topicPrefix, SyncMode.INVALIDATE, "node-B", String.class
+        );
         closers.add(nodeA::close);
         closers.add(nodeB::close);
 
@@ -86,8 +90,12 @@ class EngineBackedCacheRedisIntegrationTest {
         closers.add(clientA::shutdown);
         closers.add(clientB::shutdown);
 
-        Cache<String, String> nodeA = createCache(clientA, cacheName, keyPrefix, topicPrefix, SyncMode.UPDATE, "node-A");
-        Cache<String, String> nodeB = createCache(clientB, cacheName, keyPrefix, topicPrefix, SyncMode.UPDATE, "node-B");
+        Cache<String, String> nodeA = createCache(
+                clientA, cacheName, keyPrefix, topicPrefix, SyncMode.UPDATE, "node-A", String.class
+        );
+        Cache<String, String> nodeB = createCache(
+                clientB, cacheName, keyPrefix, topicPrefix, SyncMode.UPDATE, "node-B", String.class
+        );
         closers.add(nodeA::close);
         closers.add(nodeB::close);
 
@@ -110,12 +118,46 @@ class EngineBackedCacheRedisIntegrationTest {
         assertEquals("fresh", nodeB.get("k2").orElse(null), "乱序旧事件不应覆盖新版本");
     }
 
-    private Cache<String, String> createCache(RedissonClient client,
-                                              String cacheName,
-                                              String keyPrefix,
-                                              String topicPrefix,
-                                              SyncMode syncMode,
-                                              String nodeId) {
+    @Test
+    void shouldSyncPojoValueInUpdateModeWithoutClassCastException() {
+        String cacheName = "it-update-pojo-" + UUID.randomUUID();
+        String keyPrefix = "it:cascade:" + UUID.randomUUID() + ":";
+        String topicPrefix = "it:cascade:sync:" + UUID.randomUUID() + ":";
+
+        RedissonClient clientA = newClient();
+        RedissonClient clientB = newClient();
+        closers.add(clientA::shutdown);
+        closers.add(clientB::shutdown);
+
+        Cache<String, UserProfile> nodeA = createCache(
+                clientA, cacheName, keyPrefix, topicPrefix, SyncMode.UPDATE, "node-A", UserProfile.class
+        );
+        Cache<String, UserProfile> nodeB = createCache(
+                clientB, cacheName, keyPrefix, topicPrefix, SyncMode.UPDATE, "node-B", UserProfile.class
+        );
+        closers.add(nodeA::close);
+        closers.add(nodeB::close);
+
+        nodeA.put("u1", new UserProfile("u1", "Alice-v1"));
+        assertTrue(waitUntil(
+                () -> "Alice-v1".equals(nodeB.get("u1").map(UserProfile::name).orElse(null)),
+                Duration.ofMillis(500)
+        ), "POJO 初次写入未在500ms内同步");
+
+        nodeA.put("u1", new UserProfile("u1", "Alice-v2"));
+        assertTrue(waitUntil(
+                () -> "Alice-v2".equals(nodeB.get("u1").map(UserProfile::name).orElse(null)),
+                Duration.ofMillis(500)
+        ), "UPDATE 模式下 POJO 跨节点同步失败或出现类型转换异常");
+    }
+
+    private <V> Cache<String, V> createCache(RedissonClient client,
+                                             String cacheName,
+                                             String keyPrefix,
+                                             String topicPrefix,
+                                             SyncMode syncMode,
+                                             String nodeId,
+                                             Class<V> valueType) {
         CachePolicy policy = CachePolicy.builder()
                 .l1Enabled(true)
                 .l2Enabled(true)
@@ -131,13 +173,14 @@ class EngineBackedCacheRedisIntegrationTest {
         return new EngineBackedCache<>(
                 cacheName,
                 policy,
-                new CaffeineL1Store<>(10_000, false),
-                new RedissonL2Store<>(cacheName, client, keyPrefix),
+                new CaffeineL1Store<String, V>(10_000, false),
+                new RedissonL2Store<String, V>(cacheName, client, keyPrefix),
                 null,
-                new RedisInvalidationBus<>(client, topicPrefix),
-                new RedisVersionManager<>(cacheName, client, keyPrefix),
+                new RedisInvalidationBus<String>(client, topicPrefix),
+                new RedisVersionManager<String>(cacheName, client, keyPrefix),
                 DistLockCoordinator.noop(),
                 nodeId,
+                valueType,
                 CacheMetricsCollector.create(cacheName, null)
         );
     }
@@ -163,5 +206,8 @@ class EngineBackedCacheRedisIntegrationTest {
             }
         }
         return condition.getAsBoolean();
+    }
+
+    private record UserProfile(String id, String name) {
     }
 }

@@ -1,6 +1,6 @@
 package io.github.cascade.cache.v2.engine;
 
-import io.github.cascade.cache.v2.model.CacheRecord;
+import io.github.cascade.cache.v2.store.model.CacheRecord;
 
 /**
  * 刷新管线：热点追踪与刷新判定。

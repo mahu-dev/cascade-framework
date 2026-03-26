@@ -1,6 +1,6 @@
 package io.github.cascade.cache.v2.engine;
 
-import io.github.cascade.cache.v2.model.CacheRecord;
+import io.github.cascade.cache.v2.store.model.CacheRecord;
 
 /**
  * 写入管线：构建统一缓存记录。
