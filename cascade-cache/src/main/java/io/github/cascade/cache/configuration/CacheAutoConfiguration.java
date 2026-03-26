@@ -1,9 +1,9 @@
 package io.github.cascade.cache.configuration;
 
-import io.github.cascade.cache.api.CacheManager;
-import io.github.cascade.cache.aspect.CacheAspect;
-import io.github.cascade.cache.core.functional.FunctionalCacheManager;
-import io.github.cascade.cache.synchronization.CacheLoaderResolver;
+import io.github.cascade.cache.v2.api.CacheManager;
+import io.github.cascade.cache.v2.facade.CacheAspect;
+import io.github.cascade.cache.v2.facade.FunctionalCacheManager;
+import io.github.cascade.cache.v2.loader.CacheLoaderResolver;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
@@ -55,11 +55,11 @@ public class CacheAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    @ConditionalOnProperty(prefix = "cascade.loader", name = "auto-discover", havingValue = "true",
-            matchIfMissing = true)
-    public CacheLoaderResolver<?, ?> cacheLoaderResolver(ApplicationContext applicationContext) {
+    public CacheLoaderResolver cacheLoaderResolver(ApplicationContext applicationContext,
+                                                   CascadeCacheProperties defaultConfig) {
         LOGGER.info("创建CacheLoaderResolver用于自动发现CacheLoader实现");
-        CacheLoaderResolver<?, ?> resolver = new CacheLoaderResolver<>();
+        CacheLoaderResolver resolver = new CacheLoaderResolver();
+        resolver.setAutoDiscoverEnabled(defaultConfig.getLoader().isAutoDiscover());
         resolver.setApplicationContext(applicationContext);
 
         LOGGER.info("CacheLoaderResolver已创建并设置ApplicationContext");
@@ -76,7 +76,7 @@ public class CacheAutoConfiguration {
     public FunctionalCacheManager functionalCacheManager(
             @Autowired(required = false) RedissonClient redissonClient,
             CascadeCacheProperties defaultConfig,
-            @Autowired(required = false) CacheLoaderResolver<?, ?> cacheLoaderResolver,
+            @Autowired(required = false) CacheLoaderResolver cacheLoaderResolver,
             @Autowired(required = false) MeterRegistry meterRegistry) {
         LOGGER.info("配置函数式缓存管理器");
 

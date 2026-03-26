@@ -1,7 +1,8 @@
 package cc.coderm.demo.service;
 
 import cc.coderm.demo.model.User;
-import io.github.cascade.cache.api.CacheLoader;
+import io.github.cascade.cache.v2.api.CacheLoader;
+import io.github.cascade.cache.v2.api.annotations.CacheLoaderBinding;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -12,6 +13,7 @@ import org.springframework.stereotype.Service;
  * 演示自动CacheLoader发现机制
  */
 @Service
+@CacheLoaderBinding(cacheName = "users", keyType = String.class, valueType = User.class)
 public class UserCacheLoader implements CacheLoader<String, User> {
 
     private static final Logger log = LoggerFactory.getLogger(UserCacheLoader.class);
