@@ -14,14 +14,25 @@ public class CaffeineL1Store<K, V> implements L1CacheStore<K, V> {
     private final com.github.benmanes.caffeine.cache.Cache<K, CacheRecord<V>> cache;
 
     public CaffeineL1Store(long maxSize, boolean recordStats) {
-        this(maxSize, recordStats, -1, -1);
+        this(maxSize, recordStats, -1, -1, -1);
     }
 
     public CaffeineL1Store(long maxSize,
                            boolean recordStats,
                            long expireAfterWriteSeconds,
                            long expireAfterAccessSeconds) {
+        this(maxSize, recordStats, expireAfterWriteSeconds, expireAfterAccessSeconds, -1);
+    }
+
+    public CaffeineL1Store(long maxSize,
+                           boolean recordStats,
+                           long expireAfterWriteSeconds,
+                           long expireAfterAccessSeconds,
+                           int initialCapacity) {
         Caffeine<Object, Object> builder = Caffeine.newBuilder().maximumSize(maxSize);
+        if (initialCapacity >= 0) {
+            builder.initialCapacity(initialCapacity);
+        }
         if (expireAfterWriteSeconds > 0) {
             builder.expireAfterWrite(Duration.ofSeconds(expireAfterWriteSeconds));
         }

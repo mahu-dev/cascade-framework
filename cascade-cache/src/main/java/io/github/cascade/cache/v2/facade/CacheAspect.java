@@ -505,68 +505,7 @@ public class CacheAspect {
     }
 
     private CascadeCacheProperties copyDefaultConfig() {
-        CascadeCacheProperties target = CascadeCacheProperties.defaults();
-        CascadeCacheProperties source = this.defaultConfig;
-
-        target.setEnabled(source.isEnabled());
-        target.setDefaultCacheName(source.getDefaultCacheName());
-
-        target.getL1().setEnabled(source.getL1().isEnabled());
-        target.getL1().setMaximumSize(source.getL1().getMaximumSize());
-        target.getL1().setExpireAfterWriteSeconds(source.getL1().getExpireAfterWriteSeconds());
-        target.getL1().setExpireAfterAccessSeconds(source.getL1().getExpireAfterAccessSeconds());
-        target.getL1().setRecordStats(source.getL1().isRecordStats());
-        target.getL1().setInitialCapacity(source.getL1().getInitialCapacity());
-        target.getL1().setConcurrencyLevel(source.getL1().getConcurrencyLevel());
-
-        target.getL2().setEnabled(source.getL2().isEnabled());
-        target.getL2().setKeyPrefix(source.getL2().getKeyPrefix());
-        target.getL2().setDefaultTtlSeconds(source.getL2().getDefaultTtlSeconds());
-        target.getL2().setEnableBatch(source.getL2().isEnableBatch());
-        target.getL2().setBatchSize(source.getL2().getBatchSize());
-        target.getL2().setTimeoutSeconds(source.getL2().getTimeoutSeconds());
-
-        target.getSync().setEnabled(source.getSync().isEnabled());
-        target.getSync().setMode(source.getSync().getMode());
-        target.getSync().setType(source.getSync().getType());
-        target.getSync().setTopicPrefix(source.getSync().getTopicPrefix());
-        target.getSync().setAsyncPublish(source.getSync().isAsyncPublish());
-        target.getSync().setTimeoutMs(source.getSync().getTimeoutMs());
-        target.getSync().setBatchSize(source.getSync().getBatchSize());
-        target.getSync().setPublishThreadPoolSize(source.getSync().getPublishThreadPoolSize());
-        target.getSync().setPublishQueueCapacity(source.getSync().getPublishQueueCapacity());
-        target.getSync().setPublishMaxRetries(source.getSync().getPublishMaxRetries());
-        target.getSync().setPublishRetryBackoffMs(source.getSync().getPublishRetryBackoffMs());
-        target.getSync().setUpdateEnabled(source.getSync().isUpdateEnabled());
-        target.getSync().setUpdateMaxPayloadBytes(source.getSync().getUpdateMaxPayloadBytes());
-
-        target.getRefresh().setEnabled(source.getRefresh().isEnabled());
-        target.getRefresh().setDefaultRefreshIntervalSeconds(source.getRefresh().getDefaultRefreshIntervalSeconds());
-        target.getRefresh().setMinRefreshIntervalSeconds(source.getRefresh().getMinRefreshIntervalSeconds());
-        target.getRefresh().setMaxRefreshIntervalSeconds(source.getRefresh().getMaxRefreshIntervalSeconds());
-        target.getRefresh().setDistributedRefresh(source.getRefresh().isDistributedRefresh());
-        target.getRefresh().setThreadPoolSize(source.getRefresh().getThreadPoolSize());
-        target.getRefresh().setQueueCapacity(source.getRefresh().getQueueCapacity());
-        target.getRefresh().setAllowConcurrentRefresh(source.getRefresh().isAllowConcurrentRefresh());
-        target.getRefresh().setRefreshTimeoutSeconds(source.getRefresh().getRefreshTimeoutSeconds());
-        target.getRefresh().setMaxRetries(source.getRefresh().getMaxRetries());
-        target.getRefresh().setRetryIntervalSeconds(source.getRefresh().getRetryIntervalSeconds());
-        target.getRefresh().setStartOnInit(source.getRefresh().isStartOnInit());
-        target.getRefresh().setShutdownTimeoutSeconds(source.getRefresh().getShutdownTimeoutSeconds());
-
-        target.getLoader().setAutoDiscover(source.getLoader().isAutoDiscover());
-        target.getLoader().setEnableStats(source.getLoader().isEnableStats());
-        target.getLoader().setTimeoutSeconds(source.getLoader().getTimeoutSeconds());
-
-        target.getProtection().setSingleFlightEnabled(source.getProtection().isSingleFlightEnabled());
-        target.getProtection().setDistributedLockEnabled(source.getProtection().isDistributedLockEnabled());
-        target.getProtection().setDistributedLockWaitMs(source.getProtection().getDistributedLockWaitMs());
-        target.getProtection().setDistributedLockLeaseMs(source.getProtection().getDistributedLockLeaseMs());
-        target.getProtection().setLockFailureStrategy(source.getProtection().getLockFailureStrategy());
-        target.getProtection().setHotKeyAccessThreshold(source.getProtection().getHotKeyAccessThreshold());
-        target.getProtection().setMaxTrackedKeys(source.getProtection().getMaxTrackedKeys());
-
-        return target;
+        return defaultConfig != null ? defaultConfig.deepCopy() : CascadeCacheProperties.defaults();
     }
 
     /**

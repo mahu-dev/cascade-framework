@@ -13,6 +13,7 @@ import io.github.cascade.cache.v2.policy.SyncMode;
 import io.github.cascade.cache.v2.store.l1.CaffeineL1Store;
 import io.github.cascade.cache.v2.store.l2.L2CacheStore;
 import io.github.cascade.cache.v2.consistency.InvalidationBus;
+import io.github.cascade.cache.v2.support.ObjectMapperHolder;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -35,10 +36,94 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EngineBackedCacheTest {
+
+    @Test
+    void shouldReuseSharedObjectMapperAcrossCacheInstances() throws Exception {
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(false)
+                .autoRefreshEnabled(false)
+                .syncMode(SyncMode.NONE)
+                .build();
+        CaffeineL1Store<String, String> l1a = new CaffeineL1Store<>(100, false);
+        CaffeineL1Store<String, String> l1b = new CaffeineL1Store<>(100, false);
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+
+        EngineBackedCache<String, String> first = new EngineBackedCache<>(
+                "user-a", policy, l1a, null, null, bus, versionManager, DistLockCoordinator.noop(), "node-1"
+        );
+        EngineBackedCache<String, String> second = new EngineBackedCache<>(
+                "user-b", policy, l1b, null, null, bus, versionManager, DistLockCoordinator.noop(), "node-1"
+        );
+        try {
+            Object firstMapper = sharedObjectMapper(first);
+            Object secondMapper = sharedObjectMapper(second);
+            assertSame(ObjectMapperHolder.getInstance(), firstMapper);
+            assertSame(firstMapper, secondMapper);
+        } finally {
+            first.close();
+            second.close();
+        }
+    }
+
+    @Test
+    void shouldContinueClosingRemainingResourcesWhenCloseStepFails() {
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(true)
+                .autoRefreshEnabled(false)
+                .syncMode(SyncMode.INVALIDATE)
+                .build();
+        AtomicInteger unsubscribeCalls = new AtomicInteger(0);
+        AtomicInteger stopCalls = new AtomicInteger(0);
+        TestBus<String> bus = new TestBus<>() {
+            @Override
+            public void unsubscribe(String cacheName) {
+                unsubscribeCalls.incrementAndGet();
+                throw new IllegalStateException("unsubscribe-fail");
+            }
+
+            @Override
+            public void stop() {
+                stopCalls.incrementAndGet();
+                super.stop();
+            }
+        };
+        AtomicInteger l1CloseCalls = new AtomicInteger(0);
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false) {
+            @Override
+            public void close() {
+                l1CloseCalls.incrementAndGet();
+                throw new IllegalStateException("l1-close-fail");
+            }
+        };
+        AtomicInteger l2CloseCalls = new AtomicInteger(0);
+        InMemoryL2Store<String, String> l2 = new InMemoryL2Store<>() {
+            @Override
+            public void close() {
+                l2CloseCalls.incrementAndGet();
+                super.close();
+            }
+        };
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user-close-failure", policy, l1, l2, null, bus, versionManager, DistLockCoordinator.noop(), "node-1"
+        );
+
+        assertDoesNotThrow(cache::close, "close应吞掉单步异常并继续关闭其他资源");
+        assertTrue(cache.isClosed(), "close后缓存应标记为已关闭");
+        assertEquals(1, unsubscribeCalls.get(), "订阅注销应被尝试一次");
+        assertEquals(1, stopCalls.get(), "即使unsubscribe失败，也应继续执行bus.stop");
+        assertEquals(1, l1CloseCalls.get(), "L1关闭应被尝试一次");
+        assertEquals(1, l2CloseCalls.get(), "即使L1关闭失败，也应继续执行L2关闭");
+    }
 
     @Test
     void shouldBackfillL1WhenL2Hit() {
@@ -123,6 +208,168 @@ class EngineBackedCacheTest {
             assertEquals("load-k2", l1.get("k2").map(CacheRecord::getValue).orElse(null));
             assertEquals("load-k2", l2.get("k2").map(CacheRecord::getValue).orElse(null));
             assertEquals(1L, cache.statsSnapshot().backfillL2(), "源加载后应写回L2");
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
+    void shouldBatchReadFromL2WhenCallingGetAll() {
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(true)
+                .autoRefreshEnabled(false)
+                .syncMode(SyncMode.NONE)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        AtomicInteger l2GetCalls = new AtomicInteger(0);
+        AtomicInteger l2GetAllCalls = new AtomicInteger(0);
+        InMemoryL2Store<String, String> l2 = new InMemoryL2Store<>() {
+            @Override
+            public Optional<CacheRecord<String>> get(String key) {
+                l2GetCalls.incrementAndGet();
+                return super.get(key);
+            }
+
+            @Override
+            public Map<String, CacheRecord<String>> getAll(Iterable<String> keys) {
+                l2GetAllCalls.incrementAndGet();
+                Map<String, CacheRecord<String>> result = new java.util.LinkedHashMap<>();
+                for (String key : keys) {
+                    super.get(key).ifPresent(record -> result.put(key, record));
+                }
+                return result;
+            }
+        };
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+
+        long now = System.currentTimeMillis();
+        l2.put("k1", new CacheRecord<>("v1", 1L, now, now + 60_000, now + 60_000, "seed"), 60);
+        l2.put("k2", new CacheRecord<>("v2", 2L, now, now + 60_000, now + 60_000, "seed"), 60);
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user", policy, l1, l2, null, bus, versionManager, DistLockCoordinator.noop(), "node-1"
+        );
+        try {
+            Map<String, String> values = cache.getAll(List.of("k1", "k2"));
+            assertEquals("v1", values.get("k1"));
+            assertEquals("v2", values.get("k2"));
+            assertEquals(1, l2GetAllCalls.get(), "getAll应触发一次L2批量读取");
+            assertEquals(0, l2GetCalls.get(), "批量路径不应退化为逐key读取");
+            assertEquals("v1", l1.get("k1").map(CacheRecord::getValue).orElse(null), "L2批量命中后应回填L1");
+            assertEquals("v2", l1.get("k2").map(CacheRecord::getValue).orElse(null), "L2批量命中后应回填L1");
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
+    void shouldLoadMissesDuringGetAllLikeSingleGet() {
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(false)
+                .autoRefreshEnabled(false)
+                .syncMode(SyncMode.NONE)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+        AtomicInteger sourceCalls = new AtomicInteger(0);
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user", policy, l1, null, key -> "load-" + sourceCalls.incrementAndGet(),
+                bus, versionManager, DistLockCoordinator.noop(), "node-1"
+        );
+        try {
+            Map<String, String> first = cache.getAll(List.of("m1", "m2"));
+            assertEquals("load-1", first.get("m1"));
+            assertEquals("load-2", first.get("m2"));
+            assertEquals(2, sourceCalls.get(), "miss时应按key回源加载");
+            assertEquals(2L, cache.statsSnapshot().miss(), "批量miss计数应与单次get一致");
+
+            Map<String, String> second = cache.getAll(List.of("m1", "m2"));
+            assertEquals("load-1", second.get("m1"));
+            assertEquals("load-2", second.get("m2"));
+            assertEquals(2, sourceCalls.get(), "命中后不应重复回源");
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
+    void shouldKeepL2UntouchedWhenEvictWithoutSync() {
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(true)
+                .autoRefreshEnabled(false)
+                .syncMode(SyncMode.NONE)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        AtomicInteger l2EvictCount = new AtomicInteger(0);
+        InMemoryL2Store<String, String> l2 = new InMemoryL2Store<>() {
+            @Override
+            public void evict(String key) {
+                l2EvictCount.incrementAndGet();
+                super.evict(key);
+            }
+        };
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user", policy, l1, l2, null, bus, versionManager, DistLockCoordinator.noop(), "node-1"
+        );
+        try {
+            cache.put("k-local", "v1");
+            assertTrue(l2.get("k-local").isPresent(), "预热后L2应存在目标key");
+
+            cache.evictWithoutSync("k-local");
+
+            assertTrue(l1.get("k-local").isEmpty(), "sync=false 本地驱逐应清理L1");
+            assertTrue(l2.get("k-local").isPresent(), "sync=false 本地驱逐不应删除共享L2");
+            assertEquals(0, l2EvictCount.get(), "sync=false 本地驱逐不应触发L2.evict");
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
+    void shouldKeepL2UntouchedWhenClearWithoutSync() {
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(true)
+                .autoRefreshEnabled(false)
+                .syncMode(SyncMode.NONE)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        AtomicInteger l2ClearCount = new AtomicInteger(0);
+        InMemoryL2Store<String, String> l2 = new InMemoryL2Store<>() {
+            @Override
+            public void clear() {
+                l2ClearCount.incrementAndGet();
+                super.clear();
+            }
+        };
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user", policy, l1, l2, null, bus, versionManager, DistLockCoordinator.noop(), "node-1"
+        );
+        try {
+            cache.put("k-local-1", "v1");
+            cache.put("k-local-2", "v2");
+            assertTrue(l2.get("k-local-1").isPresent());
+            assertTrue(l2.get("k-local-2").isPresent());
+
+            cache.clearWithoutSync();
+
+            assertTrue(l1.get("k-local-1").isEmpty(), "sync=false 本地清空应清理L1");
+            assertTrue(l1.get("k-local-2").isEmpty(), "sync=false 本地清空应清理L1");
+            assertTrue(l2.get("k-local-1").isPresent(), "sync=false 本地清空不应删除共享L2");
+            assertTrue(l2.get("k-local-2").isPresent(), "sync=false 本地清空不应删除共享L2");
+            assertEquals(0, l2ClearCount.get(), "sync=false 本地清空不应触发L2.clear");
         } finally {
             cache.close();
         }
@@ -839,6 +1086,12 @@ class EngineBackedCacheTest {
         return ((java.util.concurrent.atomic.AtomicBoolean) field.get(cache)).get();
     }
 
+    private static Object sharedObjectMapper(EngineBackedCache<?, ?> cache) throws Exception {
+        Field field = EngineBackedCache.class.getDeclaredField("objectMapper");
+        field.setAccessible(true);
+        return field.get(cache);
+    }
+
     private static boolean waitUntil(BooleanSupplier condition, long timeoutMs) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
         while (System.nanoTime() < deadline) {
@@ -893,7 +1146,7 @@ class EngineBackedCacheTest {
         }
     }
 
-    private static final class TestBus<K> implements InvalidationBus<K> {
+    private static class TestBus<K> implements InvalidationBus<K> {
 
         private static final String UPDATE_PAYLOAD_CODEC = "jackson-json-v1";
 

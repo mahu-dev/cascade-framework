@@ -2,11 +2,13 @@ package io.github.cascade.cache.v2.consistency;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.cascade.cache.v2.observability.CacheMetricsCollector;
+import io.github.cascade.cache.v2.support.ObjectMapperHolder;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RTopic;
 import org.redisson.api.RedissonClient;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.Map;
@@ -18,12 +20,29 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RedisInvalidationBusTest {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
+    @Test
+    void shouldReuseSharedObjectMapperAcrossInstances() throws Exception {
+        FakeRedisHarness harness = new FakeRedisHarness();
+        CacheMetricsCollector metrics = CacheMetricsCollector.create("user", null);
+        RedisInvalidationBus<String> first = new RedisInvalidationBus<>(harness.client(), "topic:", metrics,
+                new RedisInvalidationBus.PublishOptions(false, 1, 8, 1, 0));
+        RedisInvalidationBus<String> second = new RedisInvalidationBus<>(harness.client(), "topic:", metrics,
+                new RedisInvalidationBus.PublishOptions(false, 1, 8, 1, 0));
+
+        Object firstMapper = readPrivateField(first, "objectMapper");
+        Object secondMapper = readPrivateField(second, "objectMapper");
+
+        assertSame(ObjectMapperHolder.getInstance(), firstMapper);
+        assertSame(firstMapper, secondMapper);
+    }
 
     @Test
     void shouldRetryAndCountDeadLetterWhenPublishKeepsFailing() {
@@ -151,6 +170,12 @@ class RedisInvalidationBusTest {
     private static double counterValue(SimpleMeterRegistry registry, String name) {
         var meter = registry.find(name).counter();
         return meter == null ? 0.0 : meter.count();
+    }
+
+    private static Object readPrivateField(Object target, String fieldName) throws Exception {
+        Field field = target.getClass().getDeclaredField(fieldName);
+        field.setAccessible(true);
+        return field.get(target);
     }
 
     private static final class FakeRedisHarness {

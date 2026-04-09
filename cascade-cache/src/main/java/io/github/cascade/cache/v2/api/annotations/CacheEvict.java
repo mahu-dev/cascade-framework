@@ -64,7 +64,7 @@ public @interface CacheEvict {
     /**
      * 是否同步清除（分布式环境）
      * true: 发布跨节点同步事件
-     * false: 仅当前节点执行驱逐（不发布同步事件）
+     * false: 仅当前节点执行本地驱逐（不发布同步事件，不操作共享L2）
      */
     boolean sync() default true;
 }

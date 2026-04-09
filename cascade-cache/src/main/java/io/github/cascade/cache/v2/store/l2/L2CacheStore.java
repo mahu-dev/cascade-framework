@@ -2,6 +2,8 @@ package io.github.cascade.cache.v2.store.l2;
 
 import io.github.cascade.cache.v2.store.model.CacheRecord;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -10,6 +12,20 @@ import java.util.Optional;
 public interface L2CacheStore<K, V> {
 
     Optional<CacheRecord<V>> get(K key);
+
+    /**
+     * 批量读取，默认退化为逐个读取，便于非 Redis 实现快速接入。
+     */
+    default Map<K, CacheRecord<V>> getAll(Iterable<K> keys) {
+        Map<K, CacheRecord<V>> result = new LinkedHashMap<>();
+        if (keys == null) {
+            return result;
+        }
+        for (K key : keys) {
+            get(key).ifPresent(record -> result.put(key, record));
+        }
+        return result;
+    }
 
     void put(K key, CacheRecord<V> record, long ttlSeconds);
 
@@ -23,4 +39,3 @@ public interface L2CacheStore<K, V> {
 
     void close();
 }
-

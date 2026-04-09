@@ -9,6 +9,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CaffeineL1StoreTest {
 
     @Test
+    void shouldSupportInitialCapacityHint() {
+        CaffeineL1Store<String, String> store = new CaffeineL1Store<>(100, false, -1, -1, 32);
+        try {
+            store.put("k0", record("v0"));
+            assertEquals("v0", store.get("k0").map(CacheRecord::getValue).orElse(null));
+        } finally {
+            store.close();
+        }
+    }
+
+    @Test
     void shouldExpireAfterWriteWhenConfigured() throws InterruptedException {
         CaffeineL1Store<String, String> store = new CaffeineL1Store<>(100, false, 1, -1);
         try {

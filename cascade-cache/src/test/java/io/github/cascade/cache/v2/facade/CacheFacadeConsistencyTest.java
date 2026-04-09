@@ -654,9 +654,10 @@ class CacheFacadeConsistencyTest {
 
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         CountingInvalidationBus bus = new CountingInvalidationBus();
+        TrackingL2Store<String, String> l2 = new TrackingL2Store<>();
         CachePolicy policy = CachePolicy.builder()
                 .l1Enabled(true)
-                .l2Enabled(false)
+                .l2Enabled(true)
                 .autoRefreshEnabled(false)
                 .syncMode(SyncMode.INVALIDATE)
                 .build();
@@ -664,7 +665,7 @@ class CacheFacadeConsistencyTest {
                 "annotation-evict-sync",
                 policy,
                 new CaffeineL1Store<>(100, false),
-                null,
+                l2,
                 null,
                 bus,
                 new LocalVersionManager<>(),
@@ -680,14 +681,22 @@ class CacheFacadeConsistencyTest {
             CacheEvictSyncService proxy = proxyFactory.getProxy();
 
             cache.put("k1", "v1");
+            assertTrue(l2.get("k1").isPresent(), "预热写入后L2应存在k1");
             int baselineAfterSeed = bus.invalidatePublishCount.get();
+            long l2EvictBaseline = l2.evictCount.get();
             proxy.evictLocal("k1");
             assertEquals(baselineAfterSeed, bus.invalidatePublishCount.get(), "sync=false 不应发布同步事件");
+            assertEquals(l2EvictBaseline, l2.evictCount.get(), "sync=false 不应驱逐共享L2");
+            assertTrue(l2.get("k1").isPresent(), "sync=false 仅应影响本地，不应删除共享L2键");
 
             cache.put("k2", "v2");
+            assertTrue(l2.get("k2").isPresent(), "预热写入后L2应存在k2");
             int baselineBeforeSyncEvict = bus.invalidatePublishCount.get();
+            long l2EvictBeforeSync = l2.evictCount.get();
             proxy.evictSync("k2");
             assertEquals(baselineBeforeSyncEvict + 1, bus.invalidatePublishCount.get(), "sync=true 应发布同步事件");
+            assertEquals(l2EvictBeforeSync + 1, l2.evictCount.get(), "sync=true 应驱逐共享L2");
+            assertTrue(l2.get("k2").isEmpty(), "sync=true 后L2中的k2应被删除");
         } finally {
             manager.close();
         }
@@ -1315,6 +1324,53 @@ class CacheFacadeConsistencyTest {
         @Override
         public boolean isRunning() {
             return true;
+        }
+    }
+
+    static class TrackingL2Store<K, V> implements io.github.cascade.cache.v2.store.l2.L2CacheStore<K, V> {
+        private final java.util.concurrent.ConcurrentMap<K, CacheRecord<V>> data = new java.util.concurrent.ConcurrentHashMap<>();
+        private final java.util.concurrent.ConcurrentMap<K, java.util.concurrent.atomic.AtomicLong> versions =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        private final java.util.concurrent.atomic.AtomicLong evictCount = new java.util.concurrent.atomic.AtomicLong(0L);
+
+        @Override
+        public java.util.Optional<CacheRecord<V>> get(K key) {
+            return java.util.Optional.ofNullable(data.get(key));
+        }
+
+        @Override
+        public void put(K key, CacheRecord<V> record, long ttlSeconds) {
+            data.put(key, record);
+            versions.computeIfAbsent(key, ignored -> new java.util.concurrent.atomic.AtomicLong(0L))
+                    .updateAndGet(current -> Math.max(current, record.getVersion()));
+        }
+
+        @Override
+        public void evict(K key) {
+            evictCount.incrementAndGet();
+            data.remove(key);
+        }
+
+        @Override
+        public void clear() {
+            data.clear();
+        }
+
+        @Override
+        public long size() {
+            return data.size();
+        }
+
+        @Override
+        public long nextVersion(K key) {
+            return versions.computeIfAbsent(key, ignored -> new java.util.concurrent.atomic.AtomicLong(0L))
+                    .incrementAndGet();
+        }
+
+        @Override
+        public void close() {
+            data.clear();
+            versions.clear();
         }
     }
 }

@@ -1,14 +1,13 @@
 package io.github.cascade.cache.v2.loader;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.cascade.cache.v2.support.CacheKeyEncoder;
+import io.github.cascade.cache.v2.support.ObjectMapperHolder;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
@@ -21,7 +20,7 @@ public class RedisDistLockCoordinator<K> implements DistLockCoordinator<K> {
 
     private final RedissonClient redissonClient;
     private final String lockPrefix;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = ObjectMapperHolder.getInstance();
 
     public RedisDistLockCoordinator(String cacheName, RedissonClient redissonClient, String keyPrefix) {
         this.redissonClient = redissonClient;
@@ -71,12 +70,6 @@ public class RedisDistLockCoordinator<K> implements DistLockCoordinator<K> {
     }
 
     private String encodeKey(K key) {
-        try {
-            String json = objectMapper.writeValueAsString(key);
-            return Base64.getUrlEncoder().withoutPadding()
-                    .encodeToString(json.getBytes(StandardCharsets.UTF_8));
-        } catch (JsonProcessingException e) {
-            return String.valueOf(key);
-        }
+        return CacheKeyEncoder.encodeKey(objectMapper, key);
     }
 }

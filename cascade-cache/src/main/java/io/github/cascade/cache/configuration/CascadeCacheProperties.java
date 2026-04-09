@@ -3,7 +3,10 @@ package io.github.cascade.cache.configuration;
 import lombok.Data;
 import lombok.experimental.Accessors;
 import io.github.cascade.cache.v2.policy.LockFailureStrategy;
+import org.springframework.beans.BeanUtils;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+
+import java.util.function.Supplier;
 
 
 /**
@@ -92,11 +95,6 @@ public class CascadeCacheProperties {
          * 初始容量
          */
         private int initialCapacity = 16;
-
-        /**
-         * 并发级别
-         */
-        private int concurrencyLevel = 4;
     }
 
     /**
@@ -308,6 +306,13 @@ public class CascadeCacheProperties {
     }
 
     /**
+     * L1缓存初始容量
+     */
+    public int getL1InitialCapacity() {
+        return l1.initialCapacity;
+    }
+
+    /**
      * 是否启用L2缓存
      */
     public boolean isL2Enabled() {
@@ -419,6 +424,30 @@ public class CascadeCacheProperties {
      */
     public static CascadeCacheProperties defaults() {
         return new CascadeCacheProperties();
+    }
+
+    /**
+     * 深拷贝当前配置，避免运行时修改污染默认配置实例。
+     */
+    public CascadeCacheProperties deepCopy() {
+        CascadeCacheProperties target = CascadeCacheProperties.defaults();
+        BeanUtils.copyProperties(this, target, "l1", "l2", "sync", "refresh", "protection", "loader");
+        target.setL1(copyBean(this.l1, L1Properties::new));
+        target.setL2(copyBean(this.l2, L2Properties::new));
+        target.setSync(copyBean(this.sync, SyncProperties::new));
+        target.setRefresh(copyBean(this.refresh, RefreshConfig::new));
+        target.setProtection(copyBean(this.protection, ProtectionConfig::new));
+        target.setLoader(copyBean(this.loader, LoaderProperties::new));
+        return target;
+    }
+
+    private static <T> T copyBean(T source, Supplier<T> factory) {
+        T target = factory.get();
+        if (source == null) {
+            return target;
+        }
+        BeanUtils.copyProperties(source, target);
+        return target;
     }
 
     /**

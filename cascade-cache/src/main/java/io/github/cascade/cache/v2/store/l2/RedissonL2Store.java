@@ -1,10 +1,12 @@
 package io.github.cascade.cache.v2.store.l2;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.cascade.cache.v2.support.CacheKeyEncoder;
+import io.github.cascade.cache.v2.support.ObjectMapperHolder;
 import io.github.cascade.cache.v2.store.model.CacheRecord;
 import org.redisson.api.RAtomicLong;
 import org.redisson.api.RBucket;
+import org.redisson.api.RBuckets;
 import org.redisson.api.RKeys;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
@@ -12,9 +14,11 @@ import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.time.Duration;
-import java.util.Base64;
 import java.util.Optional;
 
 /**
@@ -27,7 +31,7 @@ public class RedissonL2Store<K, V> implements L2CacheStore<K, V> {
     private final RedissonClient redissonClient;
     private final String keyPrefix;
     private final String namespaceVersionKey;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = ObjectMapperHolder.getInstance();
     private volatile long cachedNamespaceVersion = -1L;
 
     public RedissonL2Store(String cacheName, RedissonClient redissonClient, String prefix) {
@@ -45,6 +49,34 @@ public class RedissonL2Store<K, V> implements L2CacheStore<K, V> {
     public Optional<CacheRecord<V>> get(K key) {
         RBucket<CacheRecord<V>> bucket = redissonClient.getBucket(dataKey(key, currentNamespaceVersion()));
         return Optional.ofNullable(bucket.get());
+    }
+
+    @Override
+    public Map<K, CacheRecord<V>> getAll(Iterable<K> keys) {
+        Map<K, CacheRecord<V>> result = new LinkedHashMap<>();
+        if (keys == null) {
+            return result;
+        }
+        long namespaceVersion = currentNamespaceVersion();
+        List<K> keyList = new ArrayList<>();
+        List<String> redisKeys = new ArrayList<>();
+        for (K key : keys) {
+            keyList.add(key);
+            redisKeys.add(dataKey(key, namespaceVersion));
+        }
+        if (redisKeys.isEmpty()) {
+            return result;
+        }
+
+        RBuckets buckets = redissonClient.getBuckets();
+        Map<String, CacheRecord<V>> batchValues = buckets.get(redisKeys.toArray(new String[0]));
+        for (int i = 0; i < keyList.size(); i++) {
+            CacheRecord<V> record = batchValues.get(redisKeys.get(i));
+            if (record != null) {
+                result.put(keyList.get(i), record);
+            }
+        }
+        return result;
     }
 
     @Override
@@ -104,16 +136,7 @@ public class RedissonL2Store<K, V> implements L2CacheStore<K, V> {
     }
 
     private String encodeKey(K key) {
-        if (key == null) {
-            return "null";
-        }
-        try {
-            String json = objectMapper.writeValueAsString(key);
-            return Base64.getUrlEncoder().withoutPadding()
-                    .encodeToString(json.getBytes(StandardCharsets.UTF_8));
-        } catch (JsonProcessingException e) {
-            return String.valueOf(key);
-        }
+        return CacheKeyEncoder.encodeKey(objectMapper, key);
     }
 
     private long currentNamespaceVersion() {
@@ -147,7 +170,7 @@ public class RedissonL2Store<K, V> implements L2CacheStore<K, V> {
         }
     }
 
-    private boolean tryUnlinkByPattern(RKeys keys, String pattern) {
+    private static boolean tryUnlinkByPattern(RKeys keys, String pattern) {
         try {
             Method method = keys.getClass().getMethod("unlinkByPattern", String.class);
             method.invoke(keys, pattern);

@@ -151,13 +151,46 @@ class EngineBackedCacheRedisIntegrationTest {
         ), "UPDATE 模式下 POJO 跨节点同步失败或出现类型转换异常");
     }
 
-    private <V> Cache<String, V> createCache(RedissonClient client,
-                                             String cacheName,
-                                             String keyPrefix,
-                                             String topicPrefix,
-                                             SyncMode syncMode,
-                                             String nodeId,
-                                             Class<V> valueType) {
+    @Test
+    void shouldBackfillL1AfterBatchGetAllFromRedisL2() {
+        String cacheName = "it-batch-getall-" + UUID.randomUUID();
+        String keyPrefix = "it:cascade:" + UUID.randomUUID() + ":";
+        String topicPrefix = "it:cascade:sync:" + UUID.randomUUID() + ":";
+
+        RedissonClient writerClient = newClient();
+        RedissonClient readerClient = newClient();
+        closers.add(writerClient::shutdown);
+        closers.add(readerClient::shutdown);
+
+        EngineBackedCache<String, String> writer = createCache(
+                writerClient, cacheName, keyPrefix, topicPrefix, SyncMode.NONE, "node-writer", String.class
+        );
+        EngineBackedCache<String, String> reader = createCache(
+                readerClient, cacheName, keyPrefix, topicPrefix, SyncMode.NONE, "node-reader", String.class
+        );
+        closers.add(writer::close);
+        closers.add(reader::close);
+
+        writer.put("k1", "v1");
+        writer.put("k2", "v2");
+
+        assertEquals(java.util.Map.of("k1", "v1", "k2", "v2"), reader.getAll(List.of("k1", "k2")));
+        assertEquals(0L, reader.statsSnapshot().l1Hit(), "首次批量读取前L1为空，不应计L1命中");
+        assertEquals(2L, reader.statsSnapshot().l2Hit(), "首次批量读取应命中L2");
+        assertEquals(2L, reader.statsSnapshot().backfillL1(), "首次批量读取命中L2后应回填L1");
+
+        assertEquals(java.util.Map.of("k1", "v1", "k2", "v2"), reader.getAll(List.of("k1", "k2")));
+        assertEquals(2L, reader.statsSnapshot().l1Hit(), "二次批量读取应直接命中L1");
+        assertEquals(2L, reader.statsSnapshot().l2Hit(), "二次批量读取不应新增L2命中");
+    }
+
+    private <V> EngineBackedCache<String, V> createCache(RedissonClient client,
+                                                         String cacheName,
+                                                         String keyPrefix,
+                                                         String topicPrefix,
+                                                         SyncMode syncMode,
+                                                         String nodeId,
+                                                         Class<V> valueType) {
         CachePolicy policy = CachePolicy.builder()
                 .l1Enabled(true)
                 .l2Enabled(true)

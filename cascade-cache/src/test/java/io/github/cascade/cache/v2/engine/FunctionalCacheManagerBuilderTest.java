@@ -9,14 +9,18 @@ import io.github.cascade.cache.v2.facade.FunctionalCacheManager;
 import io.github.cascade.cache.v2.loader.CacheLoaderResolver;
 import io.github.cascade.cache.v2.policy.SyncMode;
 import org.junit.jupiter.api.Test;
+import org.redisson.api.RAtomicLong;
+import org.redisson.api.RedissonClient;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.lang.reflect.Proxy;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -54,6 +58,35 @@ class FunctionalCacheManagerBuilderTest {
             Map<String, Object> diagnostics = manager.diagnostics("user");
             assertEquals(true, diagnostics.get("exists"));
             assertTrue(diagnostics.containsKey("stats.miss"));
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldNotMutateManagerDefaultConfigWhenBuilderOverridesOptions() {
+        CascadeCacheProperties defaults = CascadeCacheProperties.defaults();
+        defaults.getL1().setEnabled(true);
+        defaults.getRefresh().setEnabled(true);
+        defaults.getSync().setEnabled(true);
+        defaults.getSync().setMode(SyncMode.UPDATE);
+        defaults.getSync().setUpdateEnabled(true);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
+        try {
+            manager.newCache("copy-isolation")
+                    .keyType(String.class)
+                    .valueType(String.class)
+                    .loader(key -> "v-" + key)
+                    .autoRefresh(false)
+                    .syncMode(SyncMode.NONE)
+                    .build();
+
+            assertTrue(defaults.getL1().isEnabled(), "Builder 运行时配置不应污染 manager 默认配置");
+            assertTrue(defaults.getRefresh().isEnabled(), "Builder 改动应作用于副本而非默认配置");
+            assertTrue(defaults.getSync().isEnabled());
+            assertEquals(SyncMode.UPDATE, defaults.getSync().getMode());
+            assertTrue(defaults.getSync().isUpdateEnabled());
         } finally {
             manager.close();
         }
@@ -287,6 +320,33 @@ class FunctionalCacheManagerBuilderTest {
     }
 
     @Test
+    void shouldFailFastWhenSameCacheNameHasDifferentL1InitialCapacity() {
+        CascadeCacheProperties config = CascadeCacheProperties.defaults();
+        config.getL1().setEnabled(true);
+        config.getL2().setEnabled(false);
+        config.getSync().setEnabled(false);
+        config.getRefresh().setEnabled(false);
+        config.getL1().setInitialCapacity(16);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, config, null);
+        try {
+            manager.getOrCreateCache("conflict-l1-initial-capacity", String.class, String.class, config);
+
+            CascadeCacheProperties changed = CascadeCacheProperties.defaults();
+            changed.getL1().setEnabled(true);
+            changed.getL2().setEnabled(false);
+            changed.getSync().setEnabled(false);
+            changed.getRefresh().setEnabled(false);
+            changed.getL1().setInitialCapacity(64);
+
+            assertThrows(CacheConfigurationException.class,
+                    () -> manager.getOrCreateCache("conflict-l1-initial-capacity", String.class, String.class, changed));
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
     void shouldFailFastWhenSameCacheNameHasDifferentL1ExpireAfterWrite() {
         CascadeCacheProperties config = CascadeCacheProperties.defaults();
         config.getL1().setEnabled(true);
@@ -339,6 +399,95 @@ class FunctionalCacheManagerBuilderTest {
 
             assertThrows(CacheConfigurationException.class,
                     () -> manager.getOrCreateCache("conflict-l1-expire-access", String.class, String.class, changed));
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldFailFastWhenSameCacheNameHasDifferentL1RecordStats() {
+        CascadeCacheProperties config = CascadeCacheProperties.defaults();
+        config.getL1().setEnabled(true);
+        config.getL2().setEnabled(false);
+        config.getSync().setEnabled(false);
+        config.getRefresh().setEnabled(false);
+        config.getL1().setRecordStats(true);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, config, null);
+        try {
+            manager.getOrCreateCache("conflict-l1-record-stats", String.class, String.class, config);
+
+            CascadeCacheProperties changed = CascadeCacheProperties.defaults();
+            changed.getL1().setEnabled(true);
+            changed.getL2().setEnabled(false);
+            changed.getSync().setEnabled(false);
+            changed.getRefresh().setEnabled(false);
+            changed.getL1().setRecordStats(false);
+
+            assertThrows(CacheConfigurationException.class,
+                    () -> manager.getOrCreateCache("conflict-l1-record-stats", String.class, String.class, changed));
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldFailFastWhenSameCacheNameHasDifferentL2KeyPrefix() {
+        RedissonClient redisson = minimalRedissonClient();
+
+        CascadeCacheProperties config = CascadeCacheProperties.defaults();
+        config.getL1().setEnabled(false);
+        config.getL2().setEnabled(true);
+        config.getL2().setKeyPrefix("prefix-a");
+        config.getSync().setEnabled(false);
+        config.getRefresh().setEnabled(false);
+        config.getProtection().setDistributedLockEnabled(false);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(redisson, config, null);
+        try {
+            manager.getOrCreateCache("conflict-l2-prefix", String.class, String.class, config);
+
+            CascadeCacheProperties changed = CascadeCacheProperties.defaults();
+            changed.getL1().setEnabled(false);
+            changed.getL2().setEnabled(true);
+            changed.getL2().setKeyPrefix("prefix-b");
+            changed.getSync().setEnabled(false);
+            changed.getRefresh().setEnabled(false);
+            changed.getProtection().setDistributedLockEnabled(false);
+
+            assertThrows(CacheConfigurationException.class,
+                    () -> manager.getOrCreateCache("conflict-l2-prefix", String.class, String.class, changed));
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldTreatEquivalentL2KeyPrefixAsSameDefinition() {
+        RedissonClient redisson = minimalRedissonClient();
+
+        CascadeCacheProperties config = CascadeCacheProperties.defaults();
+        config.getL1().setEnabled(false);
+        config.getL2().setEnabled(true);
+        config.getL2().setKeyPrefix("prefix-eq");
+        config.getSync().setEnabled(false);
+        config.getRefresh().setEnabled(false);
+        config.getProtection().setDistributedLockEnabled(false);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(redisson, config, null);
+        try {
+            Cache<String, String> first = manager.getOrCreateCache("same-l2-prefix", String.class, String.class, config);
+
+            CascadeCacheProperties changed = CascadeCacheProperties.defaults();
+            changed.getL1().setEnabled(false);
+            changed.getL2().setEnabled(true);
+            changed.getL2().setKeyPrefix("prefix-eq:");
+            changed.getSync().setEnabled(false);
+            changed.getRefresh().setEnabled(false);
+            changed.getProtection().setDistributedLockEnabled(false);
+
+            Cache<String, String> second = manager.getOrCreateCache("same-l2-prefix", String.class, String.class, changed);
+            assertSame(first, second, "逻辑等价的L2前缀不应触发定义冲突");
         } finally {
             manager.close();
         }
@@ -488,5 +637,34 @@ class FunctionalCacheManagerBuilderTest {
         public String apply(String key) {
             return "discovered-" + key;
         }
+    }
+
+    private static RedissonClient minimalRedissonClient() {
+        AtomicLong counter = new AtomicLong(1L);
+        RAtomicLong atomicLong = (RAtomicLong) Proxy.newProxyInstance(
+                RAtomicLong.class.getClassLoader(),
+                new Class<?>[]{RAtomicLong.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "get" -> counter.get();
+                    case "incrementAndGet" -> counter.incrementAndGet();
+                    case "compareAndSet" -> counter.compareAndSet((Long) args[0], (Long) args[1]);
+                    case "toString" -> "RAtomicLongProxy";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == (args != null && args.length > 0 ? args[0] : null);
+                    default -> throw new UnsupportedOperationException("Unsupported RAtomicLong method: " + method.getName());
+                }
+        );
+
+        return (RedissonClient) Proxy.newProxyInstance(
+                RedissonClient.class.getClassLoader(),
+                new Class<?>[]{RedissonClient.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "getAtomicLong" -> atomicLong;
+                    case "toString" -> "RedissonClientProxy";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == (args != null && args.length > 0 ? args[0] : null);
+                    default -> throw new UnsupportedOperationException("Unsupported RedissonClient method: " + method.getName());
+                }
+        );
     }
 }

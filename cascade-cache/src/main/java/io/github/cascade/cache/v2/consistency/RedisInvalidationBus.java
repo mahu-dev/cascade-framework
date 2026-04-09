@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.cascade.cache.v2.store.model.CacheRecord;
 import io.github.cascade.cache.v2.consistency.InvalidationEvent;
 import io.github.cascade.cache.v2.observability.CacheMetricsCollector;
+import io.github.cascade.cache.v2.support.ObjectMapperHolder;
 import org.redisson.api.RTopic;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
@@ -34,7 +35,7 @@ public class RedisInvalidationBus<K> implements InvalidationBus<K> {
     private final String topicPrefix;
     private final CacheMetricsCollector metricsCollector;
     private final PublishOptions publishOptions;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = ObjectMapperHolder.getInstance();
     private final Object lifecycleMonitor = new Object();
 
     private final ConcurrentMap<String, Consumer<InvalidationEvent<K>>> handlers = new ConcurrentHashMap<>();

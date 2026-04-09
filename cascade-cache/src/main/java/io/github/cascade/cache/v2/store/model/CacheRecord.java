@@ -1,5 +1,8 @@
 package io.github.cascade.cache.v2.store.model;
 
+import lombok.Getter;
+import lombok.Setter;
+
 import java.io.Serial;
 import java.io.Serializable;
 
@@ -8,6 +11,8 @@ import java.io.Serializable;
  *
  * @param <V> 值类型
  */
+@Setter
+@Getter
 public class CacheRecord<V> implements Serializable {
 
     @Serial
@@ -37,52 +42,5 @@ public class CacheRecord<V> implements Serializable {
         this.sourceNodeId = sourceNodeId;
     }
 
-    public V getValue() {
-        return value;
-    }
-
-    public void setValue(V value) {
-        this.value = value;
-    }
-
-    public long getVersion() {
-        return version;
-    }
-
-    public void setVersion(long version) {
-        this.version = version;
-    }
-
-    public long getWriteTimeMs() {
-        return writeTimeMs;
-    }
-
-    public void setWriteTimeMs(long writeTimeMs) {
-        this.writeTimeMs = writeTimeMs;
-    }
-
-    public long getSoftExpireAtMs() {
-        return softExpireAtMs;
-    }
-
-    public void setSoftExpireAtMs(long softExpireAtMs) {
-        this.softExpireAtMs = softExpireAtMs;
-    }
-
-    public long getHardExpireAtMs() {
-        return hardExpireAtMs;
-    }
-
-    public void setHardExpireAtMs(long hardExpireAtMs) {
-        this.hardExpireAtMs = hardExpireAtMs;
-    }
-
-    public String getSourceNodeId() {
-        return sourceNodeId;
-    }
-
-    public void setSourceNodeId(String sourceNodeId) {
-        this.sourceNodeId = sourceNodeId;
-    }
 }
 
