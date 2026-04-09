@@ -15,9 +15,11 @@ import io.github.cascade.cache.v2.observability.CacheMetricsCollector;
 import io.github.cascade.cache.v2.observability.CacheStatsSnapshot;
 import io.github.cascade.cache.v2.policy.CachePolicy;
 import io.github.cascade.cache.v2.policy.LockFailureStrategy;
+import io.github.cascade.cache.v2.policy.RefreshExecutionOptions;
 import io.github.cascade.cache.v2.policy.SyncMode;
 import io.github.cascade.cache.v2.store.l1.L1CacheStore;
 import io.github.cascade.cache.v2.store.l2.L2CacheStore;
+import io.github.cascade.cache.v2.loader.LoaderPriority;
 import io.github.cascade.cache.v2.loader.SingleFlight;
 import io.github.cascade.cache.v2.consistency.InvalidationBus;
 import org.slf4j.Logger;
@@ -36,6 +38,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -54,7 +57,11 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     private static final int ASYNC_QUEUE_CAPACITY = 1024;
     private static final int READ_COUNTER_MAX_FACTOR = 4;
     private static final long READ_COUNTER_EXPIRE_AFTER_ACCESS_MINUTES = 30L;
+    private static final int LOCAL_VERSION_MAX_FACTOR = 16;
+    private static final long LOCAL_VERSION_MIN_MAX_SIZE = 10_000L;
+    private static final long LOCAL_VERSION_EXPIRE_AFTER_ACCESS_MINUTES = 60L;
     private static final AtomicInteger ASYNC_THREAD_COUNTER = new AtomicInteger(0);
+    private static final AtomicInteger REFRESH_THREAD_COUNTER = new AtomicInteger(0);
 
     private final String cacheName;
     private final CachePolicy policy;
@@ -67,7 +74,9 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     private final Class<V> valueType;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final String nodeId;
+    private final RefreshExecutionOptions refreshOptions;
     private final ExecutorService asyncExecutor;
+    private final ThreadPoolExecutor refreshExecutor;
     private final ScheduledExecutorService refreshScheduler;
     private final SingleFlight<K, V> singleFlight = new SingleFlight<>();
     private final ReadPipeline<K, V> readPipeline = new ReadPipeline<>();
@@ -75,7 +84,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     private final RefreshPipeline refreshPipeline = new RefreshPipeline();
     private final Set<K> trackedKeys = ConcurrentHashMap.newKeySet();
     private final Set<K> refreshingKeys = ConcurrentHashMap.newKeySet();
-    private final Map<K, Long> localVersion = new ConcurrentHashMap<>();
+    private final com.github.benmanes.caffeine.cache.Cache<K, Long> localVersion;
     private final com.github.benmanes.caffeine.cache.Cache<K, AtomicLong> readCounter;
     private final AtomicLong clearVersion = new AtomicLong(0L);
     private final AtomicLong l1Hit = new AtomicLong(0L);
@@ -94,8 +103,10 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     private final AtomicLong droppedEvents = new AtomicLong(0L);
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicBoolean subscribed = new AtomicBoolean(false);
+    private final AtomicBoolean refreshStarted = new AtomicBoolean(false);
 
     private volatile Function<K, V> loader;
+    private volatile int loaderPriority = LoaderPriority.DEFAULT;
 
     public EngineBackedCache(String cacheName,
                              CachePolicy policy,
@@ -146,10 +157,16 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         this.metricsCollector = metricsCollector != null ? metricsCollector : CacheMetricsCollector.create(cacheName, null);
         this.valueType = valueType != null ? valueType : castObjectClass();
         this.nodeId = nodeId;
+        this.refreshOptions = policy.getRefreshExecutionOptions() != null
+                ? policy.getRefreshExecutionOptions()
+                : RefreshExecutionOptions.defaults();
+        this.loaderPriority = LoaderPriority.of(loader);
         this.asyncExecutor = createBoundedAsyncExecutor(cacheName);
+        this.refreshExecutor = createRefreshExecutor(cacheName, this.refreshOptions);
         this.readCounter = createReadCounterCache(policy.getMaxTrackedKeys());
+        this.localVersion = createLocalVersionCache(policy.getMaxTrackedKeys());
         this.refreshScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread thread = new Thread(r, "cascade-refresh-" + cacheName);
+            Thread thread = new Thread(r, "cascade-refresh-scheduler-" + cacheName);
             thread.setDaemon(true);
             return thread;
         });
@@ -164,13 +181,24 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         return (Class<T>) Object.class;
     }
 
-    public void setLoaderIfAbsent(Function<K, V> loader) {
-        if (loader != null && this.loader == null) {
-            synchronized (this) {
-                if (this.loader == null) {
-                    this.loader = loader;
-                    LOGGER.info("为缓存设置延迟加载器: cache={}", cacheName);
-                }
+    public void setLoaderIfAbsent(Function<K, V> candidate) {
+        if (candidate == null) {
+            return;
+        }
+        int candidatePriority = LoaderPriority.of(candidate);
+        synchronized (this) {
+            if (this.loader == null) {
+                this.loader = candidate;
+                this.loaderPriority = candidatePriority;
+                LOGGER.info("为缓存设置延迟加载器: cache={}, priority={}", cacheName, candidatePriority);
+                return;
+            }
+            if (candidatePriority > this.loaderPriority) {
+                int previousPriority = this.loaderPriority;
+                this.loader = candidate;
+                this.loaderPriority = candidatePriority;
+                LOGGER.info("为缓存升级加载器: cache={}, oldPriority={}, newPriority={}",
+                        cacheName, previousPriority, candidatePriority);
             }
         }
     }
@@ -182,29 +210,9 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
             return Optional.empty();
         }
         trackKey(key);
-
-        ReadPipeline.ReadResult<V> readResult = readPipeline.read(
-                key,
-                this::readFromL1,
-                this::readFromL2,
-                this::isHardExpired
-        );
-        if (readResult.l1HardExpired() && l1Store != null) {
-            l1Store.evict(key);
-        }
-        if (readResult.l2HardExpired() && l2Store != null) {
-            l2Store.evict(key);
-        }
-        if (readResult.hit()) {
-            CacheRecord<V> record = readResult.record();
-            if (readResult.level() == ReadPipeline.HitLevel.L2) {
-                markL2Hit();
-                writeBackL1(key, record);
-            } else {
-                markL1Hit();
-            }
-            triggerRefreshIfSoftExpired(key, record);
-            return Optional.ofNullable(record.getValue());
+        Optional<V> cached = readCachedValue(key);
+        if (cached.isPresent()) {
+            return cached;
         }
 
         markMiss();
@@ -218,15 +226,18 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         if (key == null) {
             return null;
         }
-        Optional<V> cached = get(key);
+        trackKey(key);
+        Optional<V> cached = readCachedValue(key);
         if (cached.isPresent()) {
             return cached.get();
         }
-        Function<K, V> loadFunction = fallbackLoader != null ? fallbackLoader : loader;
-        if (loadFunction == null) {
-            return null;
+
+        markMiss();
+        if (fallbackLoader == null) {
+            return loadAndWriteBack(key, policy.getHardTtlSeconds());
         }
-        V loaded = loadFunction.apply(key);
+
+        V loaded = fallbackLoader.apply(key);
         if (loaded != null) {
             put(key, loaded);
         }
@@ -272,7 +283,37 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         if (key == null) {
             return;
         }
+        long version = evictInternal(key);
+        publishInvalidation(key, version);
+    }
 
+    @Override
+    public void clear() {
+        checkNotClosed();
+        long version = clearInternal();
+        publishClear(version);
+    }
+
+    /**
+     * 仅执行本地驱逐，不发布失效同步事件。
+     */
+    public void evictWithoutSync(K key) {
+        checkNotClosed();
+        if (key == null) {
+            return;
+        }
+        evictInternal(key);
+    }
+
+    /**
+     * 仅执行本地清空，不发布清空同步事件。
+     */
+    public void clearWithoutSync() {
+        checkNotClosed();
+        clearInternal();
+    }
+
+    private long evictInternal(K key) {
         long version = nextVersion(key);
         if (l2Store != null) {
             l2Store.evict(key);
@@ -283,12 +324,10 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         trackedKeys.remove(key);
         readCounter.invalidate(key);
         localVersion.put(key, version);
-        publishInvalidation(key, version);
+        return version;
     }
 
-    @Override
-    public void clear() {
-        checkNotClosed();
+    private long clearInternal() {
         if (l2Store != null) {
             l2Store.clear();
         }
@@ -297,11 +336,11 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         }
         trackedKeys.clear();
         readCounter.invalidateAll();
-        localVersion.clear();
+        localVersion.invalidateAll();
 
         long version = resolveClearVersionAfterStoreClear();
         clearVersion.set(version);
-        publishClear(version);
+        return version;
     }
 
     @Override
@@ -359,15 +398,9 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
             return;
         }
 
-        try {
-            refreshScheduler.shutdownNow();
-        } catch (Exception ignored) {
-        }
-
-        try {
-            asyncExecutor.shutdownNow();
-        } catch (Exception ignored) {
-        }
+        shutdownExecutorGracefully(refreshScheduler, refreshOptions.shutdownTimeoutSeconds());
+        shutdownExecutorGracefully(refreshExecutor, refreshOptions.shutdownTimeoutSeconds());
+        shutdownExecutorGracefully(asyncExecutor, refreshOptions.shutdownTimeoutSeconds());
 
         try {
             if (subscribed.compareAndSet(true, false)) {
@@ -426,6 +459,34 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
             });
         }
         return loadWithProtection(key, ttlSeconds);
+    }
+
+    private Optional<V> readCachedValue(K key) {
+        ReadPipeline.ReadResult<V> readResult = readPipeline.read(
+                key,
+                this::readFromL1,
+                this::readFromL2,
+                this::isHardExpired
+        );
+        if (readResult.l1HardExpired() && l1Store != null) {
+            l1Store.evict(key);
+        }
+        if (readResult.l2HardExpired() && l2Store != null) {
+            l2Store.evict(key);
+        }
+        if (!readResult.hit()) {
+            return Optional.empty();
+        }
+
+        CacheRecord<V> record = readResult.record();
+        if (readResult.level() == ReadPipeline.HitLevel.L2) {
+            markL2Hit();
+            writeBackL1(key, record);
+        } else {
+            markL1Hit();
+        }
+        triggerRefreshIfSoftExpired(key, record);
+        return Optional.ofNullable(record.getValue());
     }
 
     private V loadWithProtection(K key, long ttlSeconds) {
@@ -495,8 +556,26 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         if (!policy.isAutoRefreshEnabled()) {
             return;
         }
+        if (!refreshOptions.startOnInit()) {
+            return;
+        }
+        ensureRefreshSchedulerStarted();
+    }
+
+    private void ensureRefreshSchedulerStarted() {
+        if (!policy.isAutoRefreshEnabled()) {
+            return;
+        }
+        if (!refreshStarted.compareAndSet(false, true)) {
+            return;
+        }
         long interval = Math.max(1L, policy.getRefreshIntervalSeconds());
-        refreshScheduler.scheduleWithFixedDelay(this::refreshTrackedKeysSafely, interval, interval, TimeUnit.SECONDS);
+        try {
+            refreshScheduler.scheduleWithFixedDelay(this::refreshTrackedKeysSafely, interval, interval, TimeUnit.SECONDS);
+        } catch (RejectedExecutionException e) {
+            refreshStarted.set(false);
+            LOGGER.warn("刷新调度启动失败: cache={}, error={}", cacheName, e.getMessage());
+        }
     }
 
     private void refreshTrackedKeysSafely() {
@@ -543,6 +622,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     }
 
     private void triggerRefreshIfSoftExpired(K key, CacheRecord<V> record) {
+        ensureRefreshSchedulerStarted();
         if (refreshPipeline.shouldRefresh(policy.isAutoRefreshEnabled(), record, System.currentTimeMillis())) {
             triggerRefresh(key);
         }
@@ -556,7 +636,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
             return;
         }
         long startNanos = System.nanoTime();
-        supplyAsyncSafely(() -> loadAndWriteBack(key, policy.getHardTtlSeconds()))
+        runRefreshWithRetry(key, 0)
                 .whenComplete((value, throwable) -> {
                     long latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
                     metricsCollector.recordRefreshLatency(latencyMs);
@@ -569,8 +649,91 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
                 });
     }
 
+    private CompletableFuture<V> runRefreshWithRetry(K key, int attempt) {
+        CompletableFuture<V> refreshAttempt;
+        try {
+            refreshAttempt = CompletableFuture.supplyAsync(
+                    () -> loadAndWriteBack(key, policy.getHardTtlSeconds()),
+                    refreshExecutor
+            );
+        } catch (RejectedExecutionException e) {
+            LOGGER.debug("刷新任务提交被拒绝: cache={}, key={}, attempt={}, error={}",
+                    cacheName, key, attempt + 1, e.getMessage());
+            return retryLaterOrComplete(key, attempt);
+        }
+
+        CompletableFuture<V> timeoutGuard = refreshAttempt.orTimeout(refreshOptions.refreshTimeoutSeconds(), TimeUnit.SECONDS);
+        return timeoutGuard.handle((value, throwable) -> {
+            if (throwable == null && value != null) {
+                return CompletableFuture.completedFuture(value);
+            }
+            if (isTimeout(throwable)) {
+                refreshAttempt.cancel(true);
+                LOGGER.debug("刷新任务超时: cache={}, key={}, attempt={}, timeoutSeconds={}",
+                        cacheName, key, attempt + 1, refreshOptions.refreshTimeoutSeconds());
+            } else if (throwable != null) {
+                LOGGER.debug("刷新任务失败: cache={}, key={}, attempt={}, error={}",
+                        cacheName, key, attempt + 1, rootCauseMessage(throwable));
+            } else {
+                LOGGER.debug("刷新任务返回空值: cache={}, key={}, attempt={}", cacheName, key, attempt + 1);
+            }
+            return retryLaterOrComplete(key, attempt);
+        }).thenCompose(Function.identity());
+    }
+
+    private CompletableFuture<V> retryLaterOrComplete(K key, int attempt) {
+        if (attempt >= refreshOptions.maxRetries()) {
+            return CompletableFuture.completedFuture(null);
+        }
+        int nextAttempt = attempt + 1;
+        long delaySeconds = Math.max(0L, refreshOptions.retryIntervalSeconds());
+        if (delaySeconds == 0L) {
+            return runRefreshWithRetry(key, nextAttempt);
+        }
+
+        CompletableFuture<V> chained = new CompletableFuture<>();
+        try {
+            refreshScheduler.schedule(
+                    () -> runRefreshWithRetry(key, nextAttempt)
+                            .whenComplete((value, throwable) -> completeFuture(chained, value, throwable)),
+                    delaySeconds,
+                    TimeUnit.SECONDS
+            );
+        } catch (RejectedExecutionException e) {
+            chained.complete(null);
+        }
+        return chained;
+    }
+
+    private static <T> void completeFuture(CompletableFuture<T> target, T value, Throwable throwable) {
+        if (throwable == null) {
+            target.complete(value);
+        } else {
+            target.completeExceptionally(throwable);
+        }
+    }
+
+    private static boolean isTimeout(Throwable throwable) {
+        Throwable root = rootCause(throwable);
+        return root instanceof TimeoutException;
+    }
+
+    private static String rootCauseMessage(Throwable throwable) {
+        Throwable root = rootCause(throwable);
+        return root == null ? "unknown" : root.getMessage();
+    }
+
+    private static Throwable rootCause(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null && current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
     private void trackKey(K key) {
         if (policy.isAutoRefreshEnabled() && key != null) {
+            ensureRefreshSchedulerStarted();
             long accessCount = readCounter.asMap().computeIfAbsent(key, ignored -> new AtomicLong(0L)).incrementAndGet();
             if (refreshPipeline.shouldTrack(
                     policy.isAutoRefreshEnabled(),
@@ -637,11 +800,45 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         return executor;
     }
 
+    private static ThreadPoolExecutor createRefreshExecutor(String cacheName, RefreshExecutionOptions options) {
+        int poolSize = options.effectiveThreadPoolSize();
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                poolSize,
+                poolSize,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(options.queueCapacity()),
+                runnable -> {
+                    Thread thread = new Thread(
+                            runnable,
+                            "cascade-refresh-worker-" + cacheName + "-" + REFRESH_THREAD_COUNTER.incrementAndGet()
+                    );
+                    thread.setDaemon(true);
+                    return thread;
+                },
+                new ThreadPoolExecutor.AbortPolicy()
+        );
+        executor.prestartAllCoreThreads();
+        return executor;
+    }
+
     private static <K> com.github.benmanes.caffeine.cache.Cache<K, AtomicLong> createReadCounterCache(int maxTrackedKeys) {
         long maxSize = Math.max(1_000L, (long) Math.max(1, maxTrackedKeys) * READ_COUNTER_MAX_FACTOR);
         return Caffeine.newBuilder()
                 .maximumSize(maxSize)
                 .expireAfterAccess(READ_COUNTER_EXPIRE_AFTER_ACCESS_MINUTES, TimeUnit.MINUTES)
+                .build();
+    }
+
+    private static <K> com.github.benmanes.caffeine.cache.Cache<K, Long> createLocalVersionCache(int maxTrackedKeys) {
+        long maxSize = Math.max(
+                LOCAL_VERSION_MIN_MAX_SIZE,
+                (long) Math.max(1, maxTrackedKeys) * LOCAL_VERSION_MAX_FACTOR
+        );
+        // 版本仅用于本地事件去重，不需要无限保留；通过容量+过期限制高基数场景的内存占用。
+        return Caffeine.newBuilder()
+                .maximumSize(maxSize)
+                .expireAfterAccess(LOCAL_VERSION_EXPIRE_AFTER_ACCESS_MINUTES, TimeUnit.MINUTES)
                 .build();
     }
 
@@ -663,6 +860,24 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
             runnable.run();
             return null;
         });
+    }
+
+    private static void shutdownExecutorGracefully(ExecutorService executor, long timeoutSeconds) {
+        if (executor == null) {
+            return;
+        }
+        long waitSeconds = Math.max(0L, timeoutSeconds);
+        try {
+            executor.shutdown();
+            if (waitSeconds == 0L || !executor.awaitTermination(waitSeconds, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            executor.shutdownNow();
+        } catch (Exception ignored) {
+            executor.shutdownNow();
+        }
     }
 
     private long resolveClearVersionAfterStoreClear() {
@@ -768,7 +983,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
             }
             trackedKeys.clear();
             readCounter.invalidateAll();
-            localVersion.clear();
+            localVersion.invalidateAll();
             return;
         }
         K key = event.getKey();
@@ -778,7 +993,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
 
         long incoming = event.getVersion();
         long current = readFromL1(key).map(CacheRecord::getVersion)
-                .orElseGet(() -> localVersion.getOrDefault(key, 0L));
+                .orElseGet(() -> Optional.ofNullable(localVersion.getIfPresent(key)).orElse(0L));
         if (incoming <= current) {
             droppedEvents.incrementAndGet();
             return;
@@ -897,14 +1112,27 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         snapshot.put("policy.syncUpdateEnabled", policy.isSyncUpdateEnabled());
         snapshot.put("policy.syncUpdateMaxPayloadBytes", policy.getSyncUpdateMaxPayloadBytes());
         snapshot.put("policy.autoRefresh", policy.isAutoRefreshEnabled());
+        snapshot.put("policy.refresh.startOnInit", refreshOptions.startOnInit());
+        snapshot.put("policy.refresh.allowConcurrentRefresh", refreshOptions.allowConcurrentRefresh());
+        snapshot.put("policy.refresh.threadPoolSize", refreshOptions.threadPoolSize());
+        snapshot.put("policy.refresh.effectiveThreadPoolSize", refreshOptions.effectiveThreadPoolSize());
+        snapshot.put("policy.refresh.queueCapacity", refreshOptions.queueCapacity());
+        snapshot.put("policy.refresh.timeoutSeconds", refreshOptions.refreshTimeoutSeconds());
+        snapshot.put("policy.refresh.maxRetries", refreshOptions.maxRetries());
+        snapshot.put("policy.refresh.retryIntervalSeconds", refreshOptions.retryIntervalSeconds());
+        snapshot.put("policy.refresh.shutdownTimeoutSeconds", refreshOptions.shutdownTimeoutSeconds());
         snapshot.put("policy.hardTtlSeconds", policy.getHardTtlSeconds());
         snapshot.put("policy.softTtlSeconds", policy.getSoftTtlSeconds());
         snapshot.put("policy.singleFlight", policy.isSingleFlightEnabled());
         snapshot.put("policy.distributedLock", policy.isDistributedLockEnabled());
         snapshot.put("policy.lockFailureStrategy", policy.getLockFailureStrategy().name());
+        snapshot.put("refreshSchedulerStarted", refreshStarted.get());
+        snapshot.put("refreshExecutor.activeCount", refreshExecutor.getActiveCount());
+        snapshot.put("refreshExecutor.poolSize", refreshExecutor.getPoolSize());
+        snapshot.put("refreshExecutor.queueSize", refreshExecutor.getQueue().size());
         snapshot.put("trackedKeys", trackedKeys.size());
         snapshot.put("refreshingKeys", refreshingKeys.size());
-        snapshot.put("localVersionKeys", localVersion.size());
+        snapshot.put("localVersionKeys", localVersion.estimatedSize());
         snapshot.put("eventLagMs", eventLagMs.get());
         snapshot.put("droppedEvents", droppedEvents.get());
         snapshot.put("hotKeysTopN", readCounter.asMap().entrySet().stream()
@@ -935,7 +1163,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         refreshingKeys.remove(key);
         readCounter.invalidate(key);
         if (clearVersionState) {
-            localVersion.remove(key);
+            localVersion.invalidate(key);
         }
     }
 

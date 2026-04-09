@@ -11,8 +11,10 @@ import io.github.cascade.cache.v2.common.exception.CacheException;
 import io.github.cascade.cache.configuration.CascadeCacheProperties;
 import io.github.cascade.cache.configuration.SyncProperties;
 import io.github.cascade.cache.v2.support.NodeIdManager;
+import io.github.cascade.cache.v2.support.TypeUtils;
 import io.github.cascade.cache.v2.loader.CacheLoaderResolver;
 import io.github.cascade.cache.v2.consistency.LocalVersionManager;
+import io.github.cascade.cache.v2.loader.LoaderPriority;
 import io.github.cascade.cache.v2.consistency.RedisVersionManager;
 import io.github.cascade.cache.v2.consistency.VersionManager;
 import io.github.cascade.cache.v2.engine.EngineBackedCache;
@@ -20,6 +22,7 @@ import io.github.cascade.cache.v2.loader.DistLockCoordinator;
 import io.github.cascade.cache.v2.loader.RedisDistLockCoordinator;
 import io.github.cascade.cache.v2.observability.CacheMetricsCollector;
 import io.github.cascade.cache.v2.policy.CachePolicy;
+import io.github.cascade.cache.v2.policy.RefreshExecutionOptions;
 import io.github.cascade.cache.v2.policy.SyncMode;
 import io.github.cascade.cache.v2.store.l1.CaffeineL1Store;
 import io.github.cascade.cache.v2.store.l1.L1CacheStore;
@@ -82,6 +85,7 @@ public class FunctionalCacheManager implements CacheManager {
         this.loaderResolver = loaderResolver;
         this.meterRegistry = meterRegistry;
         this.nodeId = NodeIdManager.getInstance().getNodeId();
+        resolveRefreshExecutionOptions("__default__", this.defaultConfig);
         LOGGER.info("V2缓存管理器初始化完成: nodeId={}", nodeId);
     }
 
@@ -115,11 +119,20 @@ public class FunctionalCacheManager implements CacheManager {
                                                Function<K, V> loader) {
         checkNotClosed();
         validateParameters(cacheName, keyType, valueType);
+        Class<K> normalizedKeyType = TypeUtils.boxedType(keyType);
+        Class<V> normalizedValueType = TypeUtils.boxedType(valueType);
 
         CascadeCacheProperties finalConfig = config != null ? config : defaultConfig;
-        Function<K, V> finalLoader = resolveLoader(cacheName, keyType, valueType, finalConfig, loader);
-        CachePolicy policy = buildPolicy(finalConfig);
-        CacheDefinitionFingerprint expected = buildEngineFingerprint(cacheName, keyType, valueType, policy);
+        RefreshExecutionOptions refreshOptions = resolveRefreshExecutionOptions(cacheName, finalConfig);
+        Function<K, V> finalLoader = resolveLoader(cacheName, normalizedKeyType, normalizedValueType, finalConfig, loader);
+        CachePolicy policy = buildPolicy(finalConfig, refreshOptions);
+        CacheDefinitionFingerprint expected = buildEngineFingerprint(
+                cacheName,
+                normalizedKeyType,
+                normalizedValueType,
+                policy,
+                finalConfig
+        );
 
         Cache<?, ?> existing = cacheRegistry.get(cacheName);
         if (existing != null) {
@@ -131,7 +144,7 @@ public class FunctionalCacheManager implements CacheManager {
             return casted;
         }
 
-        Cache<K, V> created = createCache(cacheName, valueType, finalConfig, finalLoader, policy);
+        Cache<K, V> created = createCache(cacheName, normalizedValueType, finalConfig, finalLoader, policy);
         Cache<?, ?> raced = cacheRegistry.putIfAbsent(cacheName, created);
         if (raced == null) {
             CacheDefinitionFingerprint previous = definitionRegistry.putIfAbsent(cacheName, expected);
@@ -164,12 +177,15 @@ public class FunctionalCacheManager implements CacheManager {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public <K, V> void registerLoader(String cacheName,
                                       Class<K> keyType,
                                       Class<V> valueType,
                                       CacheLoader<K, V> loader) {
         checkNotClosed();
         validateParameters(cacheName, keyType, valueType);
+        Class<K> normalizedKeyType = TypeUtils.boxedType(keyType);
+        Class<V> normalizedValueType = TypeUtils.boxedType(valueType);
         if (loader == null) {
             throw new CacheConfigurationException("loader", null, "加载器不能为空", null);
         }
@@ -181,7 +197,15 @@ public class FunctionalCacheManager implements CacheManager {
                     null
             );
         }
-        loaderResolver.registerLoader(cacheName, keyType, valueType, loader);
+        loaderResolver.registerLoader(cacheName, normalizedKeyType, normalizedValueType, loader);
+
+        Cache<?, ?> existing = cacheRegistry.get(cacheName);
+        if (existing instanceof EngineBackedCache<?, ?> engineBackedCache) {
+            CacheLoader<K, V> resolved = loaderResolver.resolveCacheLoader(cacheName, normalizedKeyType, normalizedValueType, false);
+            if (resolved != null) {
+                ((EngineBackedCache<K, V>) engineBackedCache).setLoaderIfAbsent(resolved);
+            }
+        }
     }
 
     @Override
@@ -198,6 +222,9 @@ public class FunctionalCacheManager implements CacheManager {
 
         Cache<?, ?> previous = cacheRegistry.put(cacheName, cache);
         definitionRegistry.put(cacheName, expected);
+        if (previous == cache) {
+            return false;
+        }
         if (previous != null && !previous.isClosed()) {
             previous.close();
             return false;
@@ -311,7 +338,12 @@ public class FunctionalCacheManager implements CacheManager {
 
         L1CacheStore<K, V> l1Store = null;
         if (policy.isL1Enabled()) {
-            l1Store = new CaffeineL1Store<>(config.getL1MaxSize(), config.isStatsEnabled());
+            l1Store = new CaffeineL1Store<>(
+                    config.getL1MaxSize(),
+                    config.isStatsEnabled(),
+                    config.getL1ExpireAfterWriteSeconds(),
+                    config.getL1ExpireAfterAccessSeconds()
+            );
         }
 
         L2CacheStore<K, V> l2Store = null;
@@ -340,7 +372,11 @@ public class FunctionalCacheManager implements CacheManager {
     private <K, V> CacheDefinitionFingerprint buildEngineFingerprint(String cacheName,
                                                                      Class<K> keyType,
                                                                      Class<V> valueType,
-                                                                     CachePolicy policy) {
+                                                                     CachePolicy policy,
+                                                                     CascadeCacheProperties config) {
+        long l1MaximumSize = policy.isL1Enabled() ? config.getL1MaxSize() : -1L;
+        long l1ExpireAfterWriteSeconds = policy.isL1Enabled() ? config.getL1ExpireAfterWriteSeconds() : -1L;
+        long l1ExpireAfterAccessSeconds = policy.isL1Enabled() ? config.getL1ExpireAfterAccessSeconds() : -1L;
         return new CacheDefinitionFingerprint(
                 cacheName,
                 "engine",
@@ -349,10 +385,21 @@ public class FunctionalCacheManager implements CacheManager {
                 EngineBackedCache.class.getName(),
                 policy.isL1Enabled(),
                 policy.isL2Enabled(),
+                l1MaximumSize,
+                l1ExpireAfterWriteSeconds,
+                l1ExpireAfterAccessSeconds,
                 policy.getHardTtlSeconds(),
                 policy.getSoftTtlSeconds(),
                 policy.getRefreshIntervalSeconds(),
                 policy.isAutoRefreshEnabled(),
+                policy.getRefreshExecutionOptions().threadPoolSize(),
+                policy.getRefreshExecutionOptions().queueCapacity(),
+                policy.getRefreshExecutionOptions().allowConcurrentRefresh(),
+                policy.getRefreshExecutionOptions().refreshTimeoutSeconds(),
+                policy.getRefreshExecutionOptions().maxRetries(),
+                policy.getRefreshExecutionOptions().retryIntervalSeconds(),
+                policy.getRefreshExecutionOptions().startOnInit(),
+                policy.getRefreshExecutionOptions().shutdownTimeoutSeconds(),
                 policy.getSyncMode(),
                 policy.isSyncUpdateEnabled(),
                 policy.getSyncUpdateMaxPayloadBytes(),
@@ -383,7 +430,7 @@ public class FunctionalCacheManager implements CacheManager {
         );
     }
 
-    private CachePolicy buildPolicy(CascadeCacheProperties config) {
+    private CachePolicy buildPolicy(CascadeCacheProperties config, RefreshExecutionOptions refreshOptions) {
         long hardTtl = config.getL2DefaultTtlSeconds();
         long softTtl = config.getSoftTtlSeconds();
         if (softTtl <= 0) {
@@ -409,6 +456,7 @@ public class FunctionalCacheManager implements CacheManager {
                 .softTtlSeconds(softTtl)
                 .refreshIntervalSeconds(Math.max(1, config.getRefresh().getDefaultRefreshIntervalSeconds()))
                 .autoRefreshEnabled(config.isRefreshEnabled())
+                .refreshExecutionOptions(refreshOptions)
                 .syncMode(syncMode)
                 .syncUpdateEnabled(syncUpdateEnabled)
                 .syncUpdateMaxPayloadBytes(config.getSyncConfig().getUpdateMaxPayloadBytes())
@@ -420,6 +468,43 @@ public class FunctionalCacheManager implements CacheManager {
                 .hotKeyAccessThreshold(config.getHotKeyAccessThreshold())
                 .maxTrackedKeys(config.getMaxTrackedKeys())
                 .build();
+    }
+
+    private RefreshExecutionOptions resolveRefreshExecutionOptions(String cacheName, CascadeCacheProperties config) {
+        CascadeCacheProperties.RefreshConfig refreshConfig = config != null && config.getRefresh() != null
+                ? config.getRefresh()
+                : CascadeCacheProperties.defaults().getRefresh();
+        RefreshExecutionOptions defaults = RefreshExecutionOptions.defaults();
+        boolean customized = refreshConfig.getThreadPoolSize() != defaults.threadPoolSize()
+                || refreshConfig.getQueueCapacity() != defaults.queueCapacity()
+                || refreshConfig.isAllowConcurrentRefresh() != defaults.allowConcurrentRefresh()
+                || refreshConfig.getRefreshTimeoutSeconds() != defaults.refreshTimeoutSeconds()
+                || refreshConfig.getMaxRetries() != defaults.maxRetries()
+                || refreshConfig.getRetryIntervalSeconds() != defaults.retryIntervalSeconds()
+                || refreshConfig.isStartOnInit() != defaults.startOnInit()
+                || refreshConfig.getShutdownTimeoutSeconds() != defaults.shutdownTimeoutSeconds();
+        if (!refreshConfig.isEnabled() && customized) {
+            LOGGER.warn("刷新执行参数在refresh.enabled=false时不生效: cache={}", cacheName);
+        }
+        try {
+            return new RefreshExecutionOptions(
+                    refreshConfig.getThreadPoolSize(),
+                    refreshConfig.getQueueCapacity(),
+                    refreshConfig.isAllowConcurrentRefresh(),
+                    refreshConfig.getRefreshTimeoutSeconds(),
+                    refreshConfig.getMaxRetries(),
+                    refreshConfig.getRetryIntervalSeconds(),
+                    refreshConfig.isStartOnInit(),
+                    refreshConfig.getShutdownTimeoutSeconds()
+            );
+        } catch (IllegalArgumentException e) {
+            throw new CacheConfigurationException(
+                    "refresh",
+                    cacheName,
+                    "刷新执行配置无效: " + e.getMessage(),
+                    e
+            );
+        }
     }
 
     private <K> InvalidationBus<K> createInvalidationBus(String cacheName,
@@ -499,7 +584,38 @@ public class FunctionalCacheManager implements CacheManager {
                                                        Class<K> keyType,
                                                        Class<V> valueType,
                                                        Function<K, V> delegate) {
-        return rawKey -> {
+        return new GuardedLoader<>(cacheName, keyType, valueType, delegate);
+    }
+
+    private static String className(Object source) {
+        return source == null ? "null" : source.getClass().getName();
+    }
+
+    /**
+     * 类型守卫loader包装器，同时透传loader优先级元信息。
+     */
+    private static final class GuardedLoader<K, V>
+            implements Function<K, V>, LoaderPriority.Prioritized {
+
+        private final String cacheName;
+        private final Class<K> keyType;
+        private final Class<V> valueType;
+        private final Function<K, V> delegate;
+        private final int priority;
+
+        private GuardedLoader(String cacheName,
+                              Class<K> keyType,
+                              Class<V> valueType,
+                              Function<K, V> delegate) {
+            this.cacheName = cacheName;
+            this.keyType = TypeUtils.boxedType(keyType);
+            this.valueType = TypeUtils.boxedType(valueType);
+            this.delegate = delegate;
+            this.priority = LoaderPriority.of(delegate);
+        }
+
+        @Override
+        public V apply(K rawKey) {
             K key;
             try {
                 key = keyType.cast(rawKey);
@@ -524,11 +640,12 @@ public class FunctionalCacheManager implements CacheManager {
                 );
             }
             return value;
-        };
-    }
+        }
 
-    private static String className(Object source) {
-        return source == null ? "null" : source.getClass().getName();
+        @Override
+        public int loaderPriority() {
+            return priority;
+        }
     }
 
     private void checkNotClosed() {
@@ -633,7 +750,6 @@ public class FunctionalCacheManager implements CacheManager {
         target.getL2().setDefaultTtlSeconds(source.getL2().getDefaultTtlSeconds());
         target.getL2().setEnableBatch(source.getL2().isEnableBatch());
         target.getL2().setBatchSize(source.getL2().getBatchSize());
-        target.getL2().setSerializer(source.getL2().getSerializer());
         target.getL2().setTimeoutSeconds(source.getL2().getTimeoutSeconds());
 
         target.getSync().setEnabled(source.getSync().isEnabled());

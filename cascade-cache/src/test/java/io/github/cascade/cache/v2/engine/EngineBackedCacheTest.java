@@ -8,6 +8,7 @@ import io.github.cascade.cache.v2.store.model.CacheRecord;
 import io.github.cascade.cache.v2.consistency.InvalidationEvent;
 import io.github.cascade.cache.v2.policy.CachePolicy;
 import io.github.cascade.cache.v2.policy.LockFailureStrategy;
+import io.github.cascade.cache.v2.policy.RefreshExecutionOptions;
 import io.github.cascade.cache.v2.policy.SyncMode;
 import io.github.cascade.cache.v2.store.l1.CaffeineL1Store;
 import io.github.cascade.cache.v2.store.l2.L2CacheStore;
@@ -27,8 +28,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -120,6 +123,97 @@ class EngineBackedCacheTest {
             assertEquals("load-k2", l1.get("k2").map(CacheRecord::getValue).orElse(null));
             assertEquals("load-k2", l2.get("k2").map(CacheRecord::getValue).orElse(null));
             assertEquals(1L, cache.statsSnapshot().backfillL2(), "源加载后应写回L2");
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
+    void shouldBoundLocalVersionSizeForHighCardinalityKeys() throws Exception {
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(false)
+                .autoRefreshEnabled(false)
+                .syncMode(SyncMode.NONE)
+                .maxTrackedKeys(1)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100_000, false);
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user", policy, l1, null, null, bus, versionManager, DistLockCoordinator.noop(), "node-1"
+        );
+        try {
+            for (int i = 0; i < 25_000; i++) {
+                cache.put("lv-" + i, "v-" + i);
+            }
+            com.github.benmanes.caffeine.cache.Cache<String, Long> localVersion = localVersionCache(cache);
+            localVersion.cleanUp();
+
+            assertTrue(localVersion.estimatedSize() <= 10_000L,
+                    "高基数key下localVersion应被容量限制，不应线性增长");
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
+    void shouldPreferFallbackLoaderOnGetOrLoadMiss() {
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(false)
+                .autoRefreshEnabled(false)
+                .syncMode(SyncMode.NONE)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+        AtomicInteger builtinCalls = new AtomicInteger(0);
+        AtomicInteger fallbackCalls = new AtomicInteger(0);
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user", policy, l1, null, key -> "builtin-" + builtinCalls.incrementAndGet(),
+                bus, versionManager, DistLockCoordinator.noop(), "node-1"
+        );
+        try {
+            String loaded = cache.getOrLoad("fallback-key", key -> {
+                fallbackCalls.incrementAndGet();
+                return "fallback-" + key;
+            });
+            assertEquals("fallback-fallback-key", loaded, "miss时应优先使用fallback loader");
+            assertEquals(0, builtinCalls.get(), "fallback loader存在时不应触发内置loader");
+            assertEquals(1, fallbackCalls.get(), "fallback loader应仅执行一次");
+
+            assertEquals("fallback-fallback-key", cache.get("fallback-key").orElse(null), "fallback值应被写回缓存");
+            assertEquals(0, builtinCalls.get(), "命中fallback回填值时不应触发内置loader");
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
+    void shouldUseBuiltinLoaderWhenGetOrLoadFallbackIsNull() {
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(false)
+                .autoRefreshEnabled(false)
+                .syncMode(SyncMode.NONE)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+        AtomicInteger builtinCalls = new AtomicInteger(0);
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user", policy, l1, null, key -> "builtin-" + builtinCalls.incrementAndGet(),
+                bus, versionManager, DistLockCoordinator.noop(), "node-1"
+        );
+        try {
+            assertEquals("builtin-1", cache.getOrLoad("builtin-key", null), "fallback为空时应走内置loader");
+            assertEquals(1, builtinCalls.get());
+            assertEquals("builtin-1", cache.getOrLoad("builtin-key", null), "命中后不应重复加载");
+            assertEquals(1, builtinCalls.get());
         } finally {
             cache.close();
         }
@@ -439,6 +533,271 @@ class EngineBackedCacheTest {
         }
     }
 
+    @Test
+    void shouldRunRefreshSeriallyWhenAllowConcurrentRefreshDisabled() throws Exception {
+        RefreshExecutionOptions options = new RefreshExecutionOptions(4, 16, false, 5, 0, 0, true, 1);
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(false)
+                .autoRefreshEnabled(true)
+                .syncMode(SyncMode.NONE)
+                .refreshExecutionOptions(options)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+        AtomicInteger inFlight = new AtomicInteger(0);
+        AtomicInteger maxInFlight = new AtomicInteger(0);
+        CountDownLatch loaderStarted = new CountDownLatch(1);
+        CountDownLatch unblock = new CountDownLatch(1);
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user",
+                policy,
+                l1,
+                null,
+                key -> {
+                    loaderStarted.countDown();
+                    int now = inFlight.incrementAndGet();
+                    maxInFlight.updateAndGet(prev -> Math.max(prev, now));
+                    try {
+                        unblock.await(1, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        inFlight.decrementAndGet();
+                    }
+                    return "value-" + key;
+                },
+                bus,
+                versionManager,
+                DistLockCoordinator.noop(),
+                "node-1"
+        );
+        try {
+            invokeTriggerRefresh(cache, "k-1");
+            assertTrue(loaderStarted.await(500, TimeUnit.MILLISECONDS), "首个刷新任务应已开始执行");
+
+            invokeTriggerRefresh(cache, "k-2");
+            Thread.sleep(150L);
+            assertEquals(1, maxInFlight.get(), "allowConcurrentRefresh=false时刷新应串行执行");
+
+            unblock.countDown();
+            assertTrue(waitUntil(() -> {
+                try {
+                    return refreshingKeyCount(cache) == 0;
+                } catch (Exception e) {
+                    return false;
+                }
+            }, 2000L), "刷新任务应在超时前结束");
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
+    void shouldRunRefreshConcurrentlyWhenAllowConcurrentRefreshEnabled() throws Exception {
+        RefreshExecutionOptions options = new RefreshExecutionOptions(2, 16, true, 5, 0, 0, true, 1);
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(false)
+                .autoRefreshEnabled(true)
+                .syncMode(SyncMode.NONE)
+                .refreshExecutionOptions(options)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+        AtomicInteger inFlight = new AtomicInteger(0);
+        AtomicInteger maxInFlight = new AtomicInteger(0);
+        CountDownLatch bothStarted = new CountDownLatch(2);
+        CountDownLatch unblock = new CountDownLatch(1);
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user",
+                policy,
+                l1,
+                null,
+                key -> {
+                    int now = inFlight.incrementAndGet();
+                    maxInFlight.updateAndGet(prev -> Math.max(prev, now));
+                    bothStarted.countDown();
+                    try {
+                        unblock.await(1, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        inFlight.decrementAndGet();
+                    }
+                    return "value-" + key;
+                },
+                bus,
+                versionManager,
+                DistLockCoordinator.noop(),
+                "node-1"
+        );
+        try {
+            invokeTriggerRefresh(cache, "k-1");
+            invokeTriggerRefresh(cache, "k-2");
+
+            assertTrue(bothStarted.await(800, TimeUnit.MILLISECONDS),
+                    "allowConcurrentRefresh=true且线程池足够时应并发执行多个key刷新");
+            assertTrue(waitUntil(() -> maxInFlight.get() >= 2, 400L), "并发刷新时同时在执行的任务数应>=2");
+
+            unblock.countDown();
+            assertTrue(waitUntil(() -> {
+                try {
+                    return refreshingKeyCount(cache) == 0;
+                } catch (Exception e) {
+                    return false;
+                }
+            }, 2000L), "刷新任务应在超时前结束");
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
+    void shouldDeduplicateRefreshForSameKeyEvenWhenConcurrentRefreshEnabled() throws Exception {
+        RefreshExecutionOptions options = new RefreshExecutionOptions(2, 16, true, 5, 0, 0, true, 1);
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(false)
+                .autoRefreshEnabled(true)
+                .syncMode(SyncMode.NONE)
+                .refreshExecutionOptions(options)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+        AtomicInteger attempts = new AtomicInteger(0);
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch unblock = new CountDownLatch(1);
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user",
+                policy,
+                l1,
+                null,
+                key -> {
+                    int current = attempts.incrementAndGet();
+                    if (current == 1) {
+                        firstStarted.countDown();
+                        try {
+                            unblock.await(1, TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                    return "value-" + current;
+                },
+                bus,
+                versionManager,
+                DistLockCoordinator.noop(),
+                "node-1"
+        );
+        try {
+            invokeTriggerRefresh(cache, "dup-key");
+            assertTrue(firstStarted.await(500, TimeUnit.MILLISECONDS), "首个同key刷新任务应已开始执行");
+
+            invokeTriggerRefresh(cache, "dup-key");
+            Thread.sleep(120L);
+            assertEquals(1, attempts.get(), "同key刷新应去重，不应并发重复执行");
+
+            unblock.countDown();
+            assertTrue(waitUntil(() -> {
+                try {
+                    return refreshingKeyCount(cache) == 0;
+                } catch (Exception e) {
+                    return false;
+                }
+            }, 2000L), "刷新完成后应释放同key刷新状态");
+            assertEquals(1, attempts.get(), "同key去重应保证一次刷新周期内仅执行一次加载");
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
+    void shouldRetryRefreshUntilSuccessWithinMaxRetries() throws Exception {
+        RefreshExecutionOptions options = new RefreshExecutionOptions(1, 16, true, 2, 2, 0, true, 1);
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(false)
+                .autoRefreshEnabled(true)
+                .syncMode(SyncMode.NONE)
+                .refreshExecutionOptions(options)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+        AtomicInteger attempts = new AtomicInteger(0);
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user",
+                policy,
+                l1,
+                null,
+                key -> {
+                    int current = attempts.incrementAndGet();
+                    if (current < 3) {
+                        throw new IllegalStateException("mock refresh failure " + current);
+                    }
+                    return "retry-" + current;
+                },
+                bus,
+                versionManager,
+                DistLockCoordinator.noop(),
+                "node-1"
+        );
+        try {
+            invokeTriggerRefresh(cache, "rk");
+            assertTrue(waitUntil(() -> attempts.get() >= 3, 2000L), "刷新应在重试上限内完成重试");
+            assertTrue(waitUntil(() -> {
+                try {
+                    return refreshingKeyCount(cache) == 0;
+                } catch (Exception e) {
+                    return false;
+                }
+            }, 2000L), "重试结束后刷新状态应释放");
+            assertEquals("retry-3", cache.get("rk").orElse(null), "重试成功后应完成回填");
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
+    void shouldStartRefreshSchedulerLazilyWhenStartOnInitDisabled() throws Exception {
+        RefreshExecutionOptions options = new RefreshExecutionOptions(1, 16, false, 2, 0, 0, false, 1);
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(false)
+                .autoRefreshEnabled(true)
+                .syncMode(SyncMode.NONE)
+                .refreshExecutionOptions(options)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user", policy, l1, null, null, bus, versionManager, DistLockCoordinator.noop(), "node-1"
+        );
+        try {
+            assertFalse(refreshSchedulerStarted(cache), "startOnInit=false时初始化阶段不应启动刷新调度");
+            cache.get("lazy-key");
+            assertTrue(waitUntil(() -> {
+                try {
+                    return refreshSchedulerStarted(cache);
+                } catch (Exception e) {
+                    return false;
+                }
+            }, 1000L), "首次访问后应延迟启动刷新调度");
+        } finally {
+            cache.close();
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private static Set<String> trackedKeys(EngineBackedCache<String, String> cache) throws Exception {
         Field field = EngineBackedCache.class.getDeclaredField("trackedKeys");
@@ -446,10 +805,49 @@ class EngineBackedCacheTest {
         return (Set<String>) field.get(cache);
     }
 
+    @SuppressWarnings("unchecked")
+    private static com.github.benmanes.caffeine.cache.Cache<String, Long> localVersionCache(
+            EngineBackedCache<String, String> cache
+    ) throws Exception {
+        Field field = EngineBackedCache.class.getDeclaredField("localVersion");
+        field.setAccessible(true);
+        return (com.github.benmanes.caffeine.cache.Cache<String, Long>) field.get(cache);
+    }
+
     private static void invokeRefreshTrackedKeys(EngineBackedCache<?, ?> cache) throws Exception {
         Method method = EngineBackedCache.class.getDeclaredMethod("refreshTrackedKeys");
         method.setAccessible(true);
         method.invoke(cache);
+    }
+
+    private static void invokeTriggerRefresh(EngineBackedCache<?, ?> cache, Object key) throws Exception {
+        Method method = EngineBackedCache.class.getDeclaredMethod("triggerRefresh", Object.class);
+        method.setAccessible(true);
+        method.invoke(cache, key);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static int refreshingKeyCount(EngineBackedCache<?, ?> cache) throws Exception {
+        Field field = EngineBackedCache.class.getDeclaredField("refreshingKeys");
+        field.setAccessible(true);
+        return ((Set<Object>) field.get(cache)).size();
+    }
+
+    private static boolean refreshSchedulerStarted(EngineBackedCache<?, ?> cache) throws Exception {
+        Field field = EngineBackedCache.class.getDeclaredField("refreshStarted");
+        field.setAccessible(true);
+        return ((java.util.concurrent.atomic.AtomicBoolean) field.get(cache)).get();
+    }
+
+    private static boolean waitUntil(BooleanSupplier condition, long timeoutMs) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return true;
+            }
+            Thread.sleep(20L);
+        }
+        return condition.getAsBoolean();
     }
 
     private static class InMemoryL2Store<K, V> implements L2CacheStore<K, V> {

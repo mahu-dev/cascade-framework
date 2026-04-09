@@ -4,6 +4,7 @@ import io.github.cascade.cache.v2.api.CacheLoader;
 import io.github.cascade.cache.v2.api.annotations.CacheLoaderBinding;
 import io.github.cascade.cache.v2.api.annotations.CacheLoaderBindings;
 import io.github.cascade.cache.v2.common.exception.CacheConfigurationException;
+import io.github.cascade.cache.v2.support.TypeUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationContext;
@@ -97,7 +98,11 @@ public class CacheLoaderResolver {
                                                        Class<K> keyType,
                                                        Class<V> valueType,
                                                        boolean allowDiscovered) {
-        initializeAutoDiscoveryIfNeeded();
+        // 仅当允许返回自动发现loader时才触发自动发现初始化，
+        // 以保证显式解析路径（allowDiscovered=false）不会引入扫描/校验副作用。
+        if (allowDiscovered) {
+            initializeAutoDiscoveryIfNeeded();
+        }
 
         LoaderBindingKey key = new LoaderBindingKey(
                 normalizeCacheName(cacheName),
@@ -263,15 +268,17 @@ public class CacheLoaderResolver {
                                                         Class<K> keyType,
                                                         Class<V> valueType,
                                                         CacheLoader<K, V> delegate) {
+        Class<K> normalizedKeyType = TypeUtils.boxedType(keyType);
+        Class<V> normalizedValueType = TypeUtils.boxedType(valueType);
         return rawKey -> {
             K key;
             try {
-                key = keyType.cast(rawKey);
+                key = normalizedKeyType.cast(rawKey);
             } catch (ClassCastException e) {
                 throw new CacheConfigurationException(
                         "loader.keyType",
                         cacheName,
-                        "CacheLoader入参类型不匹配: expectedKeyType=" + keyType.getName()
+                        "CacheLoader入参类型不匹配: expectedKeyType=" + normalizedKeyType.getName()
                                 + ", actualKeyType=" + className(rawKey)
                                 + ", loader=" + delegate.getClass().getName(),
                         e
@@ -279,11 +286,11 @@ public class CacheLoaderResolver {
             }
 
             V value = delegate.apply(key);
-            if (value != null && !valueType.isInstance(value)) {
+            if (value != null && !normalizedValueType.isInstance(value)) {
                 throw new CacheConfigurationException(
                         "loader.valueType",
                         cacheName,
-                        "CacheLoader返回值类型不匹配: expectedValueType=" + valueType.getName()
+                        "CacheLoader返回值类型不匹配: expectedValueType=" + normalizedValueType.getName()
                                 + ", actualValueType=" + value.getClass().getName()
                                 + ", loader=" + delegate.getClass().getName(),
                         null
@@ -308,7 +315,7 @@ public class CacheLoaderResolver {
         if (type == null) {
             throw new IllegalArgumentException(fieldName + "不能为空");
         }
-        return type;
+        return TypeUtils.boxedType(type);
     }
 
     private static String className(Object target) {

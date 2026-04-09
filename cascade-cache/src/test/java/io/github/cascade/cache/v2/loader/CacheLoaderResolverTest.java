@@ -97,6 +97,23 @@ class CacheLoaderResolverTest {
     }
 
     @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void shouldNormalizePrimitiveAndWrapperValueTypeBinding() {
+        CacheLoaderResolver resolver = new CacheLoaderResolver();
+        Class<Integer> primitiveIntType = (Class<Integer>) (Class) int.class;
+
+        resolver.registerLoader("numbers", String.class, primitiveIntType, key -> 7);
+
+        CacheLoader<String, Integer> wrapperBound = resolver.resolveCacheLoader("numbers", String.class, Integer.class);
+        assertNotNull(wrapperBound);
+        assertEquals(7, wrapperBound.apply("k1"));
+
+        CacheLoader<String, Integer> primitiveBound = resolver.resolveCacheLoader("numbers", String.class, primitiveIntType);
+        assertNotNull(primitiveBound);
+        assertEquals(7, primitiveBound.apply("k2"));
+    }
+
+    @Test
     void shouldRejectProgrammaticDuplicateBinding() {
         CacheLoaderResolver resolver = new CacheLoaderResolver();
         resolver.registerLoader("users", String.class, String.class, key -> "v1-" + key);

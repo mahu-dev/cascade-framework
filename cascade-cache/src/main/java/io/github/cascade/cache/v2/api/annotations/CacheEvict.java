@@ -28,7 +28,8 @@ public @interface CacheEvict {
 
     /**
      * 缓存键表达式
-     * 支持SpEL表达式，如果不指定则使用方法参数生成键
+     * 支持SpEL表达式，如果不指定则仅使用方法参数生成键（不包含方法签名）
+     * 当表达式结果为集合或数组时，会逐个元素执行驱逐
      * 示例：
      * - ""           : 使用所有参数生成键
      * - "#id"        : 使用参数id作为键
@@ -46,8 +47,8 @@ public @interface CacheEvict {
 
     /**
      * 是否在方法执行前清除缓存
-     * true: 方法执行前清除（默认）
-     * false: 方法执行后清除
+     * true: 方法执行前清除
+     * false: 方法执行后清除（默认）
      */
     boolean beforeInvocation() default false;
 
@@ -62,8 +63,8 @@ public @interface CacheEvict {
 
     /**
      * 是否同步清除（分布式环境）
-     * true: 同步到其他节点
-     * false: 只清除本地缓存
+     * true: 发布跨节点同步事件
+     * false: 仅当前节点执行驱逐（不发布同步事件）
      */
     boolean sync() default true;
 }

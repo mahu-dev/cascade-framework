@@ -5,8 +5,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.cascade.cache.v2.store.model.CacheRecord;
 import org.redisson.api.RAtomicLong;
 import org.redisson.api.RBucket;
+import org.redisson.api.RKeys;
 import org.redisson.api.RedissonClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
@@ -16,6 +21,8 @@ import java.util.Optional;
  * 基于 Redis 的 L2 实现。
  */
 public class RedissonL2Store<K, V> implements L2CacheStore<K, V> {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(RedissonL2Store.class);
 
     private final RedissonClient redissonClient;
     private final String keyPrefix;
@@ -57,8 +64,10 @@ public class RedissonL2Store<K, V> implements L2CacheStore<K, V> {
 
     @Override
     public void clear() {
+        long previousNamespaceVersion = currentNamespaceVersion();
         long version = redissonClient.getAtomicLong(namespaceVersionKey).incrementAndGet();
         cachedNamespaceVersion = Math.max(1L, version);
+        reclaimNamespaceData(previousNamespaceVersion);
     }
 
     @Override
@@ -116,5 +125,37 @@ public class RedissonL2Store<K, V> implements L2CacheStore<K, V> {
         }
         cachedNamespaceVersion = Math.max(cachedNamespaceVersion, remote);
         return cachedNamespaceVersion;
+    }
+
+    private void reclaimNamespaceData(long namespaceVersion) {
+        if (namespaceVersion <= 0) {
+            return;
+        }
+        String pattern = dataKeyPattern(namespaceVersion);
+        RKeys keys = redissonClient.getKeys();
+        try {
+            if (tryUnlinkByPattern(keys, pattern)) {
+                return;
+            }
+            try {
+                keys.deleteByPattern(pattern);
+            } catch (RuntimeException deleteError) {
+                LOGGER.warn("清理旧命名空间数据失败: pattern={}, error={}", pattern, deleteError.getMessage());
+            }
+        } catch (RuntimeException cleanupError) {
+            LOGGER.warn("清理旧命名空间数据失败: pattern={}, error={}", pattern, cleanupError.getMessage());
+        }
+    }
+
+    private boolean tryUnlinkByPattern(RKeys keys, String pattern) {
+        try {
+            Method method = keys.getClass().getMethod("unlinkByPattern", String.class);
+            method.invoke(keys, pattern);
+            return true;
+        } catch (NoSuchMethodException e) {
+            return false;
+        } catch (IllegalAccessException | InvocationTargetException e) {
+            return false;
+        }
     }
 }

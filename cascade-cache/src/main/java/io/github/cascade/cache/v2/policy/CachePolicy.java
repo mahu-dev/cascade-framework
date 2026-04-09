@@ -11,6 +11,7 @@ public final class CachePolicy {
     private final long softTtlSeconds;
     private final long refreshIntervalSeconds;
     private final boolean autoRefreshEnabled;
+    private final RefreshExecutionOptions refreshExecutionOptions;
     private final SyncMode syncMode;
     private final boolean syncUpdateEnabled;
     private final int syncUpdateMaxPayloadBytes;
@@ -29,6 +30,7 @@ public final class CachePolicy {
         this.softTtlSeconds = builder.softTtlSeconds;
         this.refreshIntervalSeconds = builder.refreshIntervalSeconds;
         this.autoRefreshEnabled = builder.autoRefreshEnabled;
+        this.refreshExecutionOptions = builder.refreshExecutionOptions;
         this.syncMode = builder.syncMode;
         this.syncUpdateEnabled = builder.syncUpdateEnabled;
         this.syncUpdateMaxPayloadBytes = builder.syncUpdateMaxPayloadBytes;
@@ -67,6 +69,10 @@ public final class CachePolicy {
 
     public boolean isAutoRefreshEnabled() {
         return autoRefreshEnabled;
+    }
+
+    public RefreshExecutionOptions getRefreshExecutionOptions() {
+        return refreshExecutionOptions;
     }
 
     public SyncMode getSyncMode() {
@@ -116,6 +122,7 @@ public final class CachePolicy {
         private long softTtlSeconds = 300;
         private long refreshIntervalSeconds = 300;
         private boolean autoRefreshEnabled = true;
+        private RefreshExecutionOptions refreshExecutionOptions = RefreshExecutionOptions.defaults();
         private SyncMode syncMode = SyncMode.INVALIDATE;
         private boolean syncUpdateEnabled = false;
         private int syncUpdateMaxPayloadBytes = 16 * 1024;
@@ -154,6 +161,11 @@ public final class CachePolicy {
 
         public Builder autoRefreshEnabled(boolean autoRefreshEnabled) {
             this.autoRefreshEnabled = autoRefreshEnabled;
+            return this;
+        }
+
+        public Builder refreshExecutionOptions(RefreshExecutionOptions refreshExecutionOptions) {
+            this.refreshExecutionOptions = refreshExecutionOptions;
             return this;
         }
 
@@ -219,6 +231,9 @@ public final class CachePolicy {
             }
             if (refreshIntervalSeconds <= 0) {
                 refreshIntervalSeconds = Math.max(1, softTtlSeconds);
+            }
+            if (refreshExecutionOptions == null) {
+                refreshExecutionOptions = RefreshExecutionOptions.defaults();
             }
             if (syncMode == null) {
                 syncMode = SyncMode.INVALIDATE;

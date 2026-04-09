@@ -20,7 +20,9 @@ import java.util.concurrent.CompletionException;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -58,6 +60,30 @@ class FunctionalCacheManagerBuilderTest {
     }
 
     @Test
+    void shouldApplyL1ExpireAfterWriteConfigWhenCreatingCache() throws InterruptedException {
+        CascadeCacheProperties config = CascadeCacheProperties.defaults();
+        config.getL1().setEnabled(true);
+        config.getL2().setEnabled(false);
+        config.getSync().setEnabled(false);
+        config.getRefresh().setEnabled(false);
+        config.getL1().setExpireAfterWriteSeconds(1);
+        config.getL1().setExpireAfterAccessSeconds(-1);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, config, null);
+        try {
+            Cache<String, String> cache = manager.getOrCreateCache("l1-expire-after-write", String.class, String.class, config);
+            cache.put("k", "v");
+            assertEquals("v", cache.get("k").orElse(null));
+
+            Thread.sleep(1200L);
+
+            assertTrue(cache.get("k").isEmpty(), "L1写后过期配置应被下发到Caffeine并生效");
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
     void shouldLoadWithRegisteredLoaderWhenNotProvidedInCacheCreation() {
         CascadeCacheProperties config = CascadeCacheProperties.defaults();
         config.getL1().setEnabled(true);
@@ -70,6 +96,30 @@ class FunctionalCacheManagerBuilderTest {
             manager.registerLoader("registered-users", String.class, String.class, key -> "user-" + key);
             Cache<String, String> cache = manager.getOrCreateCache("registered-users", String.class, String.class);
             assertEquals("user-42", cache.get("42").orElse(null));
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void shouldNormalizePrimitiveAndWrapperTypesAcrossRegisterAndGet() {
+        CascadeCacheProperties config = CascadeCacheProperties.defaults();
+        config.getL1().setEnabled(true);
+        config.getL2().setEnabled(false);
+        config.getSync().setEnabled(false);
+
+        CacheLoaderResolver resolver = new CacheLoaderResolver();
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, config, resolver);
+        try {
+            Class<Integer> primitiveIntType = (Class<Integer>) (Class) int.class;
+            manager.registerLoader("primitive-users", String.class, primitiveIntType, key -> 42);
+
+            Cache<String, Integer> cache = manager.getOrCreateCache("primitive-users", String.class, Integer.class);
+            assertEquals(42, cache.get("u1").orElse(null));
+
+            Cache<String, Integer> sameCache = manager.getOrCreateCache("primitive-users", String.class, primitiveIntType);
+            assertSame(cache, sameCache);
         } finally {
             manager.close();
         }
@@ -121,6 +171,7 @@ class FunctionalCacheManagerBuilderTest {
                      new AnnotationConfigApplicationContext(AutoDiscoverLoaderConfig.class)) {
             CacheLoaderResolver resolver = new CacheLoaderResolver();
             resolver.setApplicationContext(context);
+            resolver.clearCache();
 
             CascadeCacheProperties config = CascadeCacheProperties.defaults();
             config.getL1().setEnabled(true);
@@ -132,6 +183,9 @@ class FunctionalCacheManagerBuilderTest {
             try {
                 Cache<String, String> cache = manager.getOrCreateCache("discover-users", String.class, String.class, config);
                 assertTrue(cache.get("1").isEmpty());
+                CacheLoaderResolver.ResolverStats stats = resolver.getStats();
+                assertFalse(stats.autoDiscoveryInitialized(), "cache-level autoDiscover=false 不应触发自动发现初始化");
+                assertEquals(0, stats.discoveredLoaderCount(), "cache-level autoDiscover=false 不应填充发现注册表");
             } finally {
                 manager.close();
             }
@@ -206,6 +260,102 @@ class FunctionalCacheManagerBuilderTest {
     }
 
     @Test
+    void shouldFailFastWhenSameCacheNameHasDifferentL1MaximumSize() {
+        CascadeCacheProperties config = CascadeCacheProperties.defaults();
+        config.getL1().setEnabled(true);
+        config.getL2().setEnabled(false);
+        config.getSync().setEnabled(false);
+        config.getRefresh().setEnabled(false);
+        config.getL1().setMaximumSize(128);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, config, null);
+        try {
+            manager.getOrCreateCache("conflict-l1-max-size", String.class, String.class, config);
+
+            CascadeCacheProperties changed = CascadeCacheProperties.defaults();
+            changed.getL1().setEnabled(true);
+            changed.getL2().setEnabled(false);
+            changed.getSync().setEnabled(false);
+            changed.getRefresh().setEnabled(false);
+            changed.getL1().setMaximumSize(256);
+
+            assertThrows(CacheConfigurationException.class,
+                    () -> manager.getOrCreateCache("conflict-l1-max-size", String.class, String.class, changed));
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldFailFastWhenSameCacheNameHasDifferentL1ExpireAfterWrite() {
+        CascadeCacheProperties config = CascadeCacheProperties.defaults();
+        config.getL1().setEnabled(true);
+        config.getL2().setEnabled(false);
+        config.getSync().setEnabled(false);
+        config.getRefresh().setEnabled(false);
+        config.getL1().setExpireAfterWriteSeconds(60);
+        config.getL1().setExpireAfterAccessSeconds(-1);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, config, null);
+        try {
+            manager.getOrCreateCache("conflict-l1-expire-write", String.class, String.class, config);
+
+            CascadeCacheProperties changed = CascadeCacheProperties.defaults();
+            changed.getL1().setEnabled(true);
+            changed.getL2().setEnabled(false);
+            changed.getSync().setEnabled(false);
+            changed.getRefresh().setEnabled(false);
+            changed.getL1().setExpireAfterWriteSeconds(120);
+            changed.getL1().setExpireAfterAccessSeconds(-1);
+
+            assertThrows(CacheConfigurationException.class,
+                    () -> manager.getOrCreateCache("conflict-l1-expire-write", String.class, String.class, changed));
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldFailFastWhenSameCacheNameHasDifferentL1ExpireAfterAccess() {
+        CascadeCacheProperties config = CascadeCacheProperties.defaults();
+        config.getL1().setEnabled(true);
+        config.getL2().setEnabled(false);
+        config.getSync().setEnabled(false);
+        config.getRefresh().setEnabled(false);
+        config.getL1().setExpireAfterWriteSeconds(-1);
+        config.getL1().setExpireAfterAccessSeconds(30);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, config, null);
+        try {
+            manager.getOrCreateCache("conflict-l1-expire-access", String.class, String.class, config);
+
+            CascadeCacheProperties changed = CascadeCacheProperties.defaults();
+            changed.getL1().setEnabled(true);
+            changed.getL2().setEnabled(false);
+            changed.getSync().setEnabled(false);
+            changed.getRefresh().setEnabled(false);
+            changed.getL1().setExpireAfterWriteSeconds(-1);
+            changed.getL1().setExpireAfterAccessSeconds(45);
+
+            assertThrows(CacheConfigurationException.class,
+                    () -> manager.getOrCreateCache("conflict-l1-expire-access", String.class, String.class, changed));
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldFailFastWhenRefreshExecutionConfigInvalid() {
+        CascadeCacheProperties config = CascadeCacheProperties.defaults();
+        config.getL1().setEnabled(true);
+        config.getL2().setEnabled(false);
+        config.getSync().setEnabled(false);
+        config.getRefresh().setThreadPoolSize(0);
+
+        assertThrows(CacheConfigurationException.class, () -> new FunctionalCacheManager(null, config, null));
+    }
+
+    @Test
     void shouldFailFastOnRegisterCacheConflict() {
         CascadeCacheProperties config = CascadeCacheProperties.defaults();
         config.getL1().setEnabled(true);
@@ -217,6 +367,27 @@ class FunctionalCacheManagerBuilderTest {
             assertTrue(manager.registerCache("manual-cache", new DummyCacheA()));
             assertThrows(CacheConfigurationException.class,
                     () -> manager.registerCache("manual-cache", new DummyCacheB()));
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldNotCloseCacheWhenRegisteringSameInstanceRepeatedly() {
+        CascadeCacheProperties config = CascadeCacheProperties.defaults();
+        config.getL1().setEnabled(true);
+        config.getL2().setEnabled(false);
+        config.getSync().setEnabled(false);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, config, null);
+        try {
+            DummyCacheA cache = new DummyCacheA();
+            assertTrue(manager.registerCache("idempotent-cache", cache));
+            assertFalse(cache.isClosed());
+
+            assertFalse(manager.registerCache("idempotent-cache", cache));
+            assertFalse(cache.isClosed(), "同一实例幂等注册不应关闭当前缓存");
+            assertSame(cache, manager.getCache("idempotent-cache"));
         } finally {
             manager.close();
         }

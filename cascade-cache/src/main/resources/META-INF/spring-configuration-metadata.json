@@ -128,6 +128,62 @@
       "defaultValue": 300
     },
     {
+      "name": "cascade.refresh.thread-pool-size",
+      "type": "java.lang.Integer",
+      "description": "刷新工作线程池大小",
+      "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$RefreshConfig",
+      "defaultValue": 2
+    },
+    {
+      "name": "cascade.refresh.queue-capacity",
+      "type": "java.lang.Integer",
+      "description": "刷新任务队列容量",
+      "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$RefreshConfig",
+      "defaultValue": 1000
+    },
+    {
+      "name": "cascade.refresh.allow-concurrent-refresh",
+      "type": "java.lang.Boolean",
+      "description": "是否允许多key并发刷新",
+      "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$RefreshConfig",
+      "defaultValue": false
+    },
+    {
+      "name": "cascade.refresh.refresh-timeout-seconds",
+      "type": "java.lang.Long",
+      "description": "单次刷新超时时间（秒）",
+      "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$RefreshConfig",
+      "defaultValue": 30
+    },
+    {
+      "name": "cascade.refresh.max-retries",
+      "type": "java.lang.Integer",
+      "description": "刷新失败最大重试次数（不含首次）",
+      "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$RefreshConfig",
+      "defaultValue": 3
+    },
+    {
+      "name": "cascade.refresh.retry-interval-seconds",
+      "type": "java.lang.Long",
+      "description": "刷新失败重试间隔（秒）",
+      "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$RefreshConfig",
+      "defaultValue": 5
+    },
+    {
+      "name": "cascade.refresh.start-on-init",
+      "type": "java.lang.Boolean",
+      "description": "是否在缓存初始化时启动刷新调度",
+      "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$RefreshConfig",
+      "defaultValue": true
+    },
+    {
+      "name": "cascade.refresh.shutdown-timeout-seconds",
+      "type": "java.lang.Long",
+      "description": "刷新调度关闭超时时间（秒）",
+      "sourceType": "io.github.cascade.cache.configuration.CascadeCacheProperties$RefreshConfig",
+      "defaultValue": 10
+    },
+    {
       "name": "cascade.protection.single-flight-enabled",
       "type": "java.lang.Boolean",
       "description": "是否启用同key并发合并",

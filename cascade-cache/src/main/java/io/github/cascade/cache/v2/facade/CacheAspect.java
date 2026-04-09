@@ -8,9 +8,13 @@ import io.github.cascade.cache.v2.api.annotations.CacheEvict;
 import io.github.cascade.cache.v2.api.annotations.CachePut;
 import io.github.cascade.cache.v2.api.annotations.Cacheable;
 import io.github.cascade.cache.v2.api.annotations.CascadeCached;
+import io.github.cascade.cache.v2.common.exception.CacheConfigurationException;
+import io.github.cascade.cache.v2.engine.EngineBackedCache;
+import io.github.cascade.cache.v2.loader.LoaderPriority;
 import io.github.cascade.cache.v2.policy.SyncMode;
 import io.github.cascade.cache.v2.support.DefaultCacheKeyGenerator;
 import io.github.cascade.cache.v2.support.DurationParser;
+import io.github.cascade.cache.v2.support.TypeUtils;
 import org.aspectj.lang.JoinPoint;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
@@ -21,10 +25,16 @@ import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.Order;
 import org.springframework.util.StringUtils;
 
+import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
@@ -62,6 +72,7 @@ public class CacheAspect {
                     .expireAfterAccess(SNAPSHOT_EXPIRE_AFTER_ACCESS_MINUTES, TimeUnit.MINUTES)
                     .build();
     private final ThreadLocal<Boolean> internalInvocation = ThreadLocal.withInitial(() -> false);
+    private final Set<String> refreshAliasMismatchWarnings = ConcurrentHashMap.newKeySet();
 
     public CacheAspect(CacheManager cacheManager, CascadeCacheProperties defaultConfig) {
         this.cacheManager = cacheManager;
@@ -77,6 +88,7 @@ public class CacheAspect {
 
         String cacheName = resolveCacheName(cacheable.value(), joinPoint);
         Object cacheKey = evaluateCacheKey(joinPoint, cacheable.key());
+        boolean primitiveReturnType = isPrimitiveValueReturnType(joinPoint);
 
         if (!evaluateCondition(joinPoint, cacheable.condition(), null)) {
             return joinPoint.proceed();
@@ -90,13 +102,30 @@ public class CacheAspect {
         }
 
         try {
-            Optional<Object> cached = readFromCache(cache, cacheKey, StringUtils.hasText(cacheable.unless()));
+            boolean skipLoadOnMiss = StringUtils.hasText(cacheable.unless()) || cacheable.asyncLoad();
+            Optional<Object> cached = readFromCache(cache, cacheKey, skipLoadOnMiss);
             if (cached.isPresent()) {
                 return cached.get();
+            }
+            if (cacheable.asyncLoad()) {
+                if (!primitiveReturnType) {
+                    triggerAsyncLoad(cache, cacheName, cacheKey);
+                    return null;
+                }
+                LOGGER.warn("@Cacheable异步加载不支持primitive返回类型，降级为同步执行: cache={}, key={}",
+                        cacheName, cacheKey);
             }
         } catch (Exception e) {
             LOGGER.warn("@Cacheable读取缓存失败，降级执行方法: cache={}, key={}, error={}",
                     cacheName, cacheKey, e.getMessage());
+            if (cacheable.asyncLoad()) {
+                if (!primitiveReturnType) {
+                    triggerAsyncLoad(cache, cacheName, cacheKey);
+                    return null;
+                }
+                LOGGER.warn("@Cacheable异步加载不支持primitive返回类型，降级为同步执行: cache={}, key={}",
+                        cacheName, cacheKey);
+            }
         }
 
         Object result = joinPoint.proceed();
@@ -147,7 +176,6 @@ public class CacheAspect {
     public Object handleCachePut(ProceedingJoinPoint joinPoint, CachePut cachePut) throws Throwable {
         String cacheName = resolveCacheName(cachePut.value(), joinPoint);
         Object cacheKey = evaluateCacheKey(joinPoint, cachePut.key());
-        registerSnapshot(cacheName, cacheKey, joinPoint);
 
         Object result = joinPoint.proceed();
         if (!evaluateCondition(joinPoint, cachePut.condition(), result)) {
@@ -168,14 +196,14 @@ public class CacheAspect {
 
         if (cacheEvict.beforeInvocation()) {
             if (evaluateCondition(joinPoint, cacheEvict.condition(), null)) {
-                safeEvict(cacheName, cacheKey, cacheEvict.allEntries());
+                safeEvict(cacheName, cacheKey, cacheEvict.allEntries(), cacheEvict.sync());
             }
             return joinPoint.proceed();
         }
 
         Object result = joinPoint.proceed();
         if (evaluateCondition(joinPoint, cacheEvict.condition(), result)) {
-            safeEvict(cacheName, cacheKey, cacheEvict.allEntries());
+            safeEvict(cacheName, cacheKey, cacheEvict.allEntries(), cacheEvict.sync());
         }
         return result;
     }
@@ -190,14 +218,17 @@ public class CacheAspect {
 
         try {
             if (annotation instanceof Cacheable cacheable) {
-                CascadeCacheProperties config = buildConfig(cacheable);
+                CascadeCacheProperties config = buildConfig(cacheable, joinPoint);
                 Function<Object, Object> loader = key -> invokeSnapshot(cacheName, key, cacheable.unless());
                 return getOrCreateCacheWithLoaderFallback(cacheName, keyType, valueType, config, loader);
             }
             if (annotation instanceof CachePut cachePut) {
                 CascadeCacheProperties config = buildConfig(cachePut);
-                Function<Object, Object> loader = key -> invokeSnapshot(cacheName, key, "");
-                return getOrCreateCacheWithLoaderFallback(cacheName, keyType, valueType, config, loader);
+                // @CachePut 仅负责写入，不应将写方法注册为缓存加载器，
+                // 避免 miss/refresh 链路重放具备副作用的写方法。
+                return (Cache<Object, Object>) cacheManager.getOrCreateCache(
+                        cacheName, keyType, valueType, config
+                );
             }
             if (annotation instanceof CascadeCached cascadeCached) {
                 CascadeCacheProperties config = buildConfig(cascadeCached);
@@ -207,6 +238,8 @@ public class CacheAspect {
             if (annotation instanceof CacheEvict) {
                 return (Cache<Object, Object>) cacheManager.getCache(cacheName);
             }
+        } catch (CacheConfigurationException e) {
+            throw e;
         } catch (Exception e) {
             LOGGER.warn("获取缓存失败: cache={}, error={}", cacheName, e.getMessage());
         }
@@ -232,8 +265,12 @@ public class CacheAspect {
             return null;
         }
         return cacheManager.getOrCreateCache(
-                cacheName, keyType, valueType, config, snapshotLoader
+                cacheName, keyType, valueType, config, wrapSnapshotFallbackLoader(snapshotLoader)
         );
+    }
+
+    private static Function<Object, Object> wrapSnapshotFallbackLoader(Function<Object, Object> delegate) {
+        return new SnapshotFallbackLoader(delegate);
     }
 
     private static void safePut(Cache<Object, Object> cache,
@@ -252,27 +289,77 @@ public class CacheAspect {
         }
     }
 
-    private void safeEvict(String cacheName, Object cacheKey, boolean allEntries) {
-        boolean shouldClearSnapshots = allEntries;
-        boolean shouldEvictSnapshotKey = !allEntries && cacheKey != null;
+    @SuppressWarnings("unchecked")
+    private void safeEvict(String cacheName, Object cacheKey, boolean allEntries, boolean syncEnabled) {
+        List<Object> keysToEvict = allEntries ? List.of() : resolveEvictKeys(cacheKey);
+        Object logKey = allEntries ? "*" : (keysToEvict.size() == 1 ? keysToEvict.get(0) : keysToEvict);
         try {
             Cache<Object, Object> cache = cacheManager.getCache(cacheName);
             if (cache != null) {
-                if (allEntries) {
-                    cache.clear();
-                } else if (cacheKey != null) {
-                    cache.evict(cacheKey);
+                if (!syncEnabled && cache instanceof EngineBackedCache<?, ?> engineBackedCache) {
+                    EngineBackedCache<Object, Object> engine = (EngineBackedCache<Object, Object>) engineBackedCache;
+                    if (allEntries) {
+                        engine.clearWithoutSync();
+                    } else {
+                        for (Object key : keysToEvict) {
+                            engine.evictWithoutSync(key);
+                        }
+                    }
+                } else {
+                    if (allEntries) {
+                        cache.clear();
+                    } else {
+                        for (Object key : keysToEvict) {
+                            cache.evict(key);
+                        }
+                    }
                 }
             }
         } catch (Exception e) {
-            LOGGER.warn("清理缓存失败: cache={}, key={}, error={}", cacheName, cacheKey, e.getMessage());
+            LOGGER.warn("清理缓存失败: cache={}, key={}, error={}", cacheName, logKey, e.getMessage());
         } finally {
-            if (shouldClearSnapshots) {
+            if (allEntries) {
                 clearSnapshots(cacheName);
-            } else if (shouldEvictSnapshotKey) {
-                removeSnapshot(cacheName, cacheKey);
+            } else {
+                for (Object key : keysToEvict) {
+                    removeSnapshot(cacheName, key);
+                }
             }
         }
+    }
+
+    private static List<Object> resolveEvictKeys(Object cacheKey) {
+        if (cacheKey == null) {
+            return List.of();
+        }
+        LinkedHashSet<Object> keys = new LinkedHashSet<>();
+        collectEvictKeys(cacheKey, keys);
+        return new ArrayList<>(keys);
+    }
+
+    private static void collectEvictKeys(Object candidate, Set<Object> keys) {
+        if (candidate == null) {
+            return;
+        }
+        if (candidate instanceof Optional<?> optional) {
+            optional.ifPresent(value -> collectEvictKeys(value, keys));
+            return;
+        }
+        if (candidate instanceof Iterable<?> iterable) {
+            for (Object value : iterable) {
+                collectEvictKeys(value, keys);
+            }
+            return;
+        }
+        Class<?> candidateType = candidate.getClass();
+        if (candidateType.isArray()) {
+            int length = Array.getLength(candidate);
+            for (int i = 0; i < length; i++) {
+                collectEvictKeys(Array.get(candidate, i), keys);
+            }
+            return;
+        }
+        keys.add(candidate);
     }
 
     private static String resolveCacheName(String configured, JoinPoint joinPoint) {
@@ -337,24 +424,50 @@ public class CacheAspect {
 
     private Class<?> inferValueType(JoinPoint joinPoint) {
         if (joinPoint.getSignature() instanceof MethodSignature methodSignature) {
-            return methodSignature.getMethod().getReturnType();
+            return TypeUtils.boxedType(methodSignature.getMethod().getReturnType());
         }
         return Object.class;
     }
 
-    private CascadeCacheProperties buildConfig(Cacheable annotation) {
+    private boolean isPrimitiveValueReturnType(JoinPoint joinPoint) {
+        if (joinPoint.getSignature() instanceof MethodSignature methodSignature) {
+            return methodSignature.getMethod().getReturnType().isPrimitive();
+        }
+        return false;
+    }
+
+    private CascadeCacheProperties buildConfig(Cacheable annotation, JoinPoint joinPoint) {
         CascadeCacheProperties config = copyDefaultConfig();
         config.getL1().setEnabled(annotation.enableL1());
         config.getL2().setEnabled(annotation.enableL2());
         config.getSync().setEnabled(annotation.enableSync());
         config.getSync().setMode(annotation.enableSync() ? annotation.syncMode() : SyncMode.NONE);
         config.getSync().setUpdateEnabled(annotation.enableSync() && annotation.syncMode() == SyncMode.UPDATE);
-        config.getRefresh().setEnabled(annotation.enableRefresh() || annotation.autoRefresh());
+        config.getRefresh().setEnabled(resolveCacheableRefreshEnabled(annotation, joinPoint));
         config.getRefresh().setDefaultRefreshIntervalSeconds(annotation.refreshInterval());
         if (annotation.ttl() > 0) {
             config.getL2().setDefaultTtlSeconds(annotation.ttl());
         }
         return config;
+    }
+
+    private boolean resolveCacheableRefreshEnabled(Cacheable annotation, JoinPoint joinPoint) {
+        boolean enableRefresh = annotation.enableRefresh();
+        boolean autoRefresh = annotation.autoRefresh();
+        if (enableRefresh != autoRefresh
+                && shouldLogRefreshAliasMismatch(joinPoint, enableRefresh, autoRefresh)) {
+            LOGGER.warn("@Cacheable 的 enableRefresh 与 autoRefresh 配置不一致，将按禁用优先处理: enableRefresh={}, autoRefresh={}",
+                    enableRefresh, autoRefresh);
+        }
+        // 两个字段语义等价，任一显式关闭都应关闭刷新。
+        return enableRefresh && autoRefresh;
+    }
+
+    private boolean shouldLogRefreshAliasMismatch(JoinPoint joinPoint, boolean enableRefresh, boolean autoRefresh) {
+        String methodKey = joinPoint != null && joinPoint.getSignature() != null
+                ? joinPoint.getSignature().toLongString()
+                : "unknown-method";
+        return refreshAliasMismatchWarnings.add(methodKey + "|" + enableRefresh + "|" + autoRefresh);
     }
 
     private CascadeCacheProperties buildConfig(CachePut annotation) {
@@ -411,7 +524,6 @@ public class CacheAspect {
         target.getL2().setDefaultTtlSeconds(source.getL2().getDefaultTtlSeconds());
         target.getL2().setEnableBatch(source.getL2().isEnableBatch());
         target.getL2().setBatchSize(source.getL2().getBatchSize());
-        target.getL2().setSerializer(source.getL2().getSerializer());
         target.getL2().setTimeoutSeconds(source.getL2().getTimeoutSeconds());
 
         target.getSync().setEnabled(source.getSync().isEnabled());
@@ -489,6 +601,23 @@ public class CacheAspect {
         return cache.get(cacheKey);
     }
 
+    private static void triggerAsyncLoad(Cache<Object, Object> cache, String cacheName, Object cacheKey) {
+        if (cacheKey == null) {
+            return;
+        }
+        try {
+            cache.getAsync(cacheKey).whenComplete((ignored, throwable) -> {
+                if (throwable != null) {
+                    LOGGER.warn("@Cacheable异步加载失败: cache={}, key={}, error={}",
+                            cacheName, cacheKey, throwable.getMessage());
+                }
+            });
+        } catch (Exception e) {
+            LOGGER.warn("@Cacheable触发异步加载失败: cache={}, key={}, error={}",
+                    cacheName, cacheKey, e.getMessage());
+        }
+    }
+
     private Object invokeSnapshot(String cacheName, Object cacheKey, String unlessExpression) {
         InvocationSnapshot snapshot = invocationSnapshots.getIfPresent(new SnapshotKey(cacheName, cacheKey));
         if (snapshot == null) {
@@ -551,5 +680,28 @@ public class CacheAspect {
      * 记录目标对象、方法和参数，用于在缓存刷新时回放原始方法调用。
      */
     private record InvocationSnapshot(Object target, Method method, Object[] args) {
+    }
+
+    /**
+     * 注解快照回放loader，仅用于兜底，优先级低于显式/自动发现loader。
+     */
+    private static final class SnapshotFallbackLoader
+            implements Function<Object, Object>, LoaderPriority.Prioritized {
+
+        private final Function<Object, Object> delegate;
+
+        private SnapshotFallbackLoader(Function<Object, Object> delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Object apply(Object key) {
+            return delegate.apply(key);
+        }
+
+        @Override
+        public int loaderPriority() {
+            return LoaderPriority.SNAPSHOT_FALLBACK;
+        }
     }
 }

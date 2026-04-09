@@ -130,11 +130,6 @@ public class CascadeCacheProperties {
         private int batchSize = 100;
 
         /**
-         * 序列化器类型
-         */
-        private String serializer = "json";
-
-        /**
          * 操作超时时间（秒）
          */
         private long timeoutSeconds = 5;
@@ -186,7 +181,10 @@ public class CascadeCacheProperties {
         private int queueCapacity = 1000;
 
         /**
-         * 是否允许并发刷新
+         * 是否允许并发刷新（多key并发，同key仍去重）
+         * <p>
+         * false: 串行刷新（等价单线程执行）
+         * true: 按threadPoolSize并发刷新
          */
         private boolean allowConcurrentRefresh = false;
 

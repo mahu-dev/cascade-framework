@@ -30,7 +30,7 @@ public @interface Cacheable {
 
     /**
      * 缓存键表达式
-     * 支持SpEL表达式，如果不指定则使用方法参数生成键
+     * 支持SpEL表达式，如果不指定则仅使用方法参数生成键（不包含方法签名）
      * 示例：
      * - ""           : 使用所有参数生成键
      * - "#id"        : 使用参数id作为键
@@ -81,11 +81,13 @@ public @interface Cacheable {
 
     /**
      * 是否启用定时刷新
+     * 与 autoRefresh 为同义开关（别名）。
      */
     boolean enableRefresh() default true;
 
     /**
-     * 是否启用自动刷新（别名，为了向后兼容）
+     * 是否启用自动刷新（enableRefresh 的兼容别名）
+     * 任一开关为 false 时都会关闭刷新。
      */
     boolean autoRefresh() default true;
 
@@ -96,7 +98,7 @@ public @interface Cacheable {
 
     /**
      * 刷新间隔（秒）
-     * 仅在enableRefresh为true时有效
+     * 仅在刷新开关最终为启用时有效（enableRefresh 与 autoRefresh 均为 true）
      */
     long refreshInterval() default 300; // 5分钟
 
