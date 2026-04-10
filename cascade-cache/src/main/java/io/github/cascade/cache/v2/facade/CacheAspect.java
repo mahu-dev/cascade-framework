@@ -51,7 +51,7 @@ import java.util.function.Function;
 public class CacheAspect {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(CacheAspect.class);
-    private static final int SNAPSHOT_MAX_SIZE = 50_000;
+    private static final int SNAPSHOT_MAX_SIZE = 10_000;
     private static final long SNAPSHOT_EXPIRE_AFTER_ACCESS_MINUTES = 30L;
 
     private final CacheManager cacheManager;
@@ -66,12 +66,12 @@ public class CacheAspect {
      * 1) 最大容量限制
      * 2) 访问后过期淘汰
      */
-    private final com.github.benmanes.caffeine.cache.Cache<SnapshotKey, InvocationSnapshot> invocationSnapshots =
-            Caffeine.newBuilder()
-                    .maximumSize(SNAPSHOT_MAX_SIZE)
-                    .expireAfterAccess(SNAPSHOT_EXPIRE_AFTER_ACCESS_MINUTES, TimeUnit.MINUTES)
-                    .build();
-    private final ThreadLocal<Boolean> internalInvocation = ThreadLocal.withInitial(() -> false);
+    private final com.github.benmanes.caffeine.cache.Cache<SnapshotKey, InvocationSnapshot> invocationSnapshots = Caffeine
+            .newBuilder()
+            .maximumSize(SNAPSHOT_MAX_SIZE)
+            .expireAfterAccess(SNAPSHOT_EXPIRE_AFTER_ACCESS_MINUTES, TimeUnit.MINUTES)
+            .build();
+    private final ThreadLocal<Integer> internalInvocationDepth = ThreadLocal.withInitial(() -> 0);
     private final Set<String> refreshAliasMismatchWarnings = ConcurrentHashMap.newKeySet();
 
     public CacheAspect(CacheManager cacheManager, CascadeCacheProperties defaultConfig) {
@@ -82,7 +82,7 @@ public class CacheAspect {
 
     @Around("@annotation(cacheable)")
     public Object handleCacheable(ProceedingJoinPoint joinPoint, Cacheable cacheable) throws Throwable {
-        if (Boolean.TRUE.equals(internalInvocation.get())) {
+        if (isInternalInvocation()) {
             return joinPoint.proceed();
         }
 
@@ -107,24 +107,14 @@ public class CacheAspect {
             if (cached.isPresent()) {
                 return cached.get();
             }
-            if (cacheable.asyncLoad()) {
-                if (!primitiveReturnType) {
-                    triggerAsyncLoad(cache, cacheName, cacheKey);
-                    return null;
-                }
-                LOGGER.warn("@Cacheable异步加载不支持primitive返回类型，降级为同步执行: cache={}, key={}",
-                        cacheName, cacheKey);
+            if (tryHandleAsyncLoadOnMiss(cacheable, primitiveReturnType, cache, cacheName, cacheKey)) {
+                return null;
             }
         } catch (Exception e) {
             LOGGER.warn("@Cacheable读取缓存失败，降级执行方法: cache={}, key={}, error={}",
                     cacheName, cacheKey, e.getMessage());
-            if (cacheable.asyncLoad()) {
-                if (!primitiveReturnType) {
-                    triggerAsyncLoad(cache, cacheName, cacheKey);
-                    return null;
-                }
-                LOGGER.warn("@Cacheable异步加载不支持primitive返回类型，降级为同步执行: cache={}, key={}",
-                        cacheName, cacheKey);
+            if (tryHandleAsyncLoadOnMiss(cacheable, primitiveReturnType, cache, cacheName, cacheKey)) {
+                return null;
             }
         }
 
@@ -137,7 +127,7 @@ public class CacheAspect {
 
     @Around("@annotation(cascadeCached)")
     public Object handleCascadeCached(ProceedingJoinPoint joinPoint, CascadeCached cascadeCached) throws Throwable {
-        if (Boolean.TRUE.equals(internalInvocation.get())) {
+        if (isInternalInvocation()) {
             return joinPoint.proceed();
         }
 
@@ -210,9 +200,9 @@ public class CacheAspect {
 
     @SuppressWarnings("unchecked")
     private Cache<Object, Object> getOrCreateCache(JoinPoint joinPoint,
-                                                   String cacheName,
-                                                   Object annotation,
-                                                   Object cacheKey) {
+            String cacheName,
+            Object annotation,
+            Object cacheKey) {
         Class<Object> keyType = (Class<Object>) (cacheKey != null ? cacheKey.getClass() : Object.class);
         Class<Object> valueType = (Class<Object>) inferValueType(joinPoint);
 
@@ -227,8 +217,7 @@ public class CacheAspect {
                 // @CachePut 仅负责写入，不应将写方法注册为缓存加载器，
                 // 避免 miss/refresh 链路重放具备副作用的写方法。
                 return (Cache<Object, Object>) cacheManager.getOrCreateCache(
-                        cacheName, keyType, valueType, config
-                );
+                        cacheName, keyType, valueType, config);
             }
             if (annotation instanceof CascadeCached cascadeCached) {
                 CascadeCacheProperties config = buildConfig(cascadeCached);
@@ -254,19 +243,17 @@ public class CacheAspect {
      */
     @SuppressWarnings("unchecked")
     private Cache<Object, Object> getOrCreateCacheWithLoaderFallback(String cacheName,
-                                                                     Class<Object> keyType,
-                                                                     Class<Object> valueType,
-                                                                     CascadeCacheProperties config,
-                                                                     Function<Object, Object> snapshotLoader) {
+            Class<Object> keyType,
+            Class<Object> valueType,
+            CascadeCacheProperties config,
+            Function<Object, Object> snapshotLoader) {
         Cache<Object, Object> cache = cacheManager.getOrCreateCache(
-                cacheName, keyType, valueType, config
-        );
+                cacheName, keyType, valueType, config);
         if (cache == null) {
             return null;
         }
         return cacheManager.getOrCreateCache(
-                cacheName, keyType, valueType, config, wrapSnapshotFallbackLoader(snapshotLoader)
-        );
+                cacheName, keyType, valueType, config, wrapSnapshotFallbackLoader(snapshotLoader));
     }
 
     private static Function<Object, Object> wrapSnapshotFallbackLoader(Function<Object, Object> delegate) {
@@ -274,10 +261,10 @@ public class CacheAspect {
     }
 
     private static void safePut(Cache<Object, Object> cache,
-                                String cacheName,
-                                Object key,
-                                Object value,
-                                long ttlSeconds) {
+            String cacheName,
+            Object key,
+            Object value,
+            long ttlSeconds) {
         try {
             if (ttlSeconds > 0) {
                 cache.put(key, value, ttlSeconds);
@@ -414,8 +401,7 @@ public class CacheAspect {
                     snapshot.target,
                     snapshot.args,
                     result,
-                    false
-            );
+                    false);
         } catch (Exception e) {
             LOGGER.warn("unless表达式求值失败，按false处理: unless={}, error={}", unless, e.getMessage());
             return false;
@@ -530,7 +516,8 @@ public class CacheAspect {
         invocationSnapshots.put(new SnapshotKey(cacheName, cacheKey), snapshot);
     }
 
-    private static Optional<Object> readFromCache(Cache<Object, Object> cache, Object cacheKey, boolean skipLoadOnMiss) {
+    private static Optional<Object> readFromCache(Cache<Object, Object> cache, Object cacheKey,
+            boolean skipLoadOnMiss) {
         if (!skipLoadOnMiss) {
             return cache.get(cacheKey);
         }
@@ -557,13 +544,30 @@ public class CacheAspect {
         }
     }
 
+    private static boolean tryHandleAsyncLoadOnMiss(Cacheable cacheable,
+            boolean primitiveReturnType,
+            Cache<Object, Object> cache,
+            String cacheName,
+            Object cacheKey) {
+        if (!cacheable.asyncLoad()) {
+            return false;
+        }
+        if (!primitiveReturnType) {
+            triggerAsyncLoad(cache, cacheName, cacheKey);
+            return true;
+        }
+        LOGGER.warn("@Cacheable异步加载不支持primitive返回类型，降级为同步执行: cache={}, key={}",
+                cacheName, cacheKey);
+        return false;
+    }
+
     private Object invokeSnapshot(String cacheName, Object cacheKey, String unlessExpression) {
         InvocationSnapshot snapshot = invocationSnapshots.getIfPresent(new SnapshotKey(cacheName, cacheKey));
         if (snapshot == null) {
             return null;
         }
         try {
-            internalInvocation.set(true);
+            enterInternalInvocation();
             Object result = snapshot.method.invoke(snapshot.target, snapshot.args);
             if (result != null && evaluateUnless(snapshot, unlessExpression, result)) {
                 return null;
@@ -575,8 +579,25 @@ public class CacheAspect {
         } catch (Exception e) {
             throw new RuntimeException(e);
         } finally {
-            internalInvocation.set(false);
+            exitInternalInvocation();
         }
+    }
+
+    private boolean isInternalInvocation() {
+        return internalInvocationDepth.get() > 0;
+    }
+
+    private void enterInternalInvocation() {
+        internalInvocationDepth.set(internalInvocationDepth.get() + 1);
+    }
+
+    private void exitInternalInvocation() {
+        int depth = internalInvocationDepth.get() - 1;
+        if (depth <= 0) {
+            internalInvocationDepth.remove();
+            return;
+        }
+        internalInvocationDepth.set(depth);
     }
 
     private void removeSnapshot(String cacheName, Object cacheKey) {
