@@ -14,22 +14,22 @@ public class LockResult<T> {
 
     private boolean acquired;
     private T result;
-    private String lockKey;
+    private String displayKey;
     private long acquireCostMs;
 
-    public static <T> LockResult<T> success(T result, String lockKey, long costMs) {
+    public static <T> LockResult<T> success(T result, String displayKey, long costMs) {
         LockResult<T> r = new LockResult<>();
         r.acquired = true;
         r.result = result;
-        r.lockKey = lockKey;
+        r.displayKey = displayKey;
         r.acquireCostMs = costMs;
         return r;
     }
 
-    public static <T> LockResult<T> failed(String lockKey) {
+    public static <T> LockResult<T> failed(String displayKey) {
         LockResult<T> r = new LockResult<>();
         r.acquired = false;
-        r.lockKey = lockKey;
+        r.displayKey = displayKey;
         return r;
     }
 }

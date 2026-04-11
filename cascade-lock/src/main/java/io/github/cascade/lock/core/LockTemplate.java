@@ -4,6 +4,7 @@ import io.github.cascade.lock.enums.LockStrategy;
 import io.github.cascade.lock.enums.LockType;
 import io.github.cascade.lock.model.LockResult;
 
+import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 
@@ -40,6 +41,17 @@ public interface LockTemplate {
      * 完整参数
      */
     <T> LockResult<T> lock(String key, LockType lockType, long waitTime, long leaseTime,
+                           TimeUnit timeUnit, LockStrategy strategy, Callable<T> action);
+
+    /**
+     * 多 key 加锁（仅支持 RED / MULTI）
+     */
+    <T> T lock(List<String> keys, LockType lockType, Callable<T> action);
+
+    /**
+     * 多 key 完整参数（仅支持 RED / MULTI）
+     */
+    <T> LockResult<T> lock(List<String> keys, LockType lockType, long waitTime, long leaseTime,
                            TimeUnit timeUnit, LockStrategy strategy, Callable<T> action);
 
     /**

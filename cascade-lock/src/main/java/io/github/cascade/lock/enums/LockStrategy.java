@@ -15,7 +15,7 @@ public enum LockStrategy {
      */
     FAIL_FAST,
     /**
-     * 等待直到获取锁（使用 waitTime）
+     * waitTime > 0 时在窗口内持续等待；waitTime <= 0 时无限阻塞直到获取锁
      */
     KEEP_TRYING,
     /**

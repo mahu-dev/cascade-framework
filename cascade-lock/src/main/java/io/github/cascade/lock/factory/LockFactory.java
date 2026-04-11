@@ -23,6 +23,9 @@ public class LockFactory {
     private final RedissonClient redissonClient;
 
     public RLock getLock(LockType lockType, String key) {
+        if (lockType == null) {
+            throw new LockException("lockType 不能为空", key);
+        }
         return switch (lockType) {
             case REENTRANT -> redissonClient.getLock(key);
             case FAIR -> redissonClient.getFairLock(key);
@@ -33,13 +36,16 @@ public class LockFactory {
     }
 
     public RLock getMultiLock(LockType lockType, List<String> keys) {
+        if (lockType == null) {
+            throw new LockException("lockType 不能为空", String.valueOf(keys));
+        }
         RLock[] locks = keys.stream()
                 .map(redissonClient::getLock)
                 .toArray(RLock[]::new);
 
         return switch (lockType) {
-            case RED -> redissonClient.getRedLock(locks);
-            case MULTI -> redissonClient.getMultiLock(locks);
+            // RED 原使用已弃用的 getRedLock()，Redisson 3.17.6+ 推荐统一使用 getMultiLock()
+            case RED, MULTI -> redissonClient.getMultiLock(locks);
             default -> throw new LockException("多 key 仅支持 RED / MULTI 类型", keys.toString());
         };
     }

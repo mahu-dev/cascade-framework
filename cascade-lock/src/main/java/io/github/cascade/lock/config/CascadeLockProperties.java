@@ -20,12 +20,16 @@ public class CascadeLockProperties {
     private String keyPrefix = "cascade:lock";
 
     /**
-     * 全局默认等待时间（秒），-1 不等待
+     * 全局默认等待时间（单位由注解 timeUnit 指定，默认秒）。
+     * <= 0：表示不等待，立即尝试获取锁一次
+     * > 0：等待指定时长
      */
     private long waitTime = -1;
 
     /**
-     * 全局默认租约时间（秒），-1 看门狗续期
+     * 全局默认租约时间（单位由注解 timeUnit 指定，默认秒）。
+     * <= 0：使用看门狗自动续期（推荐）
+     * > 0：指定持有时间，到期自动释放
      */
     private long leaseTime = -1;
 

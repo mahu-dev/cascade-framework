@@ -20,20 +20,19 @@ import java.util.concurrent.TimeUnit;
 public class LockInfo {
 
     /**
-     * 最终生效的锁 key
+     * 锁的 key 列表
+     * <ul>
+     *   <li>size == 1：单锁</li>
+     *   <li>size > 1：联锁/红锁</li>
+     * </ul>
      */
-    private String lockKey;
-
-    /**
-     * 多锁场景下的多个 key
-     */
-    private List<String> lockKeys;
+    private List<String> keys;
 
     private LockType lockType;
     private LockStrategy lockStrategy;
 
     /**
-     * 等待时间，-1 不等待
+     * 等待时间，<= 0 不等待
      */
     private long waitTime;
 
@@ -45,4 +44,21 @@ public class LockInfo {
     private TimeUnit timeUnit;
 
     private String failMessage;
+
+    /**
+     * 用于日志、事件、异常信息中的展示 key
+     */
+    public String getDisplayKey() {
+        if (keys.size() == 1) {
+            return keys.getFirst();
+        }
+        return "multi[" + String.join(",", keys) + "]";
+    }
+
+    /**
+     * 是否为多锁场景
+     */
+    public boolean isMultiKey() {
+        return keys.size() > 1;
+    }
 }

@@ -10,6 +10,7 @@ import io.github.cascade.lock.key.KeyGenerator;
 import io.github.cascade.lock.key.SpelKeyGenerator;
 import io.github.cascade.lock.listener.LockEventListener;
 import org.redisson.api.RedissonClient;
+import org.springframework.beans.factory.BeanFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -27,8 +28,8 @@ public class CascadeLockAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public KeyGenerator lockKeyGenerator() {
-        return new SpelKeyGenerator();
+    public KeyGenerator lockKeyGenerator(BeanFactory beanFactory) {
+        return new SpelKeyGenerator(beanFactory);
     }
 
     @Bean
@@ -46,8 +47,9 @@ public class CascadeLockAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public LockTemplate lockTemplate(LockExecutor lockExecutor) {
-        return new DefaultLockTemplate(lockExecutor);
+    public LockTemplate lockTemplate(LockExecutor lockExecutor,
+                                     CascadeLockProperties properties) {
+        return new DefaultLockTemplate(lockExecutor, properties);
     }
 
     @Bean

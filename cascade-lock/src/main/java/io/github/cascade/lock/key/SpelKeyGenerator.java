@@ -1,10 +1,12 @@
 package io.github.cascade.lock.key;
 
 import org.aspectj.lang.ProceedingJoinPoint;
+import org.springframework.beans.factory.BeanFactory;
 import org.springframework.context.expression.MethodBasedEvaluationContext;
 import org.springframework.core.DefaultParameterNameDiscoverer;
 import org.springframework.core.ParameterNameDiscoverer;
-import org.springframework.expression.EvaluationContext;
+import org.springframework.context.expression.BeanFactoryResolver;
+import org.springframework.expression.BeanResolver;
 import org.springframework.expression.ExpressionParser;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
 import org.springframework.util.StringUtils;
@@ -24,21 +26,27 @@ public class SpelKeyGenerator implements KeyGenerator {
 
     private final ExpressionParser parser = new SpelExpressionParser();
     private final ParameterNameDiscoverer discoverer = new DefaultParameterNameDiscoverer();
+    private final BeanResolver beanResolver;
+
+    public SpelKeyGenerator() {
+        this.beanResolver = null;
+    }
+
+    public SpelKeyGenerator(BeanFactory beanFactory) {
+        this.beanResolver = new BeanFactoryResolver(beanFactory);
+    }
 
     @Override
     public String generate(String keyExpression, ProceedingJoinPoint joinPoint, Method method) {
         if (!StringUtils.hasText(keyExpression)) {
-            // 无表达式时使用 类名.方法名 作为 key
             return joinPoint.getTarget().getClass().getSimpleName() + "." + method.getName();
         }
 
-        // 判断是否包含 SpEL 语法
-        if (!keyExpression.contains("#") && !keyExpression.contains("'")) {
-            return keyExpression;
-        }
-
-        EvaluationContext context = new MethodBasedEvaluationContext(
+        MethodBasedEvaluationContext context = new MethodBasedEvaluationContext(
                 joinPoint.getTarget(), method, joinPoint.getArgs(), discoverer);
+        if (beanResolver != null) {
+            context.setBeanResolver(beanResolver);
+        }
 
         Object value = parser.parseExpression(keyExpression).getValue(context);
         return value == null ? keyExpression : value.toString();
