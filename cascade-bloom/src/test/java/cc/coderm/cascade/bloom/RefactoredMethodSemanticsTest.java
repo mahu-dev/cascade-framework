@@ -114,23 +114,6 @@ class RefactoredMethodSemanticsTest {
         assertThat(manager.getFilter("user-bloom").mightContain("user:1001")).isTrue();
     }
 
-    @Test
-    @DisplayName("getWithBloomGuardAndWriteBack - 委托给getWithSelfHeal保持兼容")
-    void shouldDelegateToGetWithSelfHeal() {
-        InMemoryBloomFilterManager manager = new InMemoryBloomFilterManager();
-        DefaultBloomFilterTemplate template = new DefaultBloomFilterTemplate(manager);
-
-        String result = template.getWithBloomGuardAndWriteBack(
-                "user-bloom",
-                "user:1001",
-                () -> "user-data",
-                "fallback"
-        );
-
-        assertThat(result).isEqualTo("user-data");
-        assertThat(manager.getFilter("user-bloom").mightContain("user:1001")).isTrue();
-    }
-
     private static final class InMemoryBloomFilterManager implements BloomFilterManager {
         private final ConcurrentHashMap<String, CascadeBloomFilter<Object>> filters = new ConcurrentHashMap<>();
 

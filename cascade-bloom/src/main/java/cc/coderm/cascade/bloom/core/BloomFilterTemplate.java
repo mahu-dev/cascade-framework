@@ -65,30 +65,6 @@ public interface BloomFilterTemplate {
     <T> T getWithBloomGuard(String filterName, String key, Supplier<T> loader, T fallback);
 
     /**
-     * 防缓存穿透方法（带回写支持）
-     * <p>
-     * 执行逻辑：
-     * <ol>
-     *   <li>先用布隆过滤器判断 key 是否可能存在</li>
-     *   <li>如果<strong>一定不存在</strong>，直接返回 {@code fallback}，不执行 loader</li>
-     *   <li>如果<strong>可能存在</strong>，执行 {@code loader} 加载数据并返回</li>
-     *   <li>若 loader 返回非 null 数据，自动写回布隆过滤器</li>
-     * </ol>
-     * <p>
-     * <strong>注意</strong>：此方法与 {@link #getWithBloomGuard} 的区别在于，
-     * 当布隆过滤器 hit 时，如果 loader 返回数据会自动写回布隆过滤器。
-     * 这适用于"布隆过滤器可能存在数据缺失"的场景。
-     *
-     * @param filterName 过滤器名称
-     * @param key        查询 key
-     * @param loader     数据加载器
-     * @param fallback   默认返回值
-     * @param <T>        返回类型
-     * @return loader 的结果或 fallback 值
-     */
-    <T> T getWithBloomGuardAndWriteBack(String filterName, String key, Supplier<T> loader, T fallback);
-
-    /**
      * 布隆过滤器自愈模式（总是执行 loader 并写回）
      * <p>
      * 执行逻辑：

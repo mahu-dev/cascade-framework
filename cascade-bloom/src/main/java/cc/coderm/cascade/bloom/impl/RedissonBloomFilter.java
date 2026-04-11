@@ -5,6 +5,7 @@ import cc.coderm.cascade.bloom.util.BloomFilterKeyUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RBloomFilter;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -47,8 +48,18 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
         this.falseProbability = falseProbability;
     }
 
+    /**
+     * 添加元素到布隆过滤器
+     * <p>
+     * 将泛型值标准化为字符串后添加到底层 Redisson 布隆过滤器中。
+     * 使用 BloomFilterKeyUtil.toKey() 确保所有类型的值都能正确转换为字符串存储。
+     *
+     * @param value 待添加的元素，会被标准化为字符串后存储
+     * @return {@code true} 表示该元素是首次添加，{@code false} 表示元素已存在
+     */
     @Override
     public boolean add(T value) {
+        // 将泛型值标准化为字符串
         String normalized = BloomFilterKeyUtil.toKey(value);
         boolean added = stringBloomFilter.add(normalized);
         if (log.isDebugEnabled()) {
@@ -57,13 +68,32 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
         return added;
     }
 
+    /**
+     * 批量添加元素到布隆过滤器
+     * <p>
+     * 使用 Redisson 官方批量接口 {@link RBloomFilter#add(Collection)}，
+     * 避免逐个元素网络往返。写入前会统一做 key 标准化。
+     *
+     * @param values 待添加的元素集合，不能为 null
+     * @throws NullPointerException 当 values 为 null 时抛出
+     */
     @Override
     public void addAll(Collection<T> values) {
         Objects.requireNonNull(values, "BloomFilter elements collection must not be null");
-        for (T value : values) {
-            add(value);
+        if (values.isEmpty()) {
+            return;
         }
-        log.debug("[cascade-bloom] addAll to [{}]: count={}", name, values.size());
+
+        Collection<String> normalizedValues = new ArrayList<>(values.size());
+        for (T value : values) {
+            normalizedValues.add(BloomFilterKeyUtil.toKey(value));
+        }
+
+        long firstAddCount = stringBloomFilter.add(normalizedValues);
+        if (log.isDebugEnabled()) {
+            log.debug("[cascade-bloom] addAll to [{}]: count={}, firstAddCount={}",
+                    name, values.size(), firstAddCount);
+        }
     }
 
     @Override

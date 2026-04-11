@@ -21,8 +21,10 @@ import org.springframework.expression.spel.standard.SpelExpressionParser;
 import org.springframework.expression.spel.support.StandardEvaluationContext;
 
 import java.lang.reflect.Method;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -86,14 +88,26 @@ public class BloomFilterAspect {
      * 每个线程复用自己的 EvaluationContext，避免重复创建对象。
      * 使用时需要重新设置变量值，确保状态正确。
      */
-    private final ThreadLocal<EvaluationContext> evaluationContextThreadLocal =
-            ThreadLocal.withInitial(StandardEvaluationContext::new);
+    private final ThreadLocal<EvaluationContextHolder> evaluationContextThreadLocal =
+            ThreadLocal.withInitial(EvaluationContextHolder::new);
 
 
+    /**
+     * 构造布隆过滤器 AOP 切面实例
+     * <p>
+     * 初始化切面所需的依赖组件和缓存结构，包括：
+     * - 布隆过滤器管理器
+     * - 配置属性
+     * - SpEL 表达式 LRU 缓存
+     *
+     * @param bloomFilterManager 布隆过滤器管理器，用于获取和管理过滤器实例
+     * @param properties         布隆过滤器配置属性，包含缓存大小、严格模式等配置
+     */
     public BloomFilterAspect(BloomFilterManager bloomFilterManager,
                              BloomFilterProperties properties) {
         this.bloomFilterManager = bloomFilterManager;
         this.properties = properties;
+        // 初始化 LRU 缓存，accessOrder=true 表示按访问顺序排序
         this.expressionCache = new LinkedHashMap<>(INITIAL_CAPACITY, LOAD_FACTOR, true);
 
         log.info("[cascade-bloom] BloomFilterAspect initialized with maxExpressionCacheSize={}",
@@ -103,6 +117,10 @@ public class BloomFilterAspect {
     @Around("@annotation(bloomFilter)")
     public Object around(ProceedingJoinPoint joinPoint, BloomFilter bloomFilter) throws Throwable {
         String filterName = bloomFilter.name();
+        if (filterName == null || filterName.isBlank()) {
+            throw new BloomFilterException("Filter name must not be blank");
+        }
+
         String keyExpression = bloomFilter.key();
 
         // 1. 解析 SpEL 表达式得到过滤 key
@@ -140,20 +158,37 @@ public class BloomFilterAspect {
     // SpEL 解析工具
     // -------------------------------------------------------------------------
 
+    /**
+     * 解析 SpEL 表达式得到布隆过滤器的 key
+     * <p>
+     * 通过 SpEL 表达式引擎解析 keyExpression，从方法参数中提取布隆过滤器的 key 值。
+     * 支持两种模式：
+     * 1. 严格模式（strict-spel=true）：解析失败直接抛出异常
+     * 2. 非严格模式（strict-spel=false）：解析失败时降级使用 args[0] 作为 key
+     *
+     * @param joinPoint      AOP 连接点，用于获取方法签名和参数
+     * @param keyExpression  SpEL 表达式字符串，用于从方法参数中提取 key
+     * @return 解析并标准化后的 key 字符串
+     * @throws BloomFilterException 当 strict-spel=true 且表达式解析失败时抛出，
+     *                              或者 normalizeResolvedKey 检测到 null key 时抛出
+     */
     private String resolveKey(ProceedingJoinPoint joinPoint, String keyExpression) {
         try {
             MethodSignature signature = (MethodSignature) joinPoint.getSignature();
             Method method = signature.getMethod();
             Object[] args = joinPoint.getArgs();
 
+            // 构建 SpEL 上下文并解析表达式
             EvaluationContext context = getOrCreateEvaluationContext(method, args);
             Expression expression = getOrParseExpression(keyExpression);
             Object value = expression.getValue(context);
             return normalizeResolvedKey(value, keyExpression, "spel");
         } catch (Exception e) {
+            // 保留已有的 BloomFilterException，不重复包装
             if (e instanceof BloomFilterException bloomFilterException) {
                 throw bloomFilterException;
             }
+            // 严格模式下直接抛出异常
             if (properties.isStrictSpEL()) {
                 throw new BloomFilterException(
                         "SpEL key expression resolution failed: [" + keyExpression + "]. " +
@@ -162,6 +197,7 @@ public class BloomFilterAspect {
                                 "Or set cascade.bloom.strict-spel=false to use fallback mode.",
                         e);
             }
+            // 非严格模式下降级使用第一个参数
             log.debug("[cascade-bloom] Failed to resolve key expression [{}], fallback to args[0]", keyExpression, e);
             Object[] args = joinPoint.getArgs();
             Object fallbackValue = args != null && args.length > 0 ? args[0] : null;
@@ -169,7 +205,22 @@ public class BloomFilterAspect {
         }
     }
 
+    /**
+     * 解析降级表达式并返回结果
+     * <p>
+     * 当布隆过滤器判定元素不存在时，使用该方法解析用户配置的降级表达式（fallbackValue），
+     * 通过 SpEL 表达式引擎计算出降级返回值。支持特殊值 "null" 直接返回 null。
+     * <p>
+     * 在严格模式下（strict-spel=true），表达式解析失败会抛出异常；
+     * 在非严格模式下，解析失败仅记录调试日志并返回 null，不影响主流程。
+     *
+     * @param fallbackExpression 降级表达式字符串，支持 SpEL 表达式，特殊值 "null" 表示直接返回 null
+     * @param joinPoint          AOP 连接点，用于获取方法签名、参数等信息以构建 SpEL 上下文
+     * @return 表达式解析结果；当表达式为 "null" 或解析失败且非严格模式时返回 null
+     * @throws BloomFilterException 当 strict-spel=true 且表达式解析失败时抛出
+     */
     private Object resolveFallback(String fallbackExpression, ProceedingJoinPoint joinPoint) {
+        // 处理特殊值 "null"，直接返回 null
         if ("null".equals(fallbackExpression)) {
             return null;
         }
@@ -177,10 +228,14 @@ public class BloomFilterAspect {
             MethodSignature signature = (MethodSignature) joinPoint.getSignature();
             Method method = signature.getMethod();
             Object[] args = joinPoint.getArgs();
+            // 复用或创建 EvaluationContext，绑定方法参数到 SpEL 上下文
             EvaluationContext context = getOrCreateEvaluationContext(method, args);
+            // 从缓存获取或解析 SpEL 表达式
             Expression expression = getOrParseExpression(fallbackExpression);
+            // 执行表达式求值并返回结果
             return expression.getValue(context);
         } catch (Exception e) {
+            // 严格模式下抛出异常，非严格模式下降级为返回 null
             if (properties.isStrictSpEL()) {
                 throw new BloomFilterException(
                         "SpEL fallback expression resolution failed: [" + fallbackExpression + "]. " +
@@ -203,19 +258,20 @@ public class BloomFilterAspect {
      * @return 配置好的 EvaluationContext
      */
     private EvaluationContext getOrCreateEvaluationContext(Method method, Object[] args) {
-        EvaluationContext context = evaluationContextThreadLocal.get();
+        EvaluationContextHolder holder = evaluationContextThreadLocal.get();
+        StandardEvaluationContext context = holder.context;
 
         // 清空之前的变量设置
-        clearEvaluationContextVariables(context);
+        clearEvaluationContextVariables(holder);
 
         // 重新设置变量
-        context.setVariable("args", args);
+        bindVariable(holder, "args", args);
 
         String[] paramNames = parameterNameDiscoverer.getParameterNames(method);
         if (paramNames != null) {
             for (int i = 0; i < paramNames.length; i++) {
                 if (i < args.length) {
-                    context.setVariable(paramNames[i], args[i]);
+                    bindVariable(holder, paramNames[i], args[i]);
                 }
             }
         }
@@ -223,23 +279,56 @@ public class BloomFilterAspect {
         return context;
     }
 
+
     /**
-     * 清空 EvaluationContext 中的变量
+     * 清空 EvaluationContext 中已绑定的变量
      * <p>
-     * 避免变量污染，确保每次使用时状态干净。
+     * 将已绑定变量的值设置为 null，并清空变量名称集合，
+     * 避免 ThreadLocal 复用时产生变量污染，确保每次使用时状态干净。
      *
-     * @param context EvaluationContext
+     * @param holder EvaluationContext 持有者，包含上下文对象和已绑定变量名称集合
      */
-    private static void clearEvaluationContextVariables(EvaluationContext context) {
-        if (context instanceof StandardEvaluationContext standardContext) {
-            standardContext.setVariable("args", null);
+    private static void clearEvaluationContextVariables(EvaluationContextHolder holder) {
+        // 将所有已绑定变量置为 null
+        for (String variableName : holder.boundVariableNames) {
+            holder.context.setVariable(variableName, null);
         }
+        // 清空变量名称记录
+        holder.boundVariableNames.clear();
     }
 
+    /**
+     * 绑定变量到 EvaluationContext 并记录变量名
+     * <p>
+     * 将变量名和值设置到 SpEL 上下文中，同时记录变量名到集合中，
+     * 以便后续清空时能够追踪所有已绑定的变量。
+     *
+     * @param holder       EvaluationContext 持有者，包含上下文对象和已绑定变量名称集合
+     * @param variableName 变量名称，用于在 SpEL 表达式中引用
+     * @param value        变量值，可以是任意对象
+     */
+    private static void bindVariable(EvaluationContextHolder holder, String variableName, Object value) {
+        holder.context.setVariable(variableName, value);
+        holder.boundVariableNames.add(variableName);
+    }
+
+    /**
+     * 将解析后的 key 值标准化为字符串
+     * <p>
+     * 调用 BloomFilterKeyUtil.toKey() 将 SpEL 表达式解析结果转换为布隆过滤器的 key 字符串。
+     * 如果解析结果为 null，则抛出 BloomFilterException 异常，因为布隆过滤器不允许 null key。
+     *
+     * @param resolvedValue  SpEL 表达式解析后的值，可能为任意类型或 null
+     * @param keyExpression  原始 SpEL 表达式字符串，用于异常信息提示
+     * @param source         值来源标识（如 "spel"、"args[0]" 等），用于异常信息提示
+     * @return 标准化后的 key 字符串
+     * @throws BloomFilterException 当 resolvedValue 为 null 时抛出，包含详细的错误信息
+     */
     private static String normalizeResolvedKey(Object resolvedValue, String keyExpression, String source) {
         try {
             return BloomFilterKeyUtil.toKey(resolvedValue);
         } catch (NullPointerException e) {
+            // 捕获 null 值异常，转换为业务异常并提供详细的调试信息
             throw new BloomFilterException(
                     "BloomFilter key resolved to null from [" + source + "] for expression [" + keyExpression + "]. " +
                             "Null key is not allowed.",
@@ -248,22 +337,51 @@ public class BloomFilterAspect {
         }
     }
 
+    /**
+     * 处理布隆过滤器判定元素不存在的场景
+     * <p>
+     * 当布隆过滤器确定元素不存在时，根据配置采取两种处理策略：
+     * 1. 如果 throwOnAbsent=true，则抛出异常，中断方法执行
+     * 2. 如果 throwOnAbsent=false，则解析并返回 fallbackValue 降级值
+     *
+     * @param joinPoint    AOP 连接点，用于在降级时传递给 resolveFallback 方法
+     * @param bloomFilter  布隆过滤器注解对象，包含 throwOnAbsent、message、fallbackValue 等配置
+     * @return 当不抛出异常时，返回降级表达式解析的结果；否则不返回（直接抛异常）
+     * @throws BloomFilterException 当 throwOnAbsent=true 时抛出，异常信息来自 bloomFilter.message()
+     */
     private Object onAbsent(ProceedingJoinPoint joinPoint, BloomFilter bloomFilter) {
+        // 配置为抛出异常时，直接中断执行
         if (bloomFilter.throwOnAbsent()) {
             throw new BloomFilterException(bloomFilter.message());
         }
+        // 否则解析并返回降级值
         return resolveFallback(bloomFilter.fallbackValue(), joinPoint);
     }
 
+    /**
+     * 在方法执行成功后将 key 回填到布隆过滤器
+     * <p>
+     * 当配置了 writeBackOnSuccess=true 且方法返回值不为 null 时，
+     * 将 key 添加到布隆过滤器中，实现自动刷新功能。
+     * 回填失败时仅记录警告日志，不影响主流程的正常执行。
+     *
+     * @param filter       布隆过滤器实例，用于执行 add 操作
+     * @param filterName   过滤器名称，用于日志输出
+     * @param key          需要回填的 key 字符串
+     * @param result       方法执行结果，为 null 时不执行回填
+     * @param bloomFilter  布隆过滤器注解对象，包含 writeBackOnSuccess 配置
+     */
     private void writeBackIfNecessary(CascadeBloomFilter<Object> filter,
                                       String filterName,
                                       String key,
                                       Object result,
                                       BloomFilter bloomFilter) {
+        // 检查是否需要回填：未开启或结果为 null 则跳过
         if (!bloomFilter.writeBackOnSuccess() || result == null) {
             return;
         }
         try {
+            // 执行 key 回填操作
             filter.add(key);
             log.debug("[cascade-bloom] BloomFilter [{}] write-back key [{}]", filterName, key);
         } catch (Exception e) {
@@ -313,7 +431,7 @@ public class BloomFilterAspect {
             String evictedExpression = eldest.getKey();
             expressionCache.remove(evictedExpression);
             evictions.incrementAndGet();
-            log.warn("[cascade-bloom] Expression cache full (size={}), evicting oldest expression [{}], maxExpressionCacheSize={}",
+            log.info("[cascade-bloom] Expression cache full (size={}), evicting oldest expression [{}], maxExpressionCacheSize={}",
                     expressionCache.size(), evictedExpression, maxSize);
         }
     }
@@ -395,5 +513,19 @@ public class BloomFilterAspect {
             return 0;
         }
         return (double) hits / total;
+    }
+
+    /**
+     * EvaluationContext 持有者
+     * <p>
+     * 封装 StandardEvaluationContext 实例和已绑定变量名称集合，
+     * 用于 ThreadLocal 缓存，避免重复创建 EvaluationContext 对象。
+     * boundVariableNames 用于追踪已绑定的变量，便于后续清空操作。
+     */
+    private static final class EvaluationContextHolder {
+        // SpEL 表达式求值上下文
+        private final StandardEvaluationContext context = new StandardEvaluationContext();
+        // 记录已绑定的变量名称，用于清空时追踪
+        private final Set<String> boundVariableNames = new HashSet<>();
     }
 }

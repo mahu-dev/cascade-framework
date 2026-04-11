@@ -50,8 +50,8 @@ class BloomFilterTemplateWriteBackSelfHealTest {
     }
 
     @Test
-    @DisplayName("getWithSelfHeal - Bloom hit + loader 未命中（误判）：返回 null")
-    void shouldReturnNullWhenBloomHitsButLoaderMisses() {
+    @DisplayName("getWithSelfHeal - Bloom hit + loader 未命中（误判）：返回 fallback")
+    void shouldReturnFallbackWhenBloomHitsButLoaderMisses() {
         InMemoryBloomFilterManager manager = new InMemoryBloomFilterManager();
         manager.getFilter("user-bloom").add("user:1002");
         DefaultBloomFilterTemplate template = new DefaultBloomFilterTemplate(manager);
@@ -63,7 +63,7 @@ class BloomFilterTemplateWriteBackSelfHealTest {
                 "fallback"
         );
 
-        assertThat(result).isNull();
+        assertThat(result).isEqualTo("fallback");
     }
 
     @Test

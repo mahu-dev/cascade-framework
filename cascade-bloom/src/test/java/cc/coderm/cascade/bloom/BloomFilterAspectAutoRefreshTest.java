@@ -118,6 +118,19 @@ class BloomFilterAspectAutoRefreshTest {
         }
     }
 
+    @Test
+    @DisplayName("ThreadLocal 复用时不应泄漏上一次方法参数变量")
+    void shouldNotLeakVariablesAcrossInvocationsOnSameThread() {
+        String first = service.strictGet("seed-id");
+        assertThat(first).isEqualTo("fallback");
+
+        assertThatThrownBy(() -> service.misboundExpression("u-88"))
+                .isInstanceOf(BloomFilterException.class)
+                .hasMessageContaining("resolved to null")
+                .hasMessageContaining("[#id]");
+        assertThat(service.getMisboundCalls()).isEqualTo(0);
+    }
+
     @Configuration
     @EnableAspectJAutoProxy
     static class TestConfig {
@@ -165,6 +178,7 @@ class BloomFilterAspectAutoRefreshTest {
         final AtomicInteger refreshableCalls = new AtomicInteger();
         final AtomicInteger noWriteBackCalls = new AtomicInteger();
         final AtomicInteger throwingCalls = new AtomicInteger();
+        final AtomicInteger misboundCalls = new AtomicInteger();
 
         @BloomFilter(name = "strict-bloom", key = "#id", fallbackValue = "'fallback'")
         public String strictGet(String id) {
@@ -197,6 +211,12 @@ class BloomFilterAspectAutoRefreshTest {
             return null;
         }
 
+        @BloomFilter(name = "strict-bloom", key = "#id", fallbackValue = "'fallback'")
+        public String misboundExpression(String userId) {
+            misboundCalls.incrementAndGet();
+            return "db-" + userId;
+        }
+
         public int getStrictCalls() {
             return strictCalls.get();
         }
@@ -211,6 +231,10 @@ class BloomFilterAspectAutoRefreshTest {
 
         public int getThrowingCalls() {
             return throwingCalls.get();
+        }
+
+        public int getMisboundCalls() {
+            return misboundCalls.get();
         }
     }
 

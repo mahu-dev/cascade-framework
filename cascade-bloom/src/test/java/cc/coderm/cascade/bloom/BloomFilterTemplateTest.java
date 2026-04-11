@@ -62,40 +62,6 @@ class BloomFilterTemplateTest {
     }
 
     @Test
-    @DisplayName("getWithBloomGuardAndWriteBack - 命中后 loader 返回非 null，自动写回过滤器")
-    @SuppressWarnings("unchecked")
-    void testGetWithBloomGuardAndWriteBackHit() {
-        when(filter.mightContain(eq("key1"))).thenReturn(true);
-
-        String result = template.getWithBloomGuardAndWriteBack(
-                "user-bloom",
-                "key1",
-                () -> "data",
-                null
-        );
-
-        assertThat(result).isEqualTo("data");
-        verify(filter).add("key1");
-    }
-
-    @Test
-    @DisplayName("getWithBloomGuardAndWriteBack - loader 返回 null 不写回过滤器")
-    @SuppressWarnings("unchecked")
-    void testGetWithBloomGuardAndWriteBackNullResult() {
-        when(filter.mightContain(eq("key1"))).thenReturn(true);
-
-        String result = template.getWithBloomGuardAndWriteBack(
-                "user-bloom",
-                "key1",
-                () -> null,
-                null
-        );
-
-        assertThat(result).isNull();
-        verify(filter, never()).add(any());
-    }
-
-    @Test
     @DisplayName("getWithBloomGuard - 布隆过滤器确认不存在时直接返回 fallback，不执行 loader")
     void testGetWithBloomGuardMiss() {
         when(filter.mightContain(eq("missing-key"))).thenReturn(false);
@@ -212,7 +178,7 @@ class BloomFilterTemplateTest {
     }
 
     @Test
-    @DisplayName("getWithSelfHeal - 布隆过滤器 hit 但 loader 未命中（误判），应返回 null")
+    @DisplayName("getWithSelfHeal - 布隆过滤器 hit 但 loader 未命中（误判），应返回 fallback")
     void testGetWithSelfHealHitButLoaderMisses() {
         when(filter.mightContain(eq("key1"))).thenReturn(true);
 
@@ -223,7 +189,7 @@ class BloomFilterTemplateTest {
                 "fallback"
         );
 
-        assertThat(result).isNull();
+        assertThat(result).isEqualTo("fallback");
         verify(filter, never()).add(any());
     }
 }

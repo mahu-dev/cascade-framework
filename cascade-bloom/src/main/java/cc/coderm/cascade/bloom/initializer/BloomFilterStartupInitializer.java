@@ -100,7 +100,6 @@ public class BloomFilterStartupInitializer implements ApplicationListener<Applic
                     String filterName = initializer.filterName();
                     try {
                         log.info("[cascade-bloom] Starting initializer for filter [{}]", filterName);
-                        @SuppressWarnings("unchecked")
                         CascadeBloomFilter<String> filter = bloomFilterManager.getFilter(filterName);
                         initializer.initialize(filter);
                         successCount.incrementAndGet();

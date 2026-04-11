@@ -58,14 +58,6 @@ public class DefaultBloomFilterTemplate implements BloomFilterTemplate {
     }
 
     @Override
-    public <T> T getWithBloomGuardAndWriteBack(String filterName, String key, Supplier<T> loader, T fallback) {
-        // 此方法语义不够清晰，建议使用 getWithSelfHeal 代替
-        // 为了保持向后兼容，内部委托给 getWithSelfHeal
-        log.debug("[cascade-bloom] getWithBloomGuardAndWriteBack is deprecated, using getWithSelfHeal instead");
-        return getWithSelfHeal(filterName, key, loader, fallback);
-    }
-
-    @Override
     public <T> T getWithSelfHeal(String filterName, String key, Supplier<T> loader, T fallback) {
         CascadeBloomFilter<Object> filter = bloomFilterManager.getFilter(filterName);
 
@@ -84,13 +76,10 @@ public class DefaultBloomFilterTemplate implements BloomFilterTemplate {
             return result;
         }
 
-        // 源数据不存在
-        if (!mightContain) {
-            // 布隆过滤器 miss 且 loader 未命中，返回 fallback
-            return fallback;
+        // 源数据不存在时统一返回 fallback，保持与接口契约一致
+        if (mightContain) {
+            log.debug("[cascade-bloom] BloomFilter [{}] false-positive suspected for key [{}], returning fallback", filterName, key);
         }
-
-        // 布隆过滤器 hit 但 loader 未命中（误判场景），返回 null
-        return null;
+        return fallback;
     }
 }

@@ -26,9 +26,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * <ul>
  *   <li>使用 LRU（最近最少使用）淘汰策略</li>
  *   <li>超过 {@code maxCacheSize} 时自动淘汰最久未使用的过滤器</li>
-   *   <li>淘汰仅影响本地缓存，不影响 Redis 中的数据</li>
-   *   <li>被淘汰的过滤器再次访问时会重新创建并加入缓存</li>
-   * </ul>
+ *   <li>淘汰仅影响本地缓存，不影响 Redis 中的数据</li>
+ *   <li>被淘汰的过滤器再次访问时会重新创建并加入缓存</li>
+ * </ul>
  *
  * @author lionel lionelk@163.com
  * =============================
@@ -45,7 +45,7 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
     /**
      * LRU 缓存，按访问顺序排序（最近访问的在末尾）
      */
-    private final LinkedHashMap<String, CacheEntry> filterCache;
+    private final LinkedHashMap<String, CascadeBloomFilter<?>> filterCache;
 
     /**
      * 缓存访问锁
@@ -83,30 +83,34 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
     public <T> CascadeBloomFilter<T> getOrCreate(String name, long expectedInsertions, double falseProbability) {
         validateParams(name, expectedInsertions, falseProbability);
 
-        CacheEntry entry = getFromCacheOrCompute(
-            name,
-            filterName -> createNewFilter(filterName, expectedInsertions, falseProbability)
+        CascadeBloomFilter<?> filter = getFromCacheOrCompute(name,
+                filterName -> createNewFilter(filterName, expectedInsertions, falseProbability)
         );
 
-        return (CascadeBloomFilter<T>) entry.filter;
+        return (CascadeBloomFilter<T>) filter;
     }
 
     @Override
     public boolean exists(String name) {
-        CacheEntry entry = getFromCache(name);
-        if (entry != null) {
-            return true;
+        validateName(name);
+
+        boolean redisExists = redissonClient.<String>getBloomFilter(buildRedisKey(name)).isExists();
+        if (!redisExists) {
+            evictIfCached(name);
+            return false;
         }
-        String redisKey = buildRedisKey(name);
-        return redissonClient.getBloomFilter(redisKey).isExists();
+
+        touchIfCached(name);
+        return true;
     }
 
     @Override
     public void remove(String name) {
-        CacheEntry entry = getFromCache(name);
+        validateName(name);
+        CascadeBloomFilter<?> cachedFilter = getCachedFilter(name);
 
-        if (entry != null) {
-            removeCachedFilter(name, entry.filter);
+        if (cachedFilter != null) {
+            removeCachedFilter(name, cachedFilter);
         } else {
             removeFromRedisDirectly(name);
         }
@@ -203,33 +207,31 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
      * <p>
      * 使用 LRU 策略：访问时将 entry 移到末尾，超过限制时删除最老的 entry。
      *
-     * @param name 过滤器名称
+     * @param name     过滤器名称
      * @param computer 计算函数
      * @return 缓存条目
      */
-    private CacheEntry getFromCacheOrCompute(String name, java.util.function.Function<String, CascadeBloomFilter<?>> computer) {
+    private CascadeBloomFilter<?> getFromCacheOrCompute(String name, java.util.function.Function<String, CascadeBloomFilter<?>> computer) {
         synchronized (cacheLock) {
-            CacheEntry entry = filterCache.get(name);
-            if (entry != null) {
-                entry.lastAccessTime = System.nanoTime();
-                filterCache.put(name, entry);
+            CascadeBloomFilter<?> cached = filterCache.get(name);
+            if (cached != null) {
                 cacheHits.incrementAndGet();
-                return entry;
+                return cached;
             }
 
             cacheMisses.incrementAndGet();
             ensureCapacityBeforeCreate();
 
-            CacheEntry newEntry = new CacheEntry(computer.apply(name));
-            filterCache.put(name, newEntry);
-            return newEntry;
+            CascadeBloomFilter<?> newFilter = computer.apply(name);
+            filterCache.put(name, newFilter);
+            return newFilter;
         }
     }
 
     /**
-     * 从缓存获取过滤器（不更新访问时间）
+     * 从缓存获取过滤器（会更新 LRU 访问顺序）
      */
-    private CacheEntry getFromCache(String name) {
+    private CascadeBloomFilter<?> getCachedFilter(String name) {
         synchronized (cacheLock) {
             return filterCache.get(name);
         }
@@ -240,13 +242,14 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
      */
     private void ensureCapacityBeforeCreate() {
         int maxSize = properties.getMaxCacheSize();
-        if (filterCache.size() >= maxSize) {
-            Map.Entry<String, CacheEntry> eldest = filterCache.entrySet().iterator().next();
+        int currentSize = filterCache.size();
+        if (currentSize >= maxSize) {
+            Map.Entry<String, CascadeBloomFilter<?>> eldest = filterCache.entrySet().iterator().next();
             String evictedName = eldest.getKey();
             filterCache.remove(evictedName);
             evictions.incrementAndGet();
-            log.warn("[cascade-bloom] Cache full (size={}), evicting oldest filter [{}], maxCacheSize={}",
-                    filterCache.size(), evictedName, maxSize);
+            log.warn("[cascade-bloom] Cache full (size={} >= maxCacheSize={}), evicting oldest filter [{}]",
+                    currentSize, maxSize, evictedName);
         }
     }
 
@@ -254,8 +257,24 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
      * 从缓存中删除过滤器
      */
     private void removeFromCache(String name) {
-        filterCache.remove(name);
-        log.debug("[cascade-bloom] BloomFilter [{}] removed from local cache", name);
+        synchronized (cacheLock) {
+            filterCache.remove(name);
+            log.debug("[cascade-bloom] BloomFilter [{}] removed from local cache", name);
+        }
+    }
+
+    private void evictIfCached(String name) {
+        synchronized (cacheLock) {
+            if (filterCache.remove(name) != null) {
+                log.warn("[cascade-bloom] BloomFilter [{}] not found in Redis, evicted stale local cache entry", name);
+            }
+        }
+    }
+
+    private void touchIfCached(String name) {
+        synchronized (cacheLock) {
+            filterCache.get(name);
+        }
     }
 
     /**
@@ -341,9 +360,7 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
      * 验证参数
      */
     private static void validateParams(String name, long expectedInsertions, double falseProbability) {
-        if (name == null || name.trim().isEmpty()) {
-            throw new BloomFilterInitException("BloomFilter name must not be blank");
-        }
+        validateName(name);
         if (expectedInsertions <= 0) {
             throw new BloomFilterInitException(
                     "expectedInsertions must be positive, but got: " + expectedInsertions);
@@ -354,16 +371,9 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
         }
     }
 
-    /**
-     * 缓存条目
-     */
-    private static class CacheEntry {
-        final CascadeBloomFilter<?> filter;
-        volatile long lastAccessTime;
-
-        CacheEntry(CascadeBloomFilter<?> filter) {
-            this.filter = filter;
-            this.lastAccessTime = System.nanoTime();
+    private static void validateName(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            throw new BloomFilterInitException("BloomFilter name must not be blank");
         }
     }
 }

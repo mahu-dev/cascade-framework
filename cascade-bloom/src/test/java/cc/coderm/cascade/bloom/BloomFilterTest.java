@@ -129,6 +129,34 @@ class BloomFilterTest {
         assertThat(names).containsExactlyInAnyOrder("filter-a", "filter-b");
     }
 
+    @Test
+    @DisplayName("exists - 本地缓存命中但 Redis 不存在时应返回 false 并清理本地缓存")
+    void testExistsShouldEvictStaleCacheWhenRedisMissing() {
+        manager.getFilter("user-bloom");
+        assertThat(manager.listFilterNames()).contains("user-bloom");
+
+        when(stringBloomFilter.isExists()).thenReturn(false);
+
+        boolean exists = manager.exists("user-bloom");
+
+        assertThat(exists).isFalse();
+        assertThat(manager.listFilterNames()).doesNotContain("user-bloom");
+        verify(stringBloomFilter).isExists();
+    }
+
+    @Test
+    @DisplayName("exists - 本地缓存命中且 Redis 存在时应返回 true 并保留缓存")
+    void testExistsShouldReturnTrueWhenRedisExists() {
+        manager.getFilter("user-bloom");
+        when(stringBloomFilter.isExists()).thenReturn(true);
+
+        boolean exists = manager.exists("user-bloom");
+
+        assertThat(exists).isTrue();
+        assertThat(manager.listFilterNames()).contains("user-bloom");
+        verify(stringBloomFilter).isExists();
+    }
+
     // =========================================================================
     // CascadeBloomFilter 操作测试
     // =========================================================================
@@ -192,16 +220,16 @@ class BloomFilterTest {
     }
 
     @Test
-    @DisplayName("addAll - 批量添加")
+    @DisplayName("addAll - 使用 Redisson 批量接口添加")
     void testAddAll() {
         List<String> values = Arrays.asList("id:1", "id:2", "id:3");
+        when(stringBloomFilter.add(values)).thenReturn(3L);
 
         CascadeBloomFilter<Object> filter = manager.getFilter("user-bloom");
         filter.addAll((List) values);
 
-        verify(stringBloomFilter).add("id:1");
-        verify(stringBloomFilter).add("id:2");
-        verify(stringBloomFilter).add("id:3");
+        verify(stringBloomFilter).add(values);
+        verify(stringBloomFilter, never()).add(anyString());
     }
 
     @Test
