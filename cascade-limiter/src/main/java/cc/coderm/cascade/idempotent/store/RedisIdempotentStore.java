@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RScript;
 import org.redisson.api.RedissonClient;
+import org.redisson.client.RedisException;
 import org.redisson.client.codec.StringCodec;
 
 import java.util.List;
@@ -223,14 +224,20 @@ public class RedisIdempotentStore implements IdempotentStore {
 
     @Override
     public RenewResult renewProcessing(String key, String ownerToken, long ttlMs) {
-        boolean renewed = evalAsBoolean(
-                LUA_RENEW_PROCESSING,
-                key,
-                ownerToken,
-                String.valueOf(ttlMs),
-                String.valueOf(System.currentTimeMillis())
-        );
-        return renewed ? RenewResult.RENEWED : RenewResult.OWNERSHIP_LOST;
+        try {
+            boolean renewed = evalAsBoolean(
+                    LUA_RENEW_PROCESSING,
+                    key,
+                    ownerToken,
+                    String.valueOf(ttlMs),
+                    String.valueOf(System.currentTimeMillis())
+            );
+            return renewed ? RenewResult.RENEWED : RenewResult.OWNERSHIP_LOST;
+        } catch (RedisException ex) {
+            log.warn("[Idempotent] key={} renew failed transiently via Redis script: {}",
+                    key, ex.getMessage());
+            return RenewResult.CONTENDED;
+        }
     }
 
     @Override
