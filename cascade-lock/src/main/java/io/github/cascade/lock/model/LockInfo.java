@@ -50,7 +50,7 @@ public class LockInfo {
      */
     public String getDisplayKey() {
         if (keys.size() == 1) {
-            return keys.getFirst();
+            return keys.get(0);
         }
         return "multi[" + String.join(",", keys) + "]";
     }

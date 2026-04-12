@@ -1,5 +1,6 @@
 package io.github.cascade.lock.key;
 
+import io.github.cascade.lock.exception.LockException;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.context.expression.MethodBasedEvaluationContext;
@@ -49,6 +50,19 @@ public class SpelKeyGenerator implements KeyGenerator {
         }
 
         Object value = parser.parseExpression(keyExpression).getValue(context);
-        return value == null ? keyExpression : value.toString();
+        if (value == null) {
+            throw new LockException(
+                    "SpEL 表达式计算结果为空，无法生成锁 key: " + keyExpression,
+                    method.toGenericString()
+            );
+        }
+        String resolved = value.toString();
+        if (!StringUtils.hasText(resolved)) {
+            throw new LockException(
+                    "SpEL 表达式计算结果为空白，无法生成锁 key: " + keyExpression,
+                    method.toGenericString()
+            );
+        }
+        return resolved.trim();
     }
 }

@@ -65,7 +65,7 @@ public class RedissonLockExecutor implements LockExecutor {
     private RLock resolveLock(LockInfo lockInfo) {
         List<String> keys = lockInfo.getKeys();
         if (keys.size() == 1) {
-            return lockFactory.getLock(lockInfo.getLockType(), keys.getFirst());
+            return lockFactory.getLock(lockInfo.getLockType(), keys.get(0));
         }
         return lockFactory.getMultiLock(lockInfo.getLockType(), keys);
     }

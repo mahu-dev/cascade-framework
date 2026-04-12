@@ -1,5 +1,6 @@
 package io.github.cascade.lock.key;
 
+import io.github.cascade.lock.exception.LockException;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,7 @@ import org.springframework.beans.factory.support.StaticListableBeanFactory;
 import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -57,6 +59,30 @@ class SpelKeyGeneratorTest {
         String result = keyGenerator.generate("", joinPoint, method);
 
         assertEquals("DummyService.process", result);
+    }
+
+    @Test
+    void shouldFailFastWhenExpressionResultIsNull() {
+        when(joinPoint.getArgs()).thenReturn(new Object[]{null});
+        SpelKeyGenerator keyGenerator = new SpelKeyGenerator();
+
+        LockException ex = assertThrows(
+                LockException.class,
+                () -> keyGenerator.generate("#p0", joinPoint, method)
+        );
+        assertEquals("SpEL 表达式计算结果为空，无法生成锁 key: #p0", ex.getMessage());
+    }
+
+    @Test
+    void shouldFailFastWhenExpressionResultIsBlank() {
+        when(joinPoint.getArgs()).thenReturn(new Object[]{123L});
+        SpelKeyGenerator keyGenerator = new SpelKeyGenerator();
+
+        LockException ex = assertThrows(
+                LockException.class,
+                () -> keyGenerator.generate("'   '", joinPoint, method)
+        );
+        assertEquals("SpEL 表达式计算结果为空白，无法生成锁 key: '   '", ex.getMessage());
     }
 
     private static class DummyService {

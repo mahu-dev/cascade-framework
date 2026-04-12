@@ -16,12 +16,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.aop.aspectj.annotation.AspectJProxyFactory;
 
 import java.lang.reflect.Method;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -29,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -50,10 +53,11 @@ class DistributedLockAspectTest {
         properties = new CascadeLockProperties();
         properties.setKeyPrefix("cascade:lock");
 
-        when(joinPoint.getSignature()).thenReturn(methodSignature);
+        lenient().when(joinPoint.getSignature()).thenReturn(methodSignature);
+        lenient().when(joinPoint.getTarget()).thenReturn(new DummyService());
         mockMethod("process");
 
-        when(keyGenerator.generate(anyString(), eq(joinPoint), any(Method.class)))
+        lenient().when(keyGenerator.generate(anyString(), eq(joinPoint), any(Method.class)))
                 .thenReturn("order:1");
     }
 
@@ -130,13 +134,93 @@ class DistributedLockAspectTest {
         assertEquals(9L, lockExecutor.capturedLockInfo.getLeaseTime());
     }
 
+    @Test
+    void shouldFailFastWhenResolvedKeyIsNull() throws Throwable {
+        mockMethod("nullResolvedKey");
+        when(keyGenerator.generate(anyString(), eq(joinPoint), any(Method.class)))
+                .thenReturn(null);
+        DistributedLockAspect aspect = createAspect(new PassthroughLockExecutor());
+
+        LockException ex = assertThrows(LockException.class, () -> aspect.around(joinPoint));
+        assertEquals("@DistributedLock 解析后的 key 不能为空", ex.getMessage());
+    }
+
+    @Test
+    void shouldFailFastWhenResolvedKeyIsBlank() throws Throwable {
+        mockMethod("blankResolvedKey");
+        when(keyGenerator.generate(anyString(), eq(joinPoint), any(Method.class)))
+                .thenReturn("   ");
+        DistributedLockAspect aspect = createAspect(new PassthroughLockExecutor());
+
+        LockException ex = assertThrows(LockException.class, () -> aspect.around(joinPoint));
+        assertEquals("@DistributedLock 解析后的 key 不能为空白", ex.getMessage());
+    }
+
+    @Test
+    void shouldFailFastWhenMultiKeysContainDuplicatesAfterResolution() throws Throwable {
+        mockMethod("duplicateMultiKeys");
+        when(keyGenerator.generate(anyString(), eq(joinPoint), any(Method.class)))
+                .thenReturn("same");
+        DistributedLockAspect aspect = createAspect(new PassthroughLockExecutor());
+
+        LockException ex = assertThrows(LockException.class, () -> aspect.around(joinPoint));
+        assertEquals("@DistributedLock keys 不允许重复 key", ex.getMessage());
+    }
+
+    @Test
+    void shouldFailFastWhenAnnotationKeyExpressionIsBlank() throws Throwable {
+        mockMethod("blankExpression");
+        DistributedLockAspect aspect = createAspect(new PassthroughLockExecutor());
+
+        LockException ex = assertThrows(LockException.class, () -> aspect.around(joinPoint));
+        assertEquals("@DistributedLock key 表达式 不能为空白", ex.getMessage());
+    }
+
+    @Test
+    void shouldResolveAnnotationFromImplementationMethodWhenUsingInterfaceSignature() throws Throwable {
+        Method interfaceMethod = JdkProxyService.class.getDeclaredMethod("implOnlyAnnotatedMethod");
+        when(methodSignature.getMethod()).thenReturn(interfaceMethod);
+        when(joinPoint.getTarget()).thenReturn(new JdkProxyServiceImpl());
+        when(joinPoint.proceed()).thenReturn("ok");
+
+        CapturingPassthroughLockExecutor lockExecutor = new CapturingPassthroughLockExecutor();
+        DistributedLockAspect aspect = createAspect(lockExecutor);
+
+        Object result = aspect.around(joinPoint);
+
+        assertEquals("ok", result);
+        assertEquals(8L, lockExecutor.capturedLockInfo.getWaitTime());
+        assertEquals(15L, lockExecutor.capturedLockInfo.getLeaseTime());
+        assertEquals("cascade:lock:order:1", lockExecutor.capturedLockInfo.getDisplayKey());
+    }
+
+    @Test
+    void shouldInterceptImplAnnotatedMethodInJdkProxyMode() {
+        CapturingPassthroughLockExecutor lockExecutor = new CapturingPassthroughLockExecutor();
+        KeyGenerator directKeyGenerator = (keyExpression, jp, method) -> "order:1";
+        DistributedLockAspect aspect = new DistributedLockAspect(lockExecutor, directKeyGenerator, properties);
+
+        AspectJProxyFactory proxyFactory = new AspectJProxyFactory(new JdkProxyServiceImpl());
+        proxyFactory.setProxyTargetClass(false);
+        proxyFactory.addInterface(JdkProxyService.class);
+        proxyFactory.addAspect(aspect);
+        JdkProxyService proxy = proxyFactory.getProxy();
+
+        String result = proxy.implOnlyAnnotatedMethod();
+
+        assertEquals("ok", result);
+        assertNotNull(lockExecutor.capturedLockInfo);
+        assertEquals(8L, lockExecutor.capturedLockInfo.getWaitTime());
+        assertEquals(15L, lockExecutor.capturedLockInfo.getLeaseTime());
+    }
+
     private DistributedLockAspect createAspect(LockExecutor lockExecutor) {
         return new DistributedLockAspect(lockExecutor, keyGenerator, properties);
     }
 
     private void mockMethod(String methodName) throws NoSuchMethodException {
         Method method = DummyService.class.getDeclaredMethod(methodName);
-        when(methodSignature.getMethod()).thenReturn(method);
+        lenient().when(methodSignature.getMethod()).thenReturn(method);
     }
 
     private static class PassthroughLockExecutor implements LockExecutor {
@@ -174,6 +258,27 @@ class DistributedLockAspectTest {
         }
     }
 
+    private static class CapturingPassthroughLockExecutor implements LockExecutor {
+        private LockInfo capturedLockInfo;
+
+        @Override
+        public <T> LockResult<T> execute(LockInfo lockInfo, Callable<T> action) {
+            capturedLockInfo = lockInfo;
+            try {
+                return LockResult.success(action.call(), lockInfo.getDisplayKey(), 0);
+            } catch (RuntimeException | Error e) {
+                throw e;
+            } catch (Throwable e) {
+                return sneakyThrow(e);
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        private static <T, E extends Throwable> T sneakyThrow(Throwable throwable) throws E {
+            throw (E) throwable;
+        }
+    }
+
     @SuppressWarnings("unused")
     private static class DummyService {
         @DistributedLock("'order:1'")
@@ -194,6 +299,38 @@ class DistributedLockAspectTest {
         @DistributedLock(keys = "'order:1'", waitTime = -1, leaseTime = 9)
         public void withExplicitTiming() {
             // no-op
+        }
+
+        @DistributedLock(keys = "'order:1'")
+        public void nullResolvedKey() {
+            // no-op
+        }
+
+        @DistributedLock(keys = "'order:1'")
+        public void blankResolvedKey() {
+            // no-op
+        }
+
+        @DistributedLock(keys = {"'order:a'", "'order:b'"}, lockType = LockType.MULTI)
+        public void duplicateMultiKeys() {
+            // no-op
+        }
+
+        @DistributedLock(keys = "   ")
+        public void blankExpression() {
+            // no-op
+        }
+    }
+
+    private interface JdkProxyService {
+        String implOnlyAnnotatedMethod();
+    }
+
+    private static class JdkProxyServiceImpl implements JdkProxyService {
+        @Override
+        @DistributedLock(keys = "'order:1'", waitTime = 8, leaseTime = 15)
+        public String implOnlyAnnotatedMethod() {
+            return "ok";
         }
     }
 

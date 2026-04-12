@@ -6,6 +6,7 @@ import io.github.cascade.lock.core.LockExecutor;
 import io.github.cascade.lock.enums.LockType;
 import io.github.cascade.lock.exception.LockException;
 import io.github.cascade.lock.key.KeyGenerator;
+import io.github.cascade.lock.key.LockKeyNormalizer;
 import io.github.cascade.lock.model.LockInfo;
 import io.github.cascade.lock.model.LockResult;
 import io.github.cascade.lock.util.SneakyThrow;
@@ -15,7 +16,9 @@ import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
+import org.springframework.aop.support.AopUtils;
 import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.core.BridgeMethodResolver;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
@@ -34,10 +37,15 @@ public class DistributedLockAspect {
     @Around("@annotation(io.github.cascade.lock.annotation.DistributedLock)")
     public Object around(ProceedingJoinPoint joinPoint) throws Throwable {
 
-        Method method = ((MethodSignature) joinPoint.getSignature()).getMethod();
-        DistributedLock annotation = AnnotatedElementUtils.findMergedAnnotation(method, DistributedLock.class);
+        Method signatureMethod = ((MethodSignature) joinPoint.getSignature()).getMethod();
+        Method method = resolveTargetMethod(joinPoint, signatureMethod);
+        DistributedLock annotation = resolveAnnotation(method, signatureMethod);
         if (annotation == null) {
-            return joinPoint.proceed();
+            String methodText = method.toGenericString();
+            throw new LockException(
+                    "切面命中但无法解析 @DistributedLock 注解，请检查代理方法映射: " + methodText,
+                    methodText
+            );
         }
 
         LockInfo lockInfo = buildLockInfo(annotation, joinPoint, method);
@@ -52,6 +60,30 @@ public class DistributedLockAspect {
             );
         }
         return result.getResult();
+    }
+
+    private static Method resolveTargetMethod(ProceedingJoinPoint joinPoint, Method signatureMethod) {
+        Object target = joinPoint.getTarget();
+        if (target == null) {
+            return signatureMethod;
+        }
+        Class<?> targetClass = AopUtils.getTargetClass(target);
+        if (targetClass == null) {
+            return signatureMethod;
+        }
+        Method specificMethod = AopUtils.getMostSpecificMethod(signatureMethod, targetClass);
+        return BridgeMethodResolver.findBridgedMethod(specificMethod);
+    }
+
+    private static DistributedLock resolveAnnotation(Method targetMethod, Method signatureMethod) {
+        DistributedLock annotation = AnnotatedElementUtils.findMergedAnnotation(targetMethod, DistributedLock.class);
+        if (annotation != null) {
+            return annotation;
+        }
+        if (!targetMethod.equals(signatureMethod)) {
+            return AnnotatedElementUtils.findMergedAnnotation(signatureMethod, DistributedLock.class);
+        }
+        return null;
     }
 
     private static Object proceed(ProceedingJoinPoint joinPoint) {
@@ -85,11 +117,14 @@ public class DistributedLockAspect {
                 : properties.getKeyPrefix();
 
         List<String> resolvedKeys = Arrays.stream(rawKeys)
-                .map(k -> {
-                    String parsed = keyGenerator.generate(k, joinPoint, method);
-                    return StringUtils.hasText(prefix) ? prefix + ":" + parsed : parsed;
+                .map(expr -> LockKeyNormalizer.normalizeSingleKey(expr, "@DistributedLock key 表达式"))
+                .map(expr -> {
+                    String parsed = keyGenerator.generate(expr, joinPoint, method);
+                    String normalized = LockKeyNormalizer.normalizeSingleKey(parsed, "@DistributedLock 解析后的 key");
+                    return LockKeyNormalizer.applyPrefix(prefix, normalized);
                 })
                 .toList();
+        resolvedKeys = LockKeyNormalizer.normalizeKeyList(resolvedKeys, "@DistributedLock keys");
 
         if (resolvedKeys.size() > 1) {
             validateMultiKeyType(annotation.lockType(), resolvedKeys);

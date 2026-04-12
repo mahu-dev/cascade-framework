@@ -56,6 +56,26 @@ class DefaultLockTemplateTest {
     }
 
     @Test
+    void shouldFailFastWhenSingleKeyIsNull() {
+        LockException ex = assertThrows(
+                LockException.class,
+                () -> lockTemplate.lock((String) null, LockType.REENTRANT, () -> "ok")
+        );
+        assertEquals("单 key API 的 key 不能为空", ex.getMessage());
+        verifyNoInteractions(lockExecutor);
+    }
+
+    @Test
+    void shouldFailFastWhenSingleKeyIsBlank() {
+        LockException ex = assertThrows(
+                LockException.class,
+                () -> lockTemplate.lock("   ", LockType.REENTRANT, () -> "ok")
+        );
+        assertEquals("单 key API 的 key 不能为空白", ex.getMessage());
+        verifyNoInteractions(lockExecutor);
+    }
+
+    @Test
     void shouldFailFastWhenUsingNonMultiTypeWithMultiKeyApi() {
         assertThrows(LockException.class,
                 () -> lockTemplate.lock(List.of("order:1", "order:2"), LockType.REENTRANT, () -> "ok"));
@@ -124,6 +144,21 @@ class DefaultLockTemplateTest {
         LockInfo lockInfo = captor.getValue();
         assertEquals(7, lockInfo.getWaitTime());
         assertEquals(13, lockInfo.getLeaseTime());
+    }
+
+    @Test
+    void shouldTrimSingleKeyBeforePrefixAndLockInfoBuild() {
+        when(lockExecutor.execute(any(), any()))
+                .thenReturn(LockResult.success("ok", "order:1", 1));
+
+        String result = lockTemplate.lock(" order:1 ", LockType.REENTRANT, () -> "business");
+        assertEquals("ok", result);
+
+        ArgumentCaptor<LockInfo> captor = ArgumentCaptor.forClass(LockInfo.class);
+        verify(lockExecutor).execute(captor.capture(), any());
+        LockInfo lockInfo = captor.getValue();
+        assertEquals(List.of("cascade:lock:order:1"), lockInfo.getKeys());
+        assertEquals("获取分布式锁失败: cascade:lock:order:1", lockInfo.getFailMessage());
     }
 
     @Test
