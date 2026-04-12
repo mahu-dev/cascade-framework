@@ -1,1 +1,2 @@
+cc.coderm.cascade.idempotent.config.CascadeIdempotentAutoConfiguration
 cc.coderm.cascade.limiter.config.CascadeLimiterAutoConfiguration
