@@ -45,7 +45,7 @@ import org.springframework.context.annotation.Primary;
 @AutoConfiguration
 @ConditionalOnClass({CacheManager.class, FunctionalCacheManager.class})
 @ConditionalOnProperty(prefix = "cascade", name = "enabled", havingValue = "true", matchIfMissing = true)
-@EnableConfigurationProperties(CascadeCacheProperties.class)
+@EnableConfigurationProperties({CascadeCacheProperties.class, SyncProperties.class})
 public class CacheAutoConfiguration {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(CacheAutoConfiguration.class);

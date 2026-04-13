@@ -3,6 +3,7 @@ package io.github.cascade.cache.configuration;
 import io.github.cascade.cache.v2.policy.SyncMode;
 import lombok.Data;
 import lombok.Getter;
+import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
  * 缓存同步配置属性
@@ -12,10 +13,14 @@ import lombok.Getter;
  * 2. 类型安全：使用枚举定义同步类型
  * 3. 默认优化：提供合理的默认配置
  * 4. 可扩展性：为未来的同步方式预留扩展空间
+ * <p>
+ * 注意：此类是独立的配置类，通过 @EnableConfigurationProperties 在
+ * CacheAutoConfiguration 中注册，同时作为 CascadeCacheProperties 的嵌套字段引用。
  *
  * @author cascade
  */
 @Data
+@ConfigurationProperties(prefix = "cascade.sync")
 public class SyncProperties {
 
     /**

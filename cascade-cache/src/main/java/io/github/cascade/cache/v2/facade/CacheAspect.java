@@ -28,12 +28,7 @@ import org.springframework.util.StringUtils;
 import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
@@ -85,22 +80,18 @@ public class CacheAspect {
         if (isInternalInvocation()) {
             return joinPoint.proceed();
         }
-
-        String cacheName = resolveCacheName(cacheable.value(), joinPoint);
-        Object cacheKey = evaluateCacheKey(joinPoint, cacheable.key());
-        boolean primitiveReturnType = isPrimitiveValueReturnType(joinPoint);
-
         if (!evaluateCondition(joinPoint, cacheable.condition(), null)) {
             return joinPoint.proceed();
         }
-
+        String cacheName = resolveCacheName(cacheable.value(), joinPoint);
+        Object cacheKey = evaluateCacheKey(joinPoint, cacheable.key());
         registerSnapshot(cacheName, cacheKey, joinPoint);
 
         Cache<Object, Object> cache = getOrCreateCache(joinPoint, cacheName, cacheable, cacheKey);
         if (cache == null) {
             return joinPoint.proceed();
         }
-
+        boolean primitiveReturnType = isPrimitiveValueReturnType(joinPoint);
         try {
             boolean skipLoadOnMiss = StringUtils.hasText(cacheable.unless()) || cacheable.asyncLoad();
             Optional<Object> cached = readFromCache(cache, cacheKey, skipLoadOnMiss);
@@ -200,9 +191,9 @@ public class CacheAspect {
 
     @SuppressWarnings("unchecked")
     private Cache<Object, Object> getOrCreateCache(JoinPoint joinPoint,
-            String cacheName,
-            Object annotation,
-            Object cacheKey) {
+                                                   String cacheName,
+                                                   Object annotation,
+                                                   Object cacheKey) {
         Class<Object> keyType = (Class<Object>) (cacheKey != null ? cacheKey.getClass() : Object.class);
         Class<Object> valueType = (Class<Object>) inferValueType(joinPoint);
 
@@ -243,10 +234,10 @@ public class CacheAspect {
      */
     @SuppressWarnings("unchecked")
     private Cache<Object, Object> getOrCreateCacheWithLoaderFallback(String cacheName,
-            Class<Object> keyType,
-            Class<Object> valueType,
-            CascadeCacheProperties config,
-            Function<Object, Object> snapshotLoader) {
+                                                                     Class<Object> keyType,
+                                                                     Class<Object> valueType,
+                                                                     CascadeCacheProperties config,
+                                                                     Function<Object, Object> snapshotLoader) {
         Cache<Object, Object> cache = cacheManager.getOrCreateCache(
                 cacheName, keyType, valueType, config);
         if (cache == null) {
@@ -261,10 +252,10 @@ public class CacheAspect {
     }
 
     private static void safePut(Cache<Object, Object> cache,
-            String cacheName,
-            Object key,
-            Object value,
-            long ttlSeconds) {
+                                String cacheName,
+                                Object key,
+                                Object value,
+                                long ttlSeconds) {
         try {
             if (ttlSeconds > 0) {
                 cache.put(key, value, ttlSeconds);
@@ -517,7 +508,7 @@ public class CacheAspect {
     }
 
     private static Optional<Object> readFromCache(Cache<Object, Object> cache, Object cacheKey,
-            boolean skipLoadOnMiss) {
+                                                  boolean skipLoadOnMiss) {
         if (!skipLoadOnMiss) {
             return cache.get(cacheKey);
         }
@@ -545,10 +536,10 @@ public class CacheAspect {
     }
 
     private static boolean tryHandleAsyncLoadOnMiss(Cacheable cacheable,
-            boolean primitiveReturnType,
-            Cache<Object, Object> cache,
-            String cacheName,
-            Object cacheKey) {
+                                                    boolean primitiveReturnType,
+                                                    Cache<Object, Object> cache,
+                                                    String cacheName,
+                                                    Object cacheKey) {
         if (!cacheable.asyncLoad()) {
             return false;
         }
