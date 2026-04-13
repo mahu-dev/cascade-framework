@@ -2,7 +2,6 @@ package cc.coderm.demo;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.cache.annotation.EnableCaching;
 
 /**
  * @author lionel lionelk@163.com
@@ -12,7 +11,6 @@ import org.springframework.cache.annotation.EnableCaching;
  * =============================
  */
 @SpringBootApplication
-@EnableCaching
 public class CascadeDemoApp {
 
     public static void main(String[] args) {
