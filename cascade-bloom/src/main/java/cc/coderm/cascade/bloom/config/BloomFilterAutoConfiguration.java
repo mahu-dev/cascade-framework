@@ -16,7 +16,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.EnableAspectJAutoProxy;
 
 import java.util.List;
 
@@ -32,8 +31,10 @@ import java.util.List;
  * Time: 16:00:00
  * =============================
  */
-@AutoConfiguration
-@EnableAspectJAutoProxy
+@AutoConfiguration(afterName = {
+        "org.redisson.spring.starter.RedissonAutoConfigurationV2",
+        "org.redisson.spring.starter.RedissonAutoConfiguration"
+})
 @EnableConfigurationProperties(BloomFilterProperties.class)
 @ConditionalOnProperty(prefix = "cascade.bloom", name = "enabled", havingValue = "true", matchIfMissing = true)
 @ConditionalOnBean(RedissonClient.class)
