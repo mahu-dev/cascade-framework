@@ -107,4 +107,17 @@ class RedissonIdempotentStoreTest {
         assertThat(backing.get("owner")).isEqualTo("owner-2");
         assertThat(attempts.get()).isGreaterThanOrEqualTo(2);
     }
+
+    @Test
+    void shouldReturnContendedWhenLockTimesOutWithoutVisibleRecord() throws Exception {
+        String key = "idem:order:3";
+        when(lock.tryLock(any(Long.class), any(TimeUnit.class))).thenReturn(false);
+
+        IdempotentStore.OccupyResult result = store.tryOccupy(key, "order", 30_000, "owner-3");
+
+        assertThat(result.contended()).isTrue();
+        assertThat(result.occupied()).isFalse();
+        assertThat(result.conflicted()).isFalse();
+        assertThat(result.existingRecord()).isNull();
+    }
 }

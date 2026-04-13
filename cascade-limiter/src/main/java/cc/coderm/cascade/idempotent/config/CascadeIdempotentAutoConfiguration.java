@@ -1,5 +1,6 @@
 package cc.coderm.cascade.idempotent.config;
 
+import cc.coderm.cascade.idempotent.IdempotentTemplate;
 import cc.coderm.cascade.idempotent.aspect.IdempotentAspect;
 import cc.coderm.cascade.idempotent.aspect.IdempotentHeaderResolver;
 import cc.coderm.cascade.idempotent.aspect.ServletRequestIdempotentHeaderResolver;
@@ -111,6 +112,13 @@ public class CascadeIdempotentAutoConfiguration {
                                              IdempotentKeyHasher idempotentKeyHasher,
                                              IdempotentHeaderResolver idempotentHeaderResolver) {
         return new IdempotentAspect(executor, properties, beanFactory, idempotentKeyHasher, idempotentHeaderResolver);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public IdempotentTemplate idempotentTemplate(IdempotentExecutor executor,
+                                                 CascadeIdempotentProperties properties) {
+        return new IdempotentTemplate(executor, properties);
     }
 
     static ResultSerializer resolveResultSerializer(CascadeIdempotentProperties.ResultSerializerType type,

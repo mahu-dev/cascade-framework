@@ -28,6 +28,7 @@ public class IdempotentExecutor {
 
     private static final long RETRY_ACQUIRE_BACKOFF_INITIAL_MS = 5;
     private static final long RETRY_ACQUIRE_BACKOFF_MAX_MS = 80;
+    private static final long RETRY_ACQUIRE_CONTENDED_TIMEOUT_MS = 500;
 
     private final IdempotentStore store;
     private final MetricsRecorder metrics;
@@ -75,6 +76,7 @@ public class IdempotentExecutor {
     public Object execute(IdempotentContext context, IdempotentBusiness business) throws Throwable {
         validateContext(context);
         long waitDeadline = calculateWaitDeadline(context);
+        long contendedRetryDeadline = calculateContendedRetryDeadline(context, waitDeadline);
         long retryBackoffMs = RETRY_ACQUIRE_BACKOFF_INITIAL_MS;
 
         while (true) {
@@ -91,6 +93,17 @@ public class IdempotentExecutor {
                 } finally {
                     waitStrategy.completeProcessingSignal(key, signal);
                 }
+            }
+
+            if (occupyResult.contended()) {
+                if (System.currentTimeMillis() >= contendedRetryDeadline) {
+                    throw new IdempotentException(
+                            "Unable to determine occupancy for idempotent key [" + key + "] due transient store contention.",
+                            null);
+                }
+                waitBeforeRetry(contendedRetryDeadline, retryBackoffMs);
+                retryBackoffMs = Math.min(RETRY_ACQUIRE_BACKOFF_MAX_MS, retryBackoffMs << 1);
+                continue;
             }
 
             ExistingRecordDecision decision = handleExistingRecord(context, occupyResult.existingRecord(), waitDeadline);
@@ -208,6 +221,15 @@ public class IdempotentExecutor {
         }
         long now = System.currentTimeMillis();
         long safeDelta = Math.min(context.getWaitTimeoutMs(), Long.MAX_VALUE - now);
+        return now + safeDelta;
+    }
+
+    private static long calculateContendedRetryDeadline(IdempotentContext context, long waitDeadline) {
+        if (context.getConflictStrategy() == ConflictStrategy.WAIT) {
+            return waitDeadline;
+        }
+        long now = System.currentTimeMillis();
+        long safeDelta = Math.min(RETRY_ACQUIRE_CONTENDED_TIMEOUT_MS, Long.MAX_VALUE - now);
         return now + safeDelta;
     }
 

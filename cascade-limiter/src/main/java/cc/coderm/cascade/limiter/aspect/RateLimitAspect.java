@@ -48,10 +48,10 @@ public class RateLimitAspect {
         this.acquirePolicy = new RateLimitAcquirePolicy(limiterFactory, properties, backendFailureTracker);
     }
 
+    //  "@target(cc.coderm.cascade.limiter.annotation.RateLimit)"
     @Around(
             "@annotation(cc.coderm.cascade.limiter.annotation.RateLimit) || " +
-                    "@within(cc.coderm.cascade.limiter.annotation.RateLimit) || " +
-                    "@target(cc.coderm.cascade.limiter.annotation.RateLimit)"
+                    "@within(cc.coderm.cascade.limiter.annotation.RateLimit) "
     )
     public Object around(ProceedingJoinPoint pjp) throws Throwable {
         // 静态工具类：直接调用静态方法

@@ -164,21 +164,61 @@ public class RedisIdempotentStore implements IdempotentStore {
 
     @Override
     public OccupyResult tryOccupy(String key, String scene, long ttlMs, String ownerToken) {
-        List<String> result = redissonClient.getScript(StringCodec.INSTANCE).eval(
-                RScript.Mode.READ_WRITE,
-                LUA_TRY_OCCUPY,
-                RScript.ReturnType.LIST,
-                List.of(key),
-                scene,
-                String.valueOf(ttlMs),
-                String.valueOf(System.currentTimeMillis()),
-                ownerToken
-        );
+        try {
+            List<String> result = redissonClient.getScript(StringCodec.INSTANCE).eval(
+                    RScript.Mode.READ_WRITE,
+                    LUA_TRY_OCCUPY,
+                    RScript.ReturnType.LIST,
+                    List.of(key),
+                    scene,
+                    String.valueOf(ttlMs),
+                    String.valueOf(System.currentTimeMillis()),
+                    ownerToken
+            );
+            return parseTryOccupyResult(key, result);
+        } catch (RedisException ex) {
+            log.warn("[Idempotent] key={} tryOccupy failed transiently via Redis script: {}",
+                    key, ex.getMessage());
+            return OccupyResult.contention();
+        }
+    }
 
-        if (result == null || result.isEmpty() || "1".equals(result.get(0))) {
+    static OccupyResult parseTryOccupyResult(String key, List<String> result) {
+        if (result == null || result.isEmpty()) {
+            throw malformedTryOccupyPayload(key, result, "response is null/empty");
+        }
+
+        String marker = result.get(0);
+        if ("1".equals(marker)) {
+            if (result.size() != 1) {
+                throw malformedTryOccupyPayload(key, result, "occupied marker should not carry extra fields");
+            }
             return OccupyResult.success();
         }
-        return OccupyResult.conflict(IdempotentRecord.fromFlatList(result.subList(1, result.size())));
+
+        if (!"0".equals(marker)) {
+            throw malformedTryOccupyPayload(key, result, "unknown marker");
+        }
+
+        List<String> flatRecord = result.subList(1, result.size());
+        if (flatRecord.isEmpty()) {
+            throw malformedTryOccupyPayload(key, result, "conflict marker without record");
+        }
+        if ((flatRecord.size() & 1) != 0) {
+            throw malformedTryOccupyPayload(key, result, "record payload must be field/value pairs");
+        }
+
+        IdempotentRecord existingRecord = IdempotentRecord.fromFlatList(flatRecord);
+        if (existingRecord == null || existingRecord.getState() == null) {
+            throw malformedTryOccupyPayload(key, result, "record payload cannot be parsed");
+        }
+        return OccupyResult.conflict(existingRecord);
+    }
+
+    private static IllegalStateException malformedTryOccupyPayload(String key, List<String> result, String reason) {
+        return new IllegalStateException("[Idempotent] key=" + key
+                + " malformed tryOccupy Lua response: " + reason
+                + ", payload=" + String.valueOf(result));
     }
 
     @Override

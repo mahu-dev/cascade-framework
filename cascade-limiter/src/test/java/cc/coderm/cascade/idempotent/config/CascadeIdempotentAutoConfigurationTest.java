@@ -1,5 +1,7 @@
 package cc.coderm.cascade.idempotent.config;
 
+import cc.coderm.cascade.idempotent.IdempotentTemplate;
+import cc.coderm.cascade.idempotent.executor.IdempotentExecutor;
 import cc.coderm.cascade.idempotent.key.FastJson2IdempotentKeyHasher;
 import cc.coderm.cascade.idempotent.key.GsonIdempotentKeyHasher;
 import cc.coderm.cascade.idempotent.key.IdempotentKeyHasher;
@@ -21,6 +23,7 @@ import java.lang.reflect.Proxy;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 class CascadeIdempotentAutoConfigurationTest {
 
@@ -162,6 +165,16 @@ class CascadeIdempotentAutoConfigurationTest {
                 CascadeIdempotentProperties.StoreType.REDISSON, redissonClient);
 
         assertThat(store).isInstanceOf(RedissonIdempotentStore.class);
+    }
+
+    @Test
+    void shouldCreateIdempotentTemplateBean() {
+        CascadeIdempotentAutoConfiguration configuration = new CascadeIdempotentAutoConfiguration();
+        IdempotentTemplate template = configuration.idempotentTemplate(
+                mock(IdempotentExecutor.class),
+                new CascadeIdempotentProperties());
+
+        assertThat(template).isInstanceOf(IdempotentTemplate.class);
     }
 
     private static RedissonClient redissonClientStub() {

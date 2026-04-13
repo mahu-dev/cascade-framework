@@ -12,14 +12,16 @@ import java.util.Optional;
 public interface IdempotentStore {
 
     /**
-     * 原子占位：若 key 不存在，则写入 PROCESSING 状态并返回 true（抢占成功）；
-     * 若 key 已存在，则返回 false 并将现有记录填充到 existing 中。
+     * 原子占位。
      *
      * @param key   幂等 key
      * @param scene 场景标识
      * @param ttlMs TTL（毫秒）
      * @param ownerToken 本次执行实例的所有权令牌
-     * @return 抢占结果，包含是否成功 + 已有记录（抢占失败时有值）
+     * @return 三态占位结果：
+     * OCCUPIED（抢占成功）、
+     * CONFLICT（真实冲突，existingRecord 有值）、
+     * CONTENDED（瞬时争用/无法确认，建议重试）
      */
     OccupyResult tryOccupy(String key, String scene, long ttlMs, String ownerToken);
 
@@ -79,14 +81,39 @@ public interface IdempotentStore {
 
     // ── 内部结果对象 ──
 
-    record OccupyResult(boolean occupied, IdempotentRecord existingRecord) {
+    record OccupyResult(OccupyState state, IdempotentRecord existingRecord) {
         public static OccupyResult success() {
-            return new OccupyResult(true, null);
+            return new OccupyResult(OccupyState.OCCUPIED, null);
         }
 
         public static OccupyResult conflict(IdempotentRecord existingRecord) {
-            return new OccupyResult(false, existingRecord);
+            return new OccupyResult(OccupyState.CONFLICT, existingRecord);
         }
+
+        public static OccupyResult contention() {
+            return new OccupyResult(OccupyState.CONTENDED, null);
+        }
+
+        public boolean occupied() {
+            return state == OccupyState.OCCUPIED;
+        }
+
+        public boolean conflicted() {
+            return state == OccupyState.CONFLICT;
+        }
+
+        public boolean contended() {
+            return state == OccupyState.CONTENDED;
+        }
+    }
+
+    enum OccupyState {
+        /** 抢占成功，当前请求持有执行所有权。 */
+        OCCUPIED,
+        /** 存在真实冲突记录（PROCESSING/SUCCEEDED/FAILED/UNCERTAIN）。 */
+        CONFLICT,
+        /** 存储层瞬时争用/异常，无法确认是否冲突。 */
+        CONTENDED
     }
 
     enum RenewResult {

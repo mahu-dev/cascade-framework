@@ -83,8 +83,8 @@ public class RedissonIdempotentStore implements IdempotentStore {
             return OccupyResult.conflict(latest.get());
         }
 
-        log.warn("[IdempotentStore] key={} lock contention timeout without visible record, fail closed.", key);
-        return OccupyResult.conflict(processingRecord(scene));
+        log.warn("[IdempotentStore] key={} lock contention timeout without visible record, return CONTENDED.", key);
+        return OccupyResult.contention();
     }
 
     @Override
@@ -197,16 +197,6 @@ public class RedissonIdempotentStore implements IdempotentStore {
         String owner = recordMap.get("owner");
         String state = recordMap.get("state");
         return ownerToken.equals(owner) && IdempotentState.PROCESSING.name().equals(state);
-    }
-
-    private static IdempotentRecord processingRecord(String scene) {
-        long now = System.currentTimeMillis();
-        return IdempotentRecord.builder()
-                .state(IdempotentState.PROCESSING)
-                .scene(scene)
-                .createdAt(now)
-                .updatedAt(now)
-                .build();
     }
 
     private static void safeUnlock(RLock lock, String key) {

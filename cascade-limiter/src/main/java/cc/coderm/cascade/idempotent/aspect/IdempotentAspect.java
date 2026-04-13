@@ -100,6 +100,9 @@ public class IdempotentAspect {
                 return invokeFallback(pjp, method, idempotent.fallbackMethod(), ex.getRecord());
             }
             throw ex;
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting idempotent completion.", ex);
         }
     }
 
