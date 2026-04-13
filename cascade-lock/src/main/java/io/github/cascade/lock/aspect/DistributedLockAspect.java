@@ -10,29 +10,37 @@ import io.github.cascade.lock.key.LockKeyNormalizer;
 import io.github.cascade.lock.model.LockInfo;
 import io.github.cascade.lock.model.LockResult;
 import io.github.cascade.lock.util.SneakyThrow;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.aop.support.AopUtils;
-import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.core.BridgeMethodResolver;
+import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.List;
 
-@Slf4j
 @Aspect
-@RequiredArgsConstructor
 public class DistributedLockAspect {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(DistributedLockAspect.class);
 
     private final LockExecutor lockExecutor;
     private final KeyGenerator keyGenerator;
     private final CascadeLockProperties properties;
+
+    public DistributedLockAspect(LockExecutor lockExecutor, KeyGenerator keyGenerator, CascadeLockProperties properties) {
+        this.lockExecutor = lockExecutor;
+        this.keyGenerator = keyGenerator;
+        this.properties = properties;
+        LOGGER.info("DistributedLockAspect initialized with properties: {}", properties);
+    }
+
 
     @Around("@annotation(io.github.cascade.lock.annotation.DistributedLock)")
     public Object around(ProceedingJoinPoint joinPoint) throws Throwable {
@@ -50,7 +58,7 @@ public class DistributedLockAspect {
 
         LockInfo lockInfo = buildLockInfo(annotation, joinPoint, method);
 
-        log.debug("[cascade-lock] 尝试获取锁: {}", lockInfo.getDisplayKey());
+        LOGGER.debug("[cascade-lock] 尝试获取锁: {}", lockInfo.getDisplayKey());
 
         LockResult<Object> result = lockExecutor.execute(lockInfo, () -> proceed(joinPoint));
         if (shouldRejectNullResult(result, method)) {

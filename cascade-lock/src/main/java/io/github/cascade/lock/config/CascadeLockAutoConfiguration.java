@@ -10,17 +10,20 @@ import io.github.cascade.lock.key.KeyGenerator;
 import io.github.cascade.lock.key.SpelKeyGenerator;
 import io.github.cascade.lock.listener.LockEventListener;
 import org.redisson.api.RedissonClient;
+import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 
 import java.util.List;
 
-@Configuration
+@AutoConfiguration(afterName = {
+        "org.redisson.spring.starter.RedissonAutoConfigurationV2",
+        "org.redisson.spring.starter.RedissonAutoConfiguration"
+})
 @EnableConfigurationProperties(CascadeLockProperties.class)
 @ConditionalOnProperty(prefix = "cascade.lock", name = "enabled", havingValue = "true", matchIfMissing = true)
 @ConditionalOnBean(RedissonClient.class)
