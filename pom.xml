@@ -19,7 +19,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!-- Spring Boot -->
-        <spring.boot.version>3.2.0</spring.boot.version>
+        <spring.boot.version>3.5.13</spring.boot.version>
 
         <!-- Redisson -->
         <redisson.version>4.3.1</redisson.version>
