@@ -34,7 +34,6 @@ public class CacheTestController {
     private TestService testService;
 
     @Autowired
-    @SuppressWarnings("rawtypes")
     private CacheManager cacheManager;
 
     /**
@@ -127,7 +126,7 @@ public class CacheTestController {
         log.info("请求参数: key={}, value={}", dto.getKey(), dto.getValue());
 
         Cache<String, String> cache = cacheManager.getOrCreateCache(
-                "programmatic-cache",
+                "test:cache",
                 String.class,
                 String.class
         );

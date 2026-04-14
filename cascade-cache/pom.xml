@@ -10,94 +10,16 @@
         <version>1.0-SNAPSHOT</version>
     </parent>
 
-    <artifactId>cascade-cache</artifactId>
-    <name>Cascade Cache</name>
-    <description>Multi-level cache implementation for Cascade framework</description>
+    <artifactId>cascade-cache-parent</artifactId>
+    <packaging>pom</packaging>
+    <name>Cascade Cache Modules</name>
+    <description>Aggregation module for cascade-cache core, autoconfigure, and starters</description>
 
-    <dependencies>
-
-        <!-- Spring Boot AutoConfiguration -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-autoconfigure</artifactId>
-        </dependency>
-
-        <!-- AOP -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-aop</artifactId>
-        </dependency>
-
-        <!-- 配置元数据（IDE 自动补全） -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-configuration-processor</artifactId>
-            <optional>true</optional>
-        </dependency>
-
-        <!-- Lombok -->
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <optional>true</optional>
-        </dependency>
-
-        <!-- Micrometer（可选，监控指标） -->
-        <dependency>
-            <groupId>io.micrometer</groupId>
-            <artifactId>micrometer-core</artifactId>
-            <optional>true</optional>
-        </dependency>
-
-        <!-- Local Cache (Caffeine) -->
-        <dependency>
-            <groupId>com.github.ben-manes.caffeine</groupId>
-            <artifactId>caffeine</artifactId>
-        </dependency>
-
-        <!-- Redisson for distributed cache -->
-        <dependency>
-            <groupId>org.redisson</groupId>
-            <artifactId>redisson-spring-boot-starter</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
-            <optional>true</optional>
-        </dependency>
-
-
-        <!-- Jackson for serialization -->
-        <!--        <dependency>-->
-        <!--            <groupId>com.fasterxml.jackson.core</groupId>-->
-        <!--            <artifactId>jackson-databind</artifactId>-->
-        <!--        </dependency>-->
-
-        <!-- Kryo for high-performance serialization -->
-        <!--        <dependency>-->
-        <!--            <groupId>com.esotericsoftware</groupId>-->
-        <!--            <artifactId>kryo</artifactId>-->
-        <!--            <optional>true</optional>-->
-        <!--        </dependency>-->
-        <!-- https://mvnrepository.com/artifact/org.slf4j/slf4j-api -->
-
-        <!-- Test -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <!--        <dependency>-->
-        <!--            <groupId>org.testcontainers</groupId>-->
-        <!--            <artifactId>junit-jupiter</artifactId>-->
-        <!--            <scope>test</scope>-->
-        <!--        </dependency>-->
-        <!--        <dependency>-->
-        <!--            <groupId>org.testcontainers</groupId>-->
-        <!--            <artifactId>testcontainers</artifactId>-->
-        <!--            <scope>test</scope>-->
-        <!--        </dependency>-->
-    </dependencies>
-
+    <modules>
+        <module>cascade-cache-core</module>
+        <module>cascade-cache-spring-boot-autoconfigure</module>
+        <module>cascade-cache-spring-boot2-starter</module>
+        <module>cascade-cache-spring-boot3-starter</module>
+        <module>cascade-cache-spring-boot4-starter</module>
+    </modules>
 </project>

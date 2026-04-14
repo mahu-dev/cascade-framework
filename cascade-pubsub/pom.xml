@@ -15,12 +15,6 @@
     <description>Publish/Subscribe implementation for Cascade framework</description>
 
     <dependencies>
-        <!-- Core module -->
-        <dependency>
-            <groupId>cc.coderm</groupId>
-            <artifactId>cascade-core</artifactId>
-        </dependency>
-        
         <!-- Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

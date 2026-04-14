@@ -1,0 +1,3 @@
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+cc.coderm.cascade.limiter.config.CascadeLimiterAutoConfiguration,\
+cc.coderm.cascade.idempotent.config.CascadeIdempotentAutoConfiguration

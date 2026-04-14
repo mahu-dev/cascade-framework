@@ -1,52 +1,66 @@
-# Cascade Cache 模块架构功能设计文档
+# Cascade Cache V2 架构与功能设计文档
 
 ## 1. 概述
 
-Cascade Cache 是一个高性能、多级缓存框架，提供了统一的缓存抽象层，支持 L1（本地缓存）+ L2（分布式缓存）的多级缓存架构。该模块采用现代化的设计模式，提供了丰富的企业级功能，包括缓存同步、防护机制、监控统计、事件系统等。
+Cascade Cache V2 是一个高性能、多级缓存框架，采用统一缓存引擎设计，支持注解式和编程式两种使用方式。V2 版本对架构进行了全面重构，采用职责分离设计，提供了更好的可维护性和扩展性。
 
 ### 1.1 核心特性
 
-- **多级缓存架构**：支持 L1（Caffeine）+ L2（Redis）的多级缓存
-- **统一API设计**：提供一致的缓存操作接口
-- **智能缓存管理**：职责分离的智能缓存实现
-- **企业级功能**：防护机制、监控统计、事件系统
-- **Spring Boot集成**：完整的自动配置支持
-- **异步操作支持**：全面的异步缓存操作
-- **注解驱动**：声明式缓存使用方式
+- **统一缓存引擎**：注解式与编程式共享同一 EngineBackedCache 内核
+- **职责分离架构**：读写、刷新、同步、驱逐等职责独立实现
+- **多级缓存**：L1（Caffeine 本地缓存）+ L2（Redisson 分布式缓存）
+- **分布式同步**：基于 Redis Pub/Sub 的缓存失效同步
+- **自动刷新**：支持定时刷新和软 TTL 刷新
+- **防护机制**：SingleFlight 防击穿、分布式锁协调
+- **完整监控**：指标收集、健康检查、性能统计
+- **Spring Boot 集成**：完整的自动配置支持
 
 ### 1.2 技术栈
 
-- **本地缓存**：Caffeine
-- **分布式缓存**：Redis（通过 Redisson）
-- **框架集成**：Spring Boot、Spring AOP
-- **监控指标**：自定义指标收集系统
-- **事件系统**：统一事件处理机制
+- **本地缓存**：Caffeine 3.1.8
+- **分布式缓存**：Redis（通过 Redisson 4.3.1）
+- **框架集成**：Spring Boot 3.2、Spring AOP
+- **监控指标**：Micrometer 1.12.0
+- **序列化**：Jackson JSON
+
+### 1.3 V2 主要改进
+
+1. **架构重构**：从函数式管道改为统一缓存引擎
+2. **职责分离**：按职责拆分为多个独立类
+3. **统一 API**：注解式和编程式完全统一
+4. **性能优化**：优化数据流转和缓存策略
+5. **一致性增强**：改进失效同步机制
 
 ## 2. 整体架构
 
-### 2.1 架构层次
+### 2.1 分层架构
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    应用层 (Application Layer)                │
+│                     @Cacheable, 编程式调用                    │
 ├─────────────────────────────────────────────────────────────┤
-│                    注解层 (Annotation Layer)                 │
-│  @CascadeCacheable, CascadeCacheAspect, CacheLoaderResolver │
-├─────────────────────────────────────────────────────────────┤
-│                    管理层 (Management Layer)                 │
-│      CascadeCacheManager, CacheFactory, SmartCacheFactory   │
-├─────────────────────────────────────────────────────────────┤
-│                    核心层 (Core Layer)                       │
-│    SmartCache, CacheCore, CacheEnhancer, CacheMonitor      │
-├─────────────────────────────────────────────────────────────┤
-│                    策略层 (Strategy Layer)                   │
-│   MultiTierCacheStrategy, SingleTierCacheStrategy          │
+│                    门面层 (Facade Layer)                     │
+│       CacheAspect (AOP), FunctionalCacheManager              │
 ├─────────────────────────────────────────────────────────────┤
 │                    引擎层 (Engine Layer)                     │
-│           CaffeineEngine, RedisEngine, CacheEngine         │
+│              EngineBackedCache (统一缓存引擎)                 │
+│       ┌───────────────────────────────────────────┐          │
+│       │  Core    Read    Write   Eviction         │          │
+│       │  Refresh Sync    Metrics  Lifecycle       │          │
+│       └───────────────────────────────────────────┘          │
 ├─────────────────────────────────────────────────────────────┤
-│                    基础层 (Foundation Layer)                 │
-│     事件系统, 监控系统, 配置系统, 异常处理, 防护机制          │
+│                    存储层 (Store Layer)                      │
+│          L1CacheStore (本地) + L2CacheStore (分布式)          │
+├─────────────────────────────────────────────────────────────┤
+│                    一致性层 (Consistency Layer)              │
+│       InvalidationBus (失效广播) + VersionManager (版本)     │
+├─────────────────────────────────────────────────────────────┤
+│                    加载层 (Loader Layer)                     │
+│    CacheLoaderResolver + DistLockCoordinator + SingleFlight  │
+├─────────────────────────────────────────────────────────────┤
+│                    支撑层 (Support Layer)                    │
+│      CacheKeyGenerator, TypeUtils, ObjectMapperHolder       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -54,614 +68,1047 @@ Cascade Cache 是一个高性能、多级缓存框架，提供了统一的缓存
 
 ```mermaid
 graph TB
-    A[CascadeCacheManager] --> B[SmartCacheFactory]
-    B --> C[SmartCache]
-    C --> D[CacheCore]
-    C --> E[CacheEnhancer]
-    C --> F[CacheMonitor]
-    
-    D --> G[CacheStrategy]
-    G --> H[MultiTierCacheStrategy]
-    G --> I[SingleTierCacheStrategy]
-    
-    H --> J[CaffeineEngine]
-    H --> K[RedisEngine]
-    I --> J
-    
-    E --> L[CacheProtectionManager]
-    E --> M[CacheSynchronizer]
-    E --> N[CacheRefreshScheduler]
-    
-    F --> O[CacheMetricsCollector]
-    F --> P[UnifiedMonitoringManager]
-    
-    Q[UnifiedEventProcessor] --> R[CacheEventListener]
+    A[FunctionalCacheManager] --> B[EngineBackedCache]
+    C[CacheAspect] --> B
+
+    B --> D[EngineBackedCacheCore]
+    B --> E[EngineBackedCacheRead]
+    B --> F[EngineBackedCacheWrite]
+    B --> G[EngineBackedCacheEviction]
+    B --> H[EngineBackedCacheRefresh]
+    B --> I[EngineBackedCacheSync]
+    B --> J[EngineBackedCacheMetrics]
+    B --> K[EngineBackedCacheLifecycle]
+
+    E --> L[L1CacheStore]
+    E --> M[L2CacheStore]
+    F --> L
+    F --> M
+
+    I --> N[InvalidationBus]
+    I --> O[VersionManager]
+
+    H --> P[CacheLoaderResolver]
+    P --> Q[DistLockCoordinator]
+    P --> R[SingleFlight]
+
+    J --> S[CacheMetricsCollector]
+```
+
+### 2.3 包结构
+
+```
+io.github.cascade.cache.v2
+├── api                          # API 层
+│   ├── Cache.java              # 统一缓存接口
+│   ├── CacheManager.java       # 缓存管理器接口
+│   ├── CacheLoader.java        # 加载器接口
+│   └── annotations             # 缓存注解
+│       ├── Cacheable.java
+│       ├── CacheEvict.java
+│       ├── CachePut.java
+│       └── CascadeCached.java
+├── facade                       # 门面层
+│   ├── FunctionalCacheManager.java
+│   └── CacheAspect.java
+├── engine                       # 引擎层
+│   ├── EngineBackedCache.java
+│   ├── EngineBackedCacheCore.java
+│   ├── EngineBackedCacheRead.java
+│   ├── EngineBackedCacheWrite.java
+│   ├── EngineBackedCacheEviction.java
+│   ├── EngineBackedCacheRefresh.java
+│   ├── EngineBackedCacheSync.java
+│   ├── EngineBackedCacheMetrics.java
+│   └── EngineBackedCacheLifecycle.java
+├── store                        # 存储层
+│   ├── l1                      # L1 本地缓存
+│   │   ├── L1CacheStore.java
+│   │   └── CaffeineL1Store.java
+│   ├── l2                      # L2 分布式缓存
+│   │   ├── L2CacheStore.java
+│   │   └── RedissonL2Store.java
+│   └── model                   # 存储模型
+│       └── CacheRecord.java
+├── consistency                  # 一致性层
+│   ├── InvalidationBus.java
+│   ├── RedisInvalidationBus.java
+│   ├── VersionManager.java
+│   └── RedisVersionManager.java
+├── loader                       # 加载层
+│   ├── CacheLoaderResolver.java
+│   ├── DistLockCoordinator.java
+│   ├── RedisDistLockCoordinator.java
+│   └── SingleFlight.java
+├── policy                       # 策略配置
+│   ├── CachePolicy.java
+│   ├── RefreshExecutionOptions.java
+│   └── SyncMode.java
+├── observability                # 可观测性
+│   └── CacheMetricsCollector.java
+└── support                      # 支撑工具
+    ├── CacheKeyGenerator.java
+    ├── DefaultCacheKeyGenerator.java
+    ├── CacheKeyEncoder.java
+    ├── TypeUtils.java
+    └── ObjectMapperHolder.java
 ```
 
 ## 3. 核心组件设计
 
-### 3.1 SmartCache - 智能缓存核心
+### 3.1 API 层
 
-`SmartCache` 是整个缓存系统的核心实现，采用职责分离设计模式：
+#### 3.1.1 Cache 接口
+
+统一缓存接口，定义基础 CRUD 操作：
 
 ```java
-public class SmartCache<K, V> implements Cache<K, V>, AsyncCache<K, V>, TieredCache<K, V> {
-    // 职责分离的三个核心组件
-    private final CacheCore<K, V> core;           // 核心缓存逻辑
-    private final CacheEnhancer<K, V> enhancer;   // 增强功能管理器
-    private final CacheMonitor<K, V> monitor;     // 监控统计
+public interface Cache<K, V> {
+    // 基础操作
+    Optional<V> get(K key);
+    V getOrLoad(K key, Function<K, V> loader);
+    void put(K key, V value);
+    void put(K key, V value, long ttlSeconds);
+    void evict(K key);
+    void clear();
+
+    // 批量操作
+    Map<K, V> getAll(Iterable<K> keys);
+    void putAll(Map<K, V> entries);
+
+    // 异步操作
+    CompletableFuture<Optional<V>> getAsync(K key);
+    CompletableFuture<Void> putAsync(K key, V value);
+
+    // 查询操作
+    boolean containsKey(K key);
+    long size();
+    String getName();
+
+    // 生命周期
+    void close();
+    boolean isClosed();
 }
 ```
 
-**职责分工：**
-- **CacheCore**：负责基础缓存操作的协调
-- **CacheEnhancer**：负责防护、同步、刷新等增强功能
-- **CacheMonitor**：负责监控统计和健康检查
+#### 3.1.2 CacheManager 接口
 
-### 3.2 CacheStrategy - 策略模式
-
-采用策略模式处理不同的缓存架构：
-
-#### 3.2.1 MultiTierCacheStrategy
+缓存管理器，支持多种缓存创建方式：
 
 ```java
-public class MultiTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
-    private final CacheEngine<K, V> l1Engine;  // L1缓存引擎
-    private final CacheEngine<K, V> l2Engine;  // L2缓存引擎
-    
-    // 处理L1和L2之间的数据流转逻辑
+public interface CacheManager {
+    // 基础创建
+    <K, V> Cache<K, V> getOrCreateCache(String cacheName,
+                                         Class<K> keyType,
+                                         Class<V> valueType);
+
+    // 带配置创建
+    <K, V> Cache<K, V> getOrCreateCache(String cacheName,
+                                         Class<K> keyType,
+                                         Class<V> valueType,
+                                         CascadeCacheProperties config);
+
+    // 带加载器创建
+    <K, V> Cache<K, V> getOrCreateCache(String cacheName,
+                                         Class<K> keyType,
+                                         Class<V> valueType,
+                                         Function<K, V> loader);
+
+    // 完整配置创建
+    <K, V> Cache<K, V> getOrCreateCache(String cacheName,
+                                         Class<K> keyType,
+                                         Class<V> valueType,
+                                         CascadeCacheProperties config,
+                                         Function<K, V> loader);
+
+    // Builder 模式
+    CacheBuilderKeyStage newCache(String cacheName);
+
+    // CacheLoader 注册
+    <K, V> void registerLoader(String cacheName,
+                                Class<K> keyType,
+                                Class<V> valueType,
+                                CacheLoader<K, V> loader);
 }
 ```
 
-**数据流转策略：**
-1. **读取流程**：L1 → L2 → 数据源
-2. **写入流程**：同时写入 L1 和 L2
-3. **失效策略**：L1 失效后从 L2 加载
+#### 3.1.3 CacheLoader 接口
 
-#### 3.2.2 SingleTierCacheStrategy
+数据加载器，继承自 Function：
 
 ```java
-public class SingleTierCacheStrategy<K, V> implements CacheStrategy<K, V> {
-    private final CacheEngine<K, V> engine;  // 单级缓存引擎
-    
-    // 处理单级缓存的读写逻辑
-}
-```
+@FunctionalInterface
+public interface CacheLoader<K, V> extends Function<K, V> {
+    V load(K key);
 
-### 3.3 CacheEngine - 缓存引擎
-
-#### 3.3.1 CaffeineEngine（L1缓存）
-
-```java
-public class CaffeineEngine<K, V> implements CacheEngine<K, V> {
-    private final com.github.benmanes.caffeine.cache.Cache<K, V> cache;
-    
-    // Caffeine配置
-    public static class CaffeineConfig {
-        private long maximumSize = 10000;
-        private Duration expireAfterWrite = Duration.ofHours(1);
-        private Duration expireAfterAccess = Duration.ofMinutes(30);
-        // ...
+    @Override
+    default V apply(K key) {
+        return load(key);
     }
 }
 ```
 
-#### 3.3.2 RedisEngine（L2缓存）
+#### 3.1.4 注解定义
+
+**@Cacheable**：缓存查询注解
 
 ```java
-public class RedisEngine<K, V> implements CacheEngine<K, V> {
-    private final RedissonClient redissonClient;
-    
-    // Redis配置
-    public static class RedisConfig {
-        private String keyPrefix = "cascade:cache:";
-        private Duration defaultTtl = Duration.ofHours(24);
-        private Duration timeout = Duration.ofSeconds(3);
-        // ...
-    }
-}
-```
-
-### 3.4 构建器模式
-
-采用分段构建器模式，提供清晰的构建流程：
-
-```java
-// 使用示例
-Cache<String, User> cache = UnifiedCacheBuilder
-    .forCache("userCache", String.class, User.class)
-    .withL1AndL2(l1Config, l2Config, redissonClient)
-    .enableProtection(protectionConfig)
-    .enableCacheSync(syncConfig)
-    .enableAutoRefresh(refreshConfig)
-    .build();
-```
-
-**构建步骤：**
-1. **TierConfigurationStep**：配置缓存层级
-2. **EnhancementConfigurationStep**：配置增强功能
-3. **Build**：构建最终缓存实例
-
-## 4. 功能特性
-
-### 4.1 防护机制
-
-#### 4.1.1 布隆过滤器防护
-
-```java
-public class BloomFilterProtection<K> implements CacheProtection<K> {
-    private final CascadeBloomFilter<K> bloomFilter;
-    
-    // 防止缓存穿透
-    public boolean mightContain(K key) {
-        return bloomFilter.mightContain(key);
-    }
-}
-```
-
-#### 4.1.2 随机TTL防护
-
-```java
-public class RandomTtlProtection implements CacheProtection<Object> {
-    // 防止缓存雪崩
-    public Duration randomizeTtl(Duration baseTtl) {
-        double factor = 0.8 + Math.random() * 0.4; // 0.8-1.2倍
-        return Duration.ofMillis((long) (baseTtl.toMillis() * factor));
-    }
-}
-```
-
-### 4.2 缓存同步
-
-#### 4.2.1 统一同步器
-
-```java
-public class UnifiedCacheSynchronizer<K, V> implements CacheSynchronizer<K, V> {
-    private final CacheSyncManager syncManager;
-    private final UnifiedEventProcessor eventProcessor;
-    
-    // 处理缓存同步事件
-    public void onCacheUpdate(K key, V value) {
-        // 发布同步事件
-        eventProcessor.publishEvent(
-            UnifiedCacheEvent.sync(cacheId, key, value)
-        );
-    }
-}
-```
-
-#### 4.2.2 Redis发布订阅同步
-
-```java
-public class RedissonCacheSyncManager implements CacheSyncManager {
-    private final RedissonClient redissonClient;
-    
-    // 基于Redis发布订阅的缓存同步
-    public void publishSync(String cacheId, Object key, SyncOperation operation) {
-        RTopic topic = redissonClient.getTopic("cache:sync:" + cacheId);
-        topic.publish(new SyncMessage(key, operation));
-    }
-}
-```
-
-### 4.3 自动刷新
-
-```java
-public class CacheRefreshScheduler<K, V> {
-    private final ScheduledExecutorService scheduler;
-    private final CacheLoader<K, V> cacheLoader;
-    
-    // 调度刷新任务
-    public void scheduleRefresh(K key, Duration interval) {
-        scheduler.scheduleWithFixedDelay(
-            () -> refreshKey(key),
-            interval.toMillis(),
-            interval.toMillis(),
-            TimeUnit.MILLISECONDS
-        );
-    }
-}
-```
-
-### 4.4 监控统计
-
-#### 4.4.1 指标收集
-
-```java
-public class CacheMetricsCollector {
-    // 基础指标
-    private final LongAdder hitCount = new LongAdder();
-    private final LongAdder missCount = new LongAdder();
-    private final LongAdder loadCount = new LongAdder();
-    private final LongAdder evictionCount = new LongAdder();
-    
-    // 性能指标
-    private final AtomicLong totalLoadTime = new AtomicLong();
-    private final AtomicLong maxLoadTime = new AtomicLong();
-    
-    // 计算命中率
-    public double getHitRate() {
-        long hits = hitCount.sum();
-        long total = hits + missCount.sum();
-        return total == 0 ? 0.0 : (double) hits / total;
-    }
-}
-```
-
-#### 4.4.2 健康检查
-
-```java
-public class CacheMonitor<K, V> {
-    // 健康状态检查
-    public HealthStatus checkHealth() {
-        try {
-            // 检查缓存可用性
-            testCacheAvailability();
-            
-            // 检查性能指标
-            PerformanceMetrics metrics = getPerformanceMetrics();
-            if (metrics.getHitRate() < 0.1) {
-                return HealthStatus.degraded("Low hit rate: " + metrics.getHitRate());
-            }
-            
-            return HealthStatus.up();
-        } catch (Exception e) {
-            return HealthStatus.down(e);
-        }
-    }
-}
-```
-
-### 4.5 事件系统
-
-#### 4.5.1 统一事件模型
-
-```java
-public class UnifiedCacheEvent {
-    public enum Type {
-        GET, PUT, EVICT, CLEAR, LOAD, SYNC, REFRESH, ERROR
-    }
-    
-    private final String cacheId;
-    private final Type type;
-    private final Object key;
-    private final Object value;
-    private final Duration duration;
-    private final boolean success;
-    private final Throwable error;
-}
-```
-
-#### 4.5.2 事件处理器
-
-```java
-public class UnifiedEventProcessor {
-    private final List<CacheEventListener> listeners = new CopyOnWriteArrayList<>();
-    private final ExecutorService executor;
-    
-    // 发布事件
-    public void publishEvent(UnifiedCacheEvent event) {
-        for (CacheEventListener listener : listeners) {
-            if (listener.shouldHandle(event)) {
-                executor.submit(() -> {
-                    try {
-                        listener.onEvent(event);
-                    } catch (Exception e) {
-                        log.warn("Event listener failed", e);
-                    }
-                });
-            }
-        }
-    }
-}
-```
-
-## 5. 注解支持
-
-### 5.1 @CascadeCacheable 注解
-
-```java
-@Target({ElementType.METHOD})
+@Target(ElementType.METHOD)
 @Retention(RetentionPolicy.RUNTIME)
-public @interface CascadeCacheable {
-    // 基础配置
-    String value() default "";
-    String cacheName() default "";
-    String key() default "";
-    String condition() default "";
-    String unless() default "";
-    
-    // L1缓存配置
-    long l1MaximumSize() default -1;
-    String l1ExpireAfterWrite() default "";
-    String l1ExpireAfterAccess() default "";
-    
-    // L2缓存配置
-    String l2KeyPrefix() default "";
-    String l2DefaultTtl() default "";
-    String l2Timeout() default "";
-    
-    // 防护功能
-    long bloomExpectedElements() default -1;
-    double bloomFalsePositiveRate() default -1.0;
-    boolean enableRandomTtl() default false;
-    
-    // 同步配置
-    boolean enableCacheSync() default false;
-    String syncChannel() default "";
-    
-    // 刷新配置
-    boolean enableAutoRefresh() default false;
-    String refreshInterval() default "";
-    
-    // 监控配置
-    boolean enableMonitoring() default true;
-    boolean enableMetrics() default true;
+public @interface Cacheable {
+    String value() default "";              // 缓存名称
+    String key() default "";                // SpEL 表达式
+    String condition() default "";          // 条件表达式
+    String unless() default "";             // 排除条件
+    boolean sync() default false;           // 是否同步
+    CacheLoaderBinding loaderBinding() default @CacheLoaderBinding; // 加载器绑定
 }
 ```
 
-### 5.2 AOP切面处理
+**@CacheEvict**：缓存删除注解
+
+```java
+@Target(ElementType.METHOD)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface CacheEvict {
+    String value() default "";              // 缓存名称
+    String key() default "";                // SpEL 表达式
+    String condition() default "";          // 条件表达式
+    boolean allEntries() default false;     // 是否清空所有
+    boolean beforeInvocation() default false; // 是否在方法执行前失效
+}
+```
+
+**@CachePut**：缓存更新注解
+
+```java
+@Target(ElementType.METHOD)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface CachePut {
+    String value() default "";              // 缓存名称
+    String key() default "";                // SpEL 表达式
+    String condition() default "";          // 条件表达式
+    String unless() default "";             // 排除条件
+}
+```
+
+### 3.2 Facade 层
+
+#### 3.2.1 FunctionalCacheManager
+
+函数式缓存管理器，统一管理所有缓存实例：
+
+```java
+public class FunctionalCacheManager implements CacheManager {
+    // 缓存注册表
+    private final ConcurrentHashMap<String, Cache<?, ?>> cacheRegistry;
+    private final ConcurrentHashMap<String, CacheDefinitionFingerprint> definitionRegistry;
+
+    // 依赖组件
+    private final RedissonClient redissonClient;
+    private final CascadeCacheProperties defaultConfig;
+    private final CacheLoaderResolver loaderResolver;
+    private final MeterRegistry meterRegistry;
+    private final String nodeId;
+
+    @Override
+    public <K, V> Cache<K, V> getOrCreateCache(String cacheName,
+                                               Class<K> keyType,
+                                               Class<V> valueType,
+                                               CascadeCacheProperties config,
+                                               Function<K, V> loader) {
+        // 创建或获取缓存
+        // 1. 检查是否已存在
+        // 2. 解析 CachePolicy
+        // 3. 解析 RefreshExecutionOptions
+        // 4. 创建 EngineBackedCache
+        // 5. 注册缓存
+    }
+}
+```
+
+#### 3.2.2 CacheAspect
+
+统一缓存切面，处理所有缓存注解：
 
 ```java
 @Aspect
-@Component
-public class CascadeCacheAspect {
-    
-    @Around("@annotation(cascadeCacheable)")
-    public Object handleCacheable(ProceedingJoinPoint joinPoint, 
-                                 CascadeCacheable cascadeCacheable) throws Throwable {
-        
-        String cacheKey = resolveCacheKey(joinPoint, cascadeCacheable);
-        Cache<Object, Object> cache = getOrCreateCache(cascadeCacheable);
-        
-        // 尝试从缓存获取
-        Object result = cache.get(cacheKey);
-        if (result != null) {
-            publishEvent(UnifiedCacheEvent.hit(cacheName, cacheKey));
-            return result;
-        }
-        
-        // 执行目标方法
-        result = joinPoint.proceed();
-        
-        // 缓存结果
-        if (result != null) {
-            cache.put(cacheKey, result);
-            publishEvent(UnifiedCacheEvent.put(cacheName, cacheKey, result));
-        }
-        
-        return result;
+@Order(1)
+public class CacheAspect {
+    private final CacheManager cacheManager;
+    private final CascadeCacheProperties defaultConfig;
+    private final CacheExpressionEvaluator expressionEvaluator;
+
+    // InvocationSnapshot 用于自动刷新回放
+    private final Cache<SnapshotKey, InvocationSnapshot> invocationSnapshots;
+
+    @Around("@annotation(cacheable)")
+    public Object handleCacheable(ProceedingJoinPoint joinPoint,
+                                 Cacheable cacheable) throws Throwable {
+        // 1. 解析 cacheName 和 key
+        // 2. 评估条件表达式
+        // 3. 注册 InvocationSnapshot
+        // 4. 获取或创建缓存
+        // 5. 执行缓存查询
+    }
+
+    @Around("@annotation(cacheEvict)")
+    public Object handleCacheEvict(ProceedingJoinPoint joinPoint,
+                                   CacheEvict cacheEvict) throws Throwable {
+        // 处理缓存删除
+    }
+
+    @Around("@annotation(cachePut)")
+    public Object handleCachePut(ProceedingJoinPoint joinPoint,
+                                CachePut cachePut) throws Throwable {
+        // 处理缓存更新
     }
 }
 ```
 
-## 6. 配置管理
+### 3.3 Engine 层
 
-### 6.1 统一配置类
+#### 3.3.1 EngineBackedCache 统一引擎
+
+统一缓存引擎实现，采用职责分离设计：
 
 ```java
-@Data
-@Accessors(chain = true)
-public class CascadeCacheConfiguration {
-    private String name = "default";
-    private boolean enabled = true;
-    
-    // 各子配置
-    private CommonConfig common = new CommonConfig();
-    private L1Config l1 = new L1Config();
-    private L2Config l2 = new L2Config();
-    private SyncConfig sync = new SyncConfig();
-    private ProtectionConfig protection = new ProtectionConfig();
-    private MonitoringConfig monitoring = new MonitoringConfig();
-    private RefreshConfig refresh = new RefreshConfig();
+public class EngineBackedCache<K, V> implements Cache<K, V> {
+    // 核心状态
+    private final String cacheName;
+    private final CachePolicy policy;
+    private final L1CacheStore<K, V> l1Store;
+    private final L2CacheStore<K, V> l2Store;
+    private final Class<V> valueType;
+    private final ObjectMapper objectMapper;
+    private final String nodeId;
+
+    // 策略配置
+    private final RefreshExecutionOptions refreshOptions;
+    private final CacheMetricsCollector metricsCollector;
+
+    // 线程池
+    private final ExecutorService asyncExecutor;
+    private final ThreadPoolExecutor refreshExecutor;
+    private final ScheduledExecutorService refreshScheduler;
+
+    // 防护机制
+    private final SingleFlight<K, V> singleFlight;
+
+    // Pipeline
+    private final ReadPipeline<K, V> readPipeline;
+    private final WritePipeline<V> writePipeline;
+    private final RefreshPipeline refreshPipeline;
+
+    // 职责分离的委托
+    private final EngineBackedCacheEviction<K, V> evictionDelegate;
+    private final EngineBackedCacheWrite<K, V> writeDelegate;
+    private final EngineBackedCacheRefresh<K, V> refreshDelegate;
+    private final EngineBackedCacheSync<K, V> syncDelegate;
+    private final EngineBackedCacheLifecycle<K, V> lifecycleDelegate;
+
+    // 指标统计
+    private final AtomicLong l1Hit = new AtomicLong(0L);
+    private final AtomicLong l2Hit = new AtomicLong(0L);
+    private final AtomicLong miss = new AtomicLong(0L);
+    // ... 更多指标
 }
 ```
 
-### 6.2 Spring Boot自动配置
+#### 3.3.2 职责分离设计
+
+**EngineBackedCacheCore**：核心逻辑
 
 ```java
-@Configuration
-@EnableConfigurationProperties(CascadeCacheProperties.class)
-@ConditionalOnProperty(prefix = "cascade.cache", name = "enabled", havingValue = "true", matchIfMissing = true)
-public class CascadeCacheAutoConfiguration {
-    
-    @Bean
-    @ConditionalOnMissingBean
-    public CascadeCacheManager cascadeCacheManager(
-            RedissonClient redissonClient,
-            CachePropertiesProvider propertiesProvider,
-            @Autowired(required = false) UnifiedMonitoringManager monitoringManager) {
-        return new CascadeCacheManager(redissonClient, propertiesProvider, monitoringManager);
+class EngineBackedCacheCore<K, V> {
+    // 核心状态管理
+    // 共享工具方法
+    // 基础协调逻辑
+}
+```
+
+**EngineBackedCacheRead**：读操作
+
+```java
+class EngineBackedCacheRead<K, V> {
+    Optional<V> get(K key);
+    V getOrLoad(K key, Function<K, V> loader);
+    Map<K, V> getAll(Iterable<K> keys);
+
+    // 读流程：
+    // 1. 检查 L1
+    // 2. L1 未命中检查 L2
+    // 3. L2 未命中使用 Loader
+    // 4. 异步回填 L1
+}
+```
+
+**EngineBackedCacheWrite**：写操作
+
+```java
+class EngineBackedCacheWrite<K, V> {
+    void put(K key, V value);
+    void put(K key, V value, long ttlSeconds);
+    void putAll(Map<K, V> entries);
+
+    // 写流程：
+    // 1. 同步写入 L2
+    // 2. 异步写入 L1
+    // 3. 发布失效事件（如果启用）
+}
+```
+
+**EngineBackedCacheEviction**：失效操作
+
+```java
+class EngineBackedCacheEviction<K, V> {
+    void evict(K key);
+    void clear();
+
+    // 失效流程：
+    // 1. 从 L1 删除
+    // 2. 从 L2 删除
+    // 3. 发布失效事件（如果启用）
+}
+```
+
+**EngineBackedCacheRefresh**：刷新操作
+
+```java
+class EngineBackedCacheRefresh<K, V> {
+    void scheduleRefresh(K key);
+    void startRefreshScheduler();
+    void stopRefreshScheduler();
+
+    // 刷新流程：
+    // 1. 定时扫描需要刷新的 key
+    // 2. 使用 Loader 加载最新数据
+    // 3. 更新 L2 和 L1
+}
+```
+
+**EngineBackedCacheSync**：同步操作
+
+```java
+class EngineBackedCacheSync<K, V> {
+    void publishInvalidation(K key);
+    void subscribeInvalidations();
+    void handleInvalidationEvent(InvalidationEvent event);
+
+    // 同步流程：
+    // 1. 本地失效
+    // 2. 发布到 Redis Pub/Sub
+    // 3. 其他节点监听并失效
+}
+```
+
+**EngineBackedCacheMetrics**：指标收集
+
+```java
+class EngineBackedCacheMetrics<K, V> {
+    CacheStatsSnapshot getStats();
+    void recordHit(CacheLevel level);
+    void recordMiss();
+    void recordLoadSuccess(Duration duration);
+    void recordLoadFailure(Throwable error);
+}
+```
+
+**EngineBackedCacheLifecycle**：生命周期管理
+
+```java
+class EngineBackedCacheLifecycle<K, V> {
+    void initialize();
+    void start();
+    void stop();
+    void close();
+}
+```
+
+### 3.4 Store 层
+
+#### 3.4.1 L1CacheStore 接口
+
+本地缓存存储接口：
+
+```java
+public interface L1CacheStore<K, V> {
+    Optional<V> get(K key);
+    void put(K key, V value);
+    void put(K key, V value, long ttlSeconds);
+    void evict(K key);
+    void clear();
+    long size();
+    void close();
+}
+```
+
+**CaffeineL1Store**：Caffeine 实现
+
+```java
+public class CaffeineL1Store<K, V> implements L1CacheStore<K, V> {
+    private final com.github.benmanes.caffeine.cache.Cache<K, CacheRecord> cache;
+
+    public CaffeineL1Store(CachePolicy.L1Policy policy) {
+        this.cache = Caffeine.newBuilder()
+            .maximumSize(policy.getMaximumSize())
+            .expireAfterWrite(policy.getExpireAfterWrite())
+            .recordStats(policy.isRecordStats())
+            .build();
     }
 }
 ```
 
-## 7. 异常处理
+#### 3.4.2 L2CacheStore 接口
 
-### 7.1 分层异常处理
+分布式缓存存储接口：
 
 ```java
-public class CacheExceptionHandler {
-    public enum ErrorSeverity {
-        IGNORE,    // 忽略级别 - 仅记录调试日志
-        WARN,      // 警告级别 - 记录警告日志
-        ERROR,     // 错误级别 - 抛出CacheOperationException
-        FATAL      // 致命级别 - 抛出CacheFatalException
-    }
-    
-    public <T> T handleException(String operation, Exception e, 
-                                ErrorSeverity severity, Supplier<T> fallback) {
-        switch (severity) {
-            case IGNORE:
-                log.debug("Cache operation '{}' failed: {}", operation, e.getMessage());
-                return fallback.get();
-            case WARN:
-                log.warn("Cache operation '{}' failed: {}", operation, e.getMessage());
-                return fallback.get();
-            case ERROR:
-                log.error("Cache operation '{}' failed", operation, e);
-                throw new CacheOperationException(operation, e);
-            case FATAL:
-                log.error("Fatal cache operation '{}' failed", operation, e);
-                throw new CacheFatalException(operation, e);
-            default:
-                return fallback.get();
-        }
-    }
+public interface L2CacheStore<K, V> {
+    Optional<CacheRecord> get(K key);
+    void put(K key, CacheRecord record);
+    void evict(K key);
+    void clear();
+    Long getTtl(K key);
+    void close();
 }
 ```
 
-## 8. 性能优化
-
-### 8.1 异步操作
+**RedissonL2Store**：Redisson 实现
 
 ```java
-public interface AsyncCache<K, V> {
-    CompletableFuture<V> getAsync(K key);
-    CompletableFuture<Void> putAsync(K key, V value);
-    CompletableFuture<Map<K, V>> getAllAsync(Set<K> keys);
-    CompletableFuture<Void> putAllAsync(Map<K, V> map);
-}
-```
+public class RedissonL2Store<K, V> implements L2CacheStore<K, V> {
+    private final RedissonClient redissonClient;
+    private final String keyPrefix;
+    private final long defaultTtlSeconds;
+    private final ObjectMapper objectMapper;
 
-### 8.2 批量操作
-
-```java
-public class BatchOperationSupport<K, V> {
-    private final int batchSize;
-    private final Duration batchTimeout;
-    
-    // 批量获取优化
-    public Map<K, V> batchGet(Set<K> keys) {
-        if (keys.size() <= batchSize) {
-            return directBatchGet(keys);
-        }
-        
-        // 分批处理
-        return keys.stream()
-            .collect(Collectors.groupingBy(key -> key.hashCode() % batchSize))
-            .values()
-            .parallelStream()
-            .map(this::directBatchGet)
-            .flatMap(map -> map.entrySet().stream())
-            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
-    }
-}
-```
-
-### 8.3 内存优化
-
-```java
-public class MemoryOptimization {
-    // 弱引用缓存键
-    private final Map<WeakReference<Object>, V> weakKeyCache = new ConcurrentHashMap<>();
-    
-    // 压缩序列化
-    private final Serializer compressedSerializer = new CompressedSerializer();
-    
-    // 内存使用监控
-    public void monitorMemoryUsage() {
-        MemoryMXBean memoryBean = ManagementFactory.getMemoryMXBean();
-        MemoryUsage heapUsage = memoryBean.getHeapMemoryUsage();
-        
-        double usageRatio = (double) heapUsage.getUsed() / heapUsage.getMax();
-        if (usageRatio > 0.8) {
-            // 触发缓存清理
-            triggerCacheEviction();
-        }
-    }
-}
-```
-
-## 9. 扩展点
-
-### 9.1 SPI扩展机制
-
-```java
-// 缓存引擎扩展点
-public interface CacheEngineProvider {
-    String getEngineType();
-    <K, V> CacheEngine<K, V> createEngine(Map<String, Object> config);
-    boolean supports(String engineType);
-}
-
-// 序列化器扩展点
-public interface SerializerProvider {
-    String getSerializerType();
-    Serializer createSerializer(Map<String, Object> config);
-    boolean supports(String serializerType);
-}
-
-// 事件监听器扩展点
-public interface CacheEventListenerProvider {
-    String getListenerType();
-    CacheEventListener createListener(Map<String, Object> config);
-    boolean supports(String listenerType);
-}
-```
-
-### 9.2 自定义缓存策略
-
-```java
-public abstract class CustomCacheStrategy<K, V> implements CacheStrategy<K, V> {
-    protected abstract V doGet(K key);
-    protected abstract void doPut(K key, V value);
-    protected abstract void doEvict(K key);
-    
-    // 模板方法模式
     @Override
-    public final V get(K key) {
-        // 前置处理
-        preGet(key);
-        
+    public Optional<CacheRecord> get(K key) {
+        String cacheKey = encodeKey(key);
+        RBucket<String> bucket = redissonClient.getBucket(cacheKey);
+        String json = bucket.get();
+        if (json == null) {
+            return Optional.empty();
+        }
+        return Optional.of(objectMapper.readValue(json, CacheRecord.class));
+    }
+}
+```
+
+#### 3.4.3 CacheRecord 模型
+
+缓存记录模型：
+
+```java
+public class CacheRecord {
+    private Object value;           // 缓存值
+    private long version;           // 版本号
+    private long expireTime;        // 过期时间戳
+    private long createTime;        // 创建时间戳
+    private long updateTime;        // 更新时间戳
+    private String nodeId;          // 节点ID
+
+    // getters and setters
+}
+```
+
+### 3.5 Consistency 层
+
+#### 3.5.1 InvalidationBus 接口
+
+失效总线接口：
+
+```java
+public interface InvalidationBus {
+    void publish(String cacheName, Object key);
+    void subscribe(String cacheName, InvalidationListener listener);
+    void unsubscribe(String cacheName);
+    void close();
+}
+```
+
+**RedisInvalidationBus**：Redis Pub/Sub 实现
+
+```java
+public class RedisInvalidationBus implements InvalidationBus {
+    private final RedissonClient redissonClient;
+    private final String topicPrefix;
+    private final ObjectMapper objectMapper;
+
+    @Override
+    public void publish(String cacheName, Object key) {
+        InvalidationEvent event = new InvalidationEvent(cacheName, key);
+        String topic = topicPrefix + cacheName;
+        RTopic rTopic = redissonClient.getTopic(topic);
+        rTopic.publish(event);
+    }
+
+    @Override
+    public void subscribe(String cacheName, InvalidationListener listener) {
+        String topic = topicPrefix + cacheName;
+        RTopic rTopic = redissonClient.getTopic(topic);
+        rTopic.addListener(InvalidationEvent.class, (channel, event) -> {
+            listener.onInvalidation(event);
+        });
+    }
+}
+```
+
+#### 3.5.2 VersionManager 接口
+
+版本管理器接口：
+
+```java
+public interface VersionManager {
+    long getCurrentVersion();
+    long incrementAndGetVersion();
+    boolean isVersionValid(long version);
+}
+```
+
+**LocalVersionManager**：本地版本管理
+
+**RedisVersionManager**：Redis 版本管理
+
+### 3.6 Loader 层
+
+#### 3.6.1 CacheLoaderResolver
+
+加载器解析器：
+
+```java
+public class CacheLoaderResolver {
+    private final ApplicationContext applicationContext;
+    private final ConcurrentHashMap<LoaderKey, CacheLoader<?, ?>> loaderCache = new ConcurrentHashMap<>();
+
+    public <K, V> CacheLoader<K, V> resolve(String cacheName,
+                                            Class<K> keyType,
+                                            Class<V> valueType) {
+        LoaderKey key = new LoaderKey(cacheName, keyType, valueType);
+        return (CacheLoader<K, V>) loaderCache.computeIfAbsent(key, k -> {
+            // 1. 尝试从 @CacheLoaderBinding 注解解析
+            // 2. 尝试从 Spring 容器中查找
+            // 3. 返回 null
+        });
+    }
+}
+```
+
+#### 3.6.2 SingleFlight
+
+防击穿机制：
+
+```java
+public class SingleFlight<K, V> {
+    private final ConcurrentHashMap<K, CompletableFuture<V>> calls = new ConcurrentHashMap<>();
+
+    public CompletableFuture<V> execute(K key, Function<K, V> loader) {
+        CompletableFuture<V> future = calls.get(key);
+        if (future != null) {
+            return future;
+        }
+
+        CompletableFuture<V> newFuture = new CompletableFuture<>();
+        CompletableFuture<V> racingFuture = calls.putIfAbsent(key, newFuture);
+        if (racingFuture != null) {
+            return racingFuture;
+        }
+
         try {
-            V value = doGet(key);
-            // 后置处理
-            postGet(key, value);
-            return value;
+            V value = loader.apply(key);
+            newFuture.complete(value);
+            return newFuture;
         } catch (Exception e) {
-            // 异常处理
-            handleGetException(key, e);
+            newFuture.completeExceptionally(e);
             throw e;
+        } finally {
+            calls.remove(key);
         }
     }
 }
 ```
 
-## 10. 最佳实践
+#### 3.6.3 DistLockCoordinator
 
-### 10.1 缓存设计原则
+分布式锁协调器：
 
-1. **合理的TTL设置**：根据数据特性设置合适的过期时间
-2. **防护机制启用**：生产环境必须启用布隆过滤器和随机TTL
-3. **监控指标关注**：重点关注命中率、响应时间、错误率
-4. **异步操作优先**：高并发场景优先使用异步API
-5. **批量操作优化**：大量数据操作使用批量接口
+```java
+public interface DistLockCoordinator<K> {
+    enum Outcome { ACQUIRED, NOT_ACQUIRED, ERROR }
 
-### 10.2 性能调优建议
+    record LockResult<T>(Outcome outcome, T value, Throwable error) {
+        static <T> LockResult<T> acquired(T value) {
+            return new LockResult<>(Outcome.ACQUIRED, value, null);
+        }
 
-1. **L1缓存容量**：根据内存大小合理设置，避免频繁GC
-2. **L2缓存连接池**：合理配置Redis连接池参数
-3. **序列化选择**：选择高效的序列化方案（如Kryo、Protobuf）
-4. **网络优化**：启用Redis管道、批量操作
-5. **监控告警**：设置合理的监控阈值和告警规则
+        static <T> LockResult<T> notAcquired() {
+            return new LockResult<>(Outcome.NOT_ACQUIRED, null, null);
+        }
 
-### 10.3 故障处理
+        static <T> LockResult<T> error(Throwable error) {
+            return new LockResult<>(Outcome.ERROR, null, error);
+        }
+    }
 
-1. **降级策略**：缓存不可用时的降级处理
-2. **熔断机制**：防止缓存故障影响主业务
-3. **数据一致性**：缓存与数据库的一致性保证
-4. **故障恢复**：缓存服务恢复后的数据重建
+    <T> LockResult<T> withLock(String cacheName,
+                               K key,
+                               long waitMs,
+                               long leaseMs,
+                               Supplier<T> supplier);
+}
+```
 
-## 11. 总结
+**RedisDistLockCoordinator**：Redis 实现
 
-Cascade Cache 模块通过现代化的架构设计，提供了一个功能完整、性能优异的多级缓存解决方案。其核心优势包括：
+```java
+public class RedisDistLockCoordinator<K> implements DistLockCoordinator<K> {
+    private final RedissonClient redissonClient;
 
-1. **架构清晰**：职责分离的设计模式，易于理解和维护
-2. **功能丰富**：提供了企业级应用所需的各种缓存功能
-3. **性能优异**：多级缓存架构和异步操作支持
-4. **易于集成**：完整的Spring Boot自动配置
-5. **可扩展性**：丰富的扩展点和SPI机制
-6. **生产就绪**：完善的监控、异常处理和故障恢复机制
+    @Override
+    public <T> LockResult<T> withLock(String cacheName,
+                                      K key,
+                                      long waitMs,
+                                      long leaseMs,
+                                      Supplier<T> supplier) {
+        RLock lock = redissonClient.getLock(lockPrefix + encodeKey(key));
+        boolean locked = false;
+        try {
+            locked = lock.tryLock(Math.max(0L, waitMs), Math.max(1L, leaseMs), TimeUnit.MILLISECONDS);
+            if (!locked) {
+                return LockResult.notAcquired();
+            }
+            return LockResult.acquired(supplier.get());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return LockResult.error(e);
+        } catch (Exception e) {
+            return LockResult.error(e);
+        } finally {
+            if (locked && lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+}
+```
 
-该模块适用于各种规模的应用系统，从简单的单体应用到复杂的分布式系统，都能提供可靠的缓存服务支持。
+### 3.7 Support 层
+
+#### 3.7.1 CacheKeyGenerator
+
+缓存键生成器接口：
+
+```java
+public interface CacheKeyGenerator {
+    Object generate(Object target, Method method, Object... params);
+}
+```
+
+**DefaultCacheKeyGenerator**：SpEL 支持
+
+```java
+public class DefaultCacheKeyGenerator implements CacheKeyGenerator {
+    private final SpelExpressionParser parser = new SpelExpressionParser();
+    private final CacheExpressionEvaluator evaluator;
+
+    @Override
+    public Object generate(Object target, Method method, Object... params) {
+        // 支持 SpEL 表达式解析
+        // 默认使用参数哈希
+    }
+}
+```
+
+#### 3.7.2 CacheKeyEncoder
+
+缓存键编码器：
+
+```java
+public class CacheKeyEncoder {
+    public static String encode(Object key) {
+        if (key == null) {
+            return "null";
+        }
+        // 使用 Jackson 序列化为 JSON 字符串
+        // 或者使用 toString() + 类型信息
+    }
+}
+```
+
+#### 3.7.3 TypeUtils
+
+类型工具类：
+
+```java
+public class TypeUtils {
+    public static Class<?> getRawType(Type type) {
+        // 获取原始类型
+    }
+
+    public static boolean isPrimitive(Class<?> type) {
+        // 判断是否是基本类型
+    }
+}
+```
+
+## 4. 数据流转
+
+### 4.1 读取流程
+
+```
+┌──────────────┐
+│  用户请求    │
+└──────┬───────┘
+       │
+       ▼
+┌─────────────────────────────────────────────────────────────┐
+│              EngineBackedCacheRead.get()                    │
+├─────────────────────────────────────────────────────────────┤
+│  1. 检查 L1 缓存                                           │
+│     ├─ 命中 → 返回结果，更新 L1 命中指标                     │
+│     └─ 未命中 ↓                                            │
+│  2. 检查 L2 缓存                                           │
+│     ├─ 命中 → 返回结果，异步回填 L1，更新 L2 命中指标        │
+│     └─ 未命中 ↓                                            │
+│  3. 使用 SingleFlight 防击穿                               │
+│  4. 若启用 distributedLock，通过 DistLockCoordinator 加锁   │
+│  5. 使用 CacheLoader 加载数据                              │
+│     ├─ 成功 → 同步写入 L2，异步回填 L1                      │
+│     ├─ 未获取锁 → 按 LockFailureStrategy 退化或放弃加载     │
+│     └─ 失败 → 记录失败指标，抛出异常                        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 4.2 写入流程
+
+```
+┌──────────────┐
+│  用户请求    │
+└──────┬───────┘
+       │
+       ▼
+┌─────────────────────────────────────────────────────────────┐
+│              EngineBackedCacheWrite.put()                   │
+├─────────────────────────────────────────────────────────────┤
+│  1. 创建 CacheRecord（包含版本号、时间戳）                  │
+│  2. 同步写入 L2 缓存                                        │
+│  3. 异步写入 L1 缓存                                        │
+│  4. 如果启用同步，发布失效事件到 Redis Pub/Sub              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 4.3 失效流程
+
+```
+┌──────────────┐
+│  用户请求    │
+└──────┬───────┘
+       │
+       ▼
+┌─────────────────────────────────────────────────────────────┐
+│            EngineBackedCacheEviction.evict()                │
+├─────────────────────────────────────────────────────────────┤
+│  1. 从 L1 缓存删除                                          │
+│  2. 从 L2 缓存删除                                          │
+│  3. 发布失效事件到 Redis Pub/Sub                            │
+│  4. 其他节点监听事件，本地失效                               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 4.4 刷新流程
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│            EngineBackedCacheRefresh.refresh()               │
+├─────────────────────────────────────────────────────────────┤
+│  1. 定时任务扫描需要刷新的 key                               │
+│  2. 检查 key 是否在跟踪列表中                               │
+│  3. 使用 CacheLoader 异步加载最新数据                       │
+│  4. 更新 L2 缓存                                            │
+│  5. 异步回填 L1 缓存                                        │
+│  6. 更新刷新成功/失败指标                                   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 4.5 同步流程
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              EngineBackedCacheSync.sync()                   │
+├─────────────────────────────────────────────────────────────┤
+│  发布节点：                                                 │
+│  1. 执行本地失效操作                                        │
+│  2. 发布失效事件到 Redis Pub/Sub                            │
+│                                                             │
+│  订阅节点：                                                 │
+│  3. 监听 Redis Pub/Sub 事件                                │
+│  4. 解析失效事件                                            │
+│  5. 本地失效对应的 key                                      │
+│  6. 更新版本号，防止重复失效                                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## 5. 配置管理
+
+### 5.1 CascadeCacheProperties
+
+```yaml
+cascade:
+  enabled: true
+  default-cache-name: default
+
+  # L1 本地缓存配置
+  l1:
+    enabled: true
+    maximum-size: 10000
+    expire-after-write-seconds: 3600
+    record-stats: true
+
+  # L2 分布式缓存配置
+  l2:
+    enabled: true
+    key-prefix: "cascade:"
+    default-ttl-seconds: 7200
+
+  # 分布式同步配置
+  sync:
+    enabled: true
+    topic-prefix: "cache:sync:"
+    mode: all  # all, l2
+
+  # 缓存刷新配置
+  refresh:
+    enabled: true
+    default-refresh-interval-seconds: 600
+    thread-pool-size: 2
+    retry-max-attempts: 3
+```
+
+### 5.2 CachePolicy
+
+```java
+public class CachePolicy {
+    private boolean l1Enabled;
+    private boolean l2Enabled;
+    private long l1MaximumSize;
+    private Duration l1ExpireAfterWrite;
+    private String l2KeyPrefix;
+    private long l2DefaultTtl;
+    private SyncMode syncMode;
+    // ...
+}
+```
+
+### 5.3 RefreshExecutionOptions
+
+```java
+public class RefreshExecutionOptions {
+    private Duration refreshInterval;
+    private int threadPoolSize;
+    private int retryMaxAttempts;
+    private Duration retryInitialDelay;
+    // ...
+}
+```
+
+## 6. 性能优化
+
+### 6.1 异步操作
+
+- **写操作异步化**：L1 写入异步执行，不阻塞主流程
+- **刷新操作异步化**：使用独立线程池执行刷新任务
+- **事件发布异步化**：失效事件异步发布
+
+### 6.2 批量操作
+
+- **批量获取**：`getAll()` 方法支持批量查询
+- **批量写入**：`putAll()` 方法支持批量写入
+
+### 6.3 缓存策略
+
+- **L1 回填**：L2 命中后异步回填 L1
+- **SingleFlight**：防止缓存击穿，减少重复加载
+- **版本去重**：防止重复处理失效事件
+
+### 6.4 内存优化
+
+- **Caffeine 配置**：合理配置 maximumSize 和过期策略
+- **缓存淘汰**：自动淘汰不常用的数据
+- **弱引用**：对大对象使用弱引用
+
+## 7. 监控指标
+
+### 7.1 基础指标
+
+- **命中率**：L1 命中率、L2 命中率、总体命中率
+- **操作计数**：L1 命中次数、L2 命中次数、未命中次数
+- **回填计数**：L1 回填次数、L2 回填次数
+
+### 7.2 性能指标
+
+- **加载时间**：平均加载时间、最大加载时间
+- **响应时间**：平均响应时间、P95、P99
+- **队列大小**：异步任务队列大小
+
+### 7.3 错误指标
+
+- **加载失败**：加载失败次数、失败率
+- **同步失败**：同步失败次数
+- **锁降级**：分布式锁降级次数
+
+### 7.4 刷新指标
+
+- **刷新成功**：刷新成功次数
+- **刷新失败**：刷新失败次数
+- **刷新队列**：待刷新 key 数量
+
+## 8. 最佳实践
+
+### 8.1 缓存设计
+
+1. **合理的 TTL**：根据数据特性设置合适的过期时间
+2. **合理的容量**：根据内存大小设置 L1 容量
+3. **启用同步**：分布式环境必须启用失效同步
+4. **启用刷新**：对热点数据启用自动刷新
+
+### 8.2 性能优化
+
+1. **优先使用 L1**：L1 性能远高于 L2
+2. **批量操作**：大量数据使用批量接口
+3. **异步操作**：写操作使用异步接口
+4. **监控指标**：重点关注命中率和响应时间
+
+### 8.3 故障处理
+
+1. **降级策略**：L2 不可用时降级到 L1
+2. **熔断机制**：加载失败时返回降级值
+3. **重试机制**：加载失败时自动重试
+4. **异常隔离**：缓存异常不影响业务
+
+## 9. 总结
+
+Cascade Cache V2 通过统一缓存引擎和职责分离设计，提供了一个功能完整、性能优异、易于维护的多级缓存解决方案。
+
+### 9.1 核心优势
+
+1. **架构清晰**：职责分离，层次分明
+2. **统一 API**：注解式和编程式完全统一
+3. **功能丰富**：多级缓存、失效同步、自动刷新
+4. **性能优异**：异步操作、批量支持、防击穿
+5. **易于集成**：完整的 Spring Boot 自动配置
+6. **生产就绪**：完善的监控、异常处理
+
+### 9.2 适用场景
+
+- **高并发查询**：热点数据缓存
+- **分布式系统**：多节点缓存同步
+- **数据一致性**：强一致性要求
+- **性能优化**：降低数据库压力
+
+### 9.3 未来规划
+
+1. 支持更多存储引擎（如 Memcached）
+2. 支持更多序列化方式（如 Kryo、Protobuf）
+3. 支持更多同步策略（如版本控制、时间戳）
+4. 支持更多刷新策略（如懒加载、预加载）

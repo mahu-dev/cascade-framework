@@ -1,0 +1,12 @@
+Manifest-Version: 1.0
+Created-By: Maven JAR Plugin 3.4.1
+Build-Jdk-Spec: 21
+Specification-Title: Redisson/Spring Boot Starter
+Specification-Version: 3.52
+Specification-Vendor: Redisson
+Implementation-Title: Redisson/Spring Boot Starter
+Implementation-Version: 3.52.0
+Implementation-Vendor: Redisson
+Automatic-Module-Name: redisson.spring.boot.starter
+Build-Time: 2025-09-25T10:47:00Z
+

@@ -59,7 +59,7 @@ public class TestService {
     /**
      * 测试基础缓存
      */
-    @Cacheable(value = "test:cache", key = "#dto.key")
+    @Cacheable(value = "test:cache", key = "#p0.key")
     public String testBasicCache(CacheTestDTO dto) {
         log.info(">>> 执行基础缓存测试方法，key: {}", dto.getKey());
         simulateDatabaseOperation();
@@ -71,7 +71,7 @@ public class TestService {
     /**
      * 测试缓存失效
      */
-    @CacheEvict(value = "test:cache", key = "#dto.key")
+    @CacheEvict(value = "test:cache", key = "#p0.key")
     public void testCacheEvict(CacheTestDTO dto) {
         log.info(">>> 清除缓存，key: {}", dto.getKey());
         dataStore.remove(dto.getKey());
@@ -80,7 +80,7 @@ public class TestService {
     /**
      * 测试缓存更新
      */
-    @CachePut(value = "test:cache", key = "#dto.key")
+    @CachePut(value = "test:cache", key = "#p0.key")
     public String testCachePut(CacheTestDTO dto) {
         log.info(">>> 更新缓存，key: {}, newValue: {}", dto.getKey(), dto.getValue());
         String newValue = "Updated:" + dto.getValue();
@@ -91,7 +91,7 @@ public class TestService {
     /**
      * 测试条件缓存
      */
-    @Cacheable(value = "test:cache:condition", key = "#dto.key", condition = "#dto.enabled")
+    @Cacheable(value = "test:cache:condition", key = "#p0.key", condition = "#p0.enabled")
     public String testConditionCache(CacheTestDTO dto) {
         log.info(">>> 执行条件缓存测试，enabled: {}", dto.getEnabled());
         simulateDatabaseOperation();
@@ -101,7 +101,7 @@ public class TestService {
     /**
      * 测试带TTL的缓存
      */
-    @Cacheable(value = "test:cache:ttl", key = "#dto.key", ttl = 10)
+    @Cacheable(value = "test:cache:ttl", key = "#p0.key", ttl = 10)
     public String testCacheWithTTL(CacheTestDTO dto) {
         log.info(">>> 执行带TTL的缓存测试，key: {}", dto.getKey());
         simulateDatabaseOperation();

@@ -37,7 +37,7 @@ public class BloomFilterTestController {
      */
     @BloomFilter(
             name = "user-bloom",
-            key = "#userId",
+            key = "#userId",  // 使用智能解析：直接访问DTO属性
             fallbackValue = "null",
             throwOnAbsent = false,
             writeBackOnSuccess = true

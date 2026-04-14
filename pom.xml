@@ -18,11 +18,19 @@
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-        <!-- Spring Boot -->
-        <spring.boot.version>3.5.13</spring.boot.version>
+        <!-- Baseline compile-time APIs -->
+        <spring.boot.api.version>2.7.18</spring.boot.api.version>
+
+        <!-- Spring Boot starter targets -->
+        <spring.boot2.version>2.7.18</spring.boot2.version>
+        <spring.boot3.version>3.5.13</spring.boot3.version>
+        <spring.boot4.version>4.0.5</spring.boot4.version>
 
         <!-- Redisson -->
-        <redisson.version>4.3.1</redisson.version>
+        <redisson.api.version>3.18.0</redisson.api.version>
+        <redisson.boot2.version>3.18.0</redisson.boot2.version>
+        <redisson.boot3.version>3.52.0</redisson.boot3.version>
+        <redisson.boot4.version>4.3.1</redisson.boot4.version>
 
         <!-- Other dependencies -->
         <caffeine.version>3.1.8</caffeine.version>
@@ -33,33 +41,27 @@
     </properties>
 
     <modules>
-        <module>cascade-core</module>
         <module>cascade-cache</module>
         <module>cascade-lock</module>
         <module>cascade-bloom</module>
         <module>cascade-limiter</module>
         <module>cascade-queue</module>
         <module>cascade-pubsub</module>
-        <module>cascade-spring-boot-starter</module>
+        <module>cascade-spring-boot2-starter</module>
+        <module>cascade-spring-boot3-starter</module>
+        <module>cascade-spring-boot4-starter</module>
         <module>cascade-demo</module>
     </modules>
 
     <dependencyManagement>
         <dependencies>
-            <!-- Spring Boot BOM -->
+            <!-- Baseline Spring Boot BOM for version-neutral core modules -->
             <dependency>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-dependencies</artifactId>
-                <version>${spring.boot.version}</version>
+                <version>${spring.boot.api.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
-            </dependency>
-
-            <!-- Redisson -->
-            <dependency>
-                <groupId>org.redisson</groupId>
-                <artifactId>redisson-spring-boot-starter</artifactId>
-                <version>${redisson.version}</version>
             </dependency>
 
             <!-- Local Cache -->
@@ -108,22 +110,22 @@
             </dependency>
             <dependency>
                 <groupId>cc.coderm</groupId>
-                <artifactId>cascade-cache</artifactId>
+                <artifactId>cascade-cache-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>cc.coderm</groupId>
-                <artifactId>cascade-lock</artifactId>
+                <artifactId>cascade-lock-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>cc.coderm</groupId>
-                <artifactId>cascade-bloom</artifactId>
+                <artifactId>cascade-bloom-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>cc.coderm</groupId>
-                <artifactId>cascade-limiter</artifactId>
+                <artifactId>cascade-limiter-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -136,8 +138,111 @@
                 <artifactId>cascade-pubsub</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-bloom-spring-boot2-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-bloom-spring-boot-autoconfigure</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-bloom-spring-boot3-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-bloom-spring-boot4-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-cache-spring-boot2-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-cache-spring-boot-autoconfigure</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-cache-spring-boot3-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-cache-spring-boot4-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-limiter-spring-boot2-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-limiter-spring-boot-autoconfigure</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-limiter-spring-boot3-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-limiter-spring-boot4-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-lock-spring-boot2-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-lock-spring-boot-autoconfigure</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-lock-spring-boot3-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-lock-spring-boot4-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-spring-boot2-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-spring-boot3-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cc.coderm</groupId>
+                <artifactId>cascade-spring-boot4-starter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
 
     <build>
         <plugins>
