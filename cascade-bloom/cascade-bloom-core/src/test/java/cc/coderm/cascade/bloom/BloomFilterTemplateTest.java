@@ -3,6 +3,7 @@ package cc.coderm.cascade.bloom;
 import cc.coderm.cascade.bloom.core.BloomFilterManager;
 import cc.coderm.cascade.bloom.core.BloomFilterTemplate;
 import cc.coderm.cascade.bloom.core.CascadeBloomFilter;
+import cc.coderm.cascade.bloom.exception.BloomFilterException;
 import cc.coderm.cascade.bloom.impl.DefaultBloomFilterTemplate;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -12,6 +13,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -37,7 +39,7 @@ class BloomFilterTemplateTest {
     @BeforeEach
     void setUp() {
         template = new DefaultBloomFilterTemplate(bloomFilterManager);
-        when(bloomFilterManager.getFilter(anyString())).thenReturn(filter);
+        lenient().when(bloomFilterManager.getFilter(anyString())).thenReturn(filter);
     }
 
     @Test
@@ -49,6 +51,17 @@ class BloomFilterTemplateTest {
 
         assertThat(result).isTrue();
         verify(filter).add("key1");
+    }
+
+    @Test
+    @DisplayName("add - 过滤器名称应自动 trim 规范化")
+    void testAddShouldNormalizeFilterName() {
+        when(filter.add(eq("key1"))).thenReturn(true);
+
+        boolean result = template.add("  user-bloom  ", "key1");
+
+        assertThat(result).isTrue();
+        verify(bloomFilterManager).getFilter("user-bloom");
     }
 
     @Test
@@ -92,6 +105,24 @@ class BloomFilterTemplateTest {
         );
 
         assertThat(result).isEqualTo("loaded-value");
+    }
+
+    @Test
+    @DisplayName("getWithBloomGuard - key 为 null 时应 fail-fast")
+    void testGetWithBloomGuardShouldFailFastWhenKeyIsNull() {
+        assertThatThrownBy(() -> template.getWithBloomGuard("user-bloom", null, () -> "v", "fallback"))
+                .isInstanceOf(BloomFilterException.class)
+                .hasMessageContaining("key must not be null");
+        verifyNoInteractions(filter);
+    }
+
+    @Test
+    @DisplayName("getWithBloomGuard - loader 为 null 时应 fail-fast")
+    void testGetWithBloomGuardShouldFailFastWhenLoaderIsNull() {
+        assertThatThrownBy(() -> template.getWithBloomGuard("user-bloom", "k1", null, "fallback"))
+                .isInstanceOf(BloomFilterException.class)
+                .hasMessageContaining("loader must not be null");
+        verifyNoInteractions(filter);
     }
 
     @Test
@@ -191,5 +222,14 @@ class BloomFilterTemplateTest {
 
         assertThat(result).isEqualTo("fallback");
         verify(filter, never()).add(any());
+    }
+
+    @Test
+    @DisplayName("getWithSelfHeal - loader 为 null 时应 fail-fast")
+    void testGetWithSelfHealShouldFailFastWhenLoaderIsNull() {
+        assertThatThrownBy(() -> template.getWithSelfHeal("user-bloom", "k1", null, "fallback"))
+                .isInstanceOf(BloomFilterException.class)
+                .hasMessageContaining("loader must not be null");
+        verifyNoInteractions(filter);
     }
 }

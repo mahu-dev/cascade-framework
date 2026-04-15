@@ -103,6 +103,15 @@ class BloomFilterAspectAutoRefreshTest {
     }
 
     @Test
+    @DisplayName("注解 key 表达式为空白时应在入口处 fail-fast")
+    void shouldFailFastWhenAnnotationKeyExpressionIsBlank() {
+        assertThatThrownBy(() -> service.blankKeyExpression("u-1"))
+                .isInstanceOf(BloomFilterException.class)
+                .hasMessageContaining("key expression must not be blank");
+        assertThat(service.getBlankKeyCalls()).isEqualTo(0);
+    }
+
+    @Test
     @DisplayName("兼容模式下 key 解析失败且 args[0]=null 时也应快速失败")
     void shouldFailFastWhenFallbackArgIsNullInCompatMode() {
         AnnotationConfigApplicationContext compatContext = new AnnotationConfigApplicationContext(CompatConfig.class);
@@ -129,6 +138,30 @@ class BloomFilterAspectAutoRefreshTest {
                 .hasMessageContaining("resolved to null")
                 .hasMessageContaining("[#id]");
         assertThat(service.getMisboundCalls()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("DTO 属性名与保留变量冲突时，不应覆盖 #args 数组变量")
+    void shouldKeepArgsArrayWhenDtoHasArgsProperty() {
+        ArgsShadowDto dto = new ArgsShadowDto("u-9", null);
+
+        String value = service.defaultArgsKey(dto);
+
+        assertThat(value).isEqualTo("db-u-9");
+        assertThat(service.getDefaultArgsKeyCalls()).isEqualTo(1);
+        assertThat(manager.getFilter("args-array-bloom").mightContain("dto-u-9")).isTrue();
+    }
+
+    @Test
+    @DisplayName("DTO JavaBean 命名应遵循 Introspector.decapitalize（getURL/getUa）")
+    void shouldBindDtoPropertiesWithJavaBeanDecapitalizeRules() {
+        BeanNamingDto dto = new BeanNamingDto("Mozilla", "Android");
+
+        String value = service.beanNamingGet(dto);
+
+        assertThat(value).isEqualTo("Mozilla:Android");
+        assertThat(service.getBeanNamingCalls()).isEqualTo(1);
+        assertThat(manager.getFilter("bean-naming-bloom").mightContain("Mozilla:Android")).isTrue();
     }
 
     @Configuration
@@ -179,6 +212,9 @@ class BloomFilterAspectAutoRefreshTest {
         final AtomicInteger noWriteBackCalls = new AtomicInteger();
         final AtomicInteger throwingCalls = new AtomicInteger();
         final AtomicInteger misboundCalls = new AtomicInteger();
+        final AtomicInteger defaultArgsKeyCalls = new AtomicInteger();
+        final AtomicInteger beanNamingCalls = new AtomicInteger();
+        final AtomicInteger blankKeyCalls = new AtomicInteger();
 
         @BloomFilter(name = "strict-bloom", key = "#id", fallbackValue = "'fallback'")
         public String strictGet(String id) {
@@ -217,6 +253,24 @@ class BloomFilterAspectAutoRefreshTest {
             return "db-" + userId;
         }
 
+        @BloomFilter(name = "strict-bloom", key = "   ", fallbackValue = "'fallback'")
+        public String blankKeyExpression(String userId) {
+            blankKeyCalls.incrementAndGet();
+            return "db-" + userId;
+        }
+
+        @BloomFilter(name = "args-array-bloom", key = "#args[0]", fallbackValue = "'fallback'", autoRefreshOnAbsent = true)
+        public String defaultArgsKey(ArgsShadowDto dto) {
+            defaultArgsKeyCalls.incrementAndGet();
+            return "db-" + dto.getId();
+        }
+
+        @BloomFilter(name = "bean-naming-bloom", key = "#URL + ':' + #ua", fallbackValue = "'fallback'", autoRefreshOnAbsent = true)
+        public String beanNamingGet(BeanNamingDto dto) {
+            beanNamingCalls.incrementAndGet();
+            return dto.getURL() + ":" + dto.getUa();
+        }
+
         public int getStrictCalls() {
             return strictCalls.get();
         }
@@ -235,6 +289,59 @@ class BloomFilterAspectAutoRefreshTest {
 
         public int getMisboundCalls() {
             return misboundCalls.get();
+        }
+
+        public int getDefaultArgsKeyCalls() {
+            return defaultArgsKeyCalls.get();
+        }
+
+        public int getBeanNamingCalls() {
+            return beanNamingCalls.get();
+        }
+
+        public int getBlankKeyCalls() {
+            return blankKeyCalls.get();
+        }
+    }
+
+    public static final class ArgsShadowDto {
+        private final String id;
+        private final String args;
+
+        ArgsShadowDto(String id, String args) {
+            this.id = id;
+            this.args = args;
+        }
+
+        public String getId() {
+            return id;
+        }
+
+        public String getArgs() {
+            return args;
+        }
+
+        @Override
+        public String toString() {
+            return "dto-" + id;
+        }
+    }
+
+    public static final class BeanNamingDto {
+        private final String URL;
+        private final String ua;
+
+        BeanNamingDto(String URL, String ua) {
+            this.URL = URL;
+            this.ua = ua;
+        }
+
+        public String getURL() {
+            return URL;
+        }
+
+        public String getUa() {
+            return ua;
         }
     }
 

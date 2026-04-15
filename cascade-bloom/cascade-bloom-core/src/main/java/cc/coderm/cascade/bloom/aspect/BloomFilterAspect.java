@@ -6,6 +6,7 @@ import cc.coderm.cascade.bloom.config.BloomFilterProperties;
 import cc.coderm.cascade.bloom.core.BloomFilterManager;
 import cc.coderm.cascade.bloom.core.CascadeBloomFilter;
 import cc.coderm.cascade.bloom.exception.BloomFilterException;
+import cc.coderm.cascade.bloom.util.BloomFilterArgumentValidator;
 import cc.coderm.cascade.bloom.util.BloomFilterKeyUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -20,6 +21,7 @@ import org.springframework.expression.ExpressionParser;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
 import org.springframework.expression.spel.support.StandardEvaluationContext;
 
+import java.beans.Introspector;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -46,6 +48,8 @@ public class BloomFilterAspect {
 
     private static final int INITIAL_CAPACITY = 16;
     private static final float LOAD_FACTOR = 0.75F;
+    private static final String ARGUMENT_ARRAY_VARIABLE = "args";
+    private static final Set<String> RESERVED_VARIABLE_NAMES = Set.of(ARGUMENT_ARRAY_VARIABLE);
 
     private final BloomFilterManager bloomFilterManager;
     private final BloomFilterProperties properties;
@@ -61,12 +65,7 @@ public class BloomFilterAspect {
      * <p>
      * 使用 LinkedHashMap 实现 LRU 淘汰策略，超过 maxExpressionCacheSize 时自动淘汰最久未使用的表达式。
      */
-    private final LinkedHashMap<String, Expression> expressionCache;
-
-    /**
-     * 缓存访问锁
-     */
-    private final Object cacheLock = new Object();
+    private final ExpressionLruCache expressionCache;
 
     /**
      * 缓存命中次数统计
@@ -83,17 +82,6 @@ public class BloomFilterAspect {
      */
     private final AtomicLong evictions = new AtomicLong(0);
 
-
-    /**
-     * ThreadLocal 缓存 EvaluationContext
-     * <p>
-     * 每个线程复用自己的 EvaluationContext，避免重复创建对象。
-     * 使用时需要重新设置变量值，确保状态正确。
-     */
-    private final ThreadLocal<EvaluationContextHolder> evaluationContextThreadLocal =
-            ThreadLocal.withInitial(EvaluationContextHolder::new);
-
-
     /**
      * 构造布隆过滤器 AOP 切面实例
      * <p>
@@ -109,8 +97,7 @@ public class BloomFilterAspect {
                              BloomFilterProperties properties) {
         this.bloomFilterManager = bloomFilterManager;
         this.properties = properties;
-        // 初始化 LRU 缓存，accessOrder=true 表示按访问顺序排序
-        this.expressionCache = new LinkedHashMap<>(INITIAL_CAPACITY, LOAD_FACTOR, true);
+        this.expressionCache = new ExpressionLruCache(properties.getMaxExpressionCacheSize(), this::onExpressionEvicted);
 
         log.info("[cascade-bloom] BloomFilterAspect initialized with maxExpressionCacheSize={}",
                 properties.getMaxExpressionCacheSize());
@@ -118,12 +105,9 @@ public class BloomFilterAspect {
 
     @Around("@annotation(bloomFilter)")
     public Object around(ProceedingJoinPoint joinPoint, BloomFilter bloomFilter) throws Throwable {
-        String filterName = bloomFilter.name();
-        if (filterName == null || filterName.isBlank()) {
-            throw new BloomFilterException("Filter name must not be blank");
-        }
+        String filterName = BloomFilterArgumentValidator.normalizeFilterName(bloomFilter.name());
 
-        String keyExpression = bloomFilter.key();
+        String keyExpression = BloomFilterArgumentValidator.requireKeyExpression(bloomFilter.key());
 
         // 1. 解析 SpEL 表达式得到过滤 key
         String key = resolveKey(joinPoint, keyExpression);
@@ -230,7 +214,7 @@ public class BloomFilterAspect {
             MethodSignature signature = (MethodSignature) joinPoint.getSignature();
             Method method = signature.getMethod();
             Object[] args = joinPoint.getArgs();
-            // 复用或创建 EvaluationContext，绑定方法参数到 SpEL 上下文
+            // 创建 EvaluationContext，绑定方法参数到 SpEL 上下文
             EvaluationContext context = getOrCreateEvaluationContext(method, args);
             // 从缓存获取或解析 SpEL 表达式
             Expression expression = getOrParseExpression(fallbackExpression);
@@ -252,8 +236,8 @@ public class BloomFilterAspect {
     /**
      * 获取或创建 EvaluationContext
      * <p>
-     * 使用 ThreadLocal 缓存 EvaluationContext，避免重复创建对象。
-     * 每次使用前重新设置变量值，确保状态正确。
+     * 每次调用都创建独立的 EvaluationContext，确保参数引用仅在当前调用链内存活，
+     * 避免线程池复用线程时出现 ThreadLocal 残留引用。
      * <p>
      * 支持两种SpEL表达式写法：
      * 1. #paramName.fieldName - 标准对象属性访问
@@ -264,31 +248,59 @@ public class BloomFilterAspect {
      * @return 配置好的 EvaluationContext
      */
     private EvaluationContext getOrCreateEvaluationContext(Method method, Object[] args) {
-        EvaluationContextHolder holder = evaluationContextThreadLocal.get();
-        StandardEvaluationContext context = holder.context;
+        StandardEvaluationContext context = new StandardEvaluationContext();
+        Set<String> occupiedVariableNames = new HashSet<>();
 
-        // 清空之前的变量设置
-        clearEvaluationContextVariables(holder);
-
-        // 重新设置变量
-        bindVariable(holder, "args", args);
+        // 保留变量：#args 始终指向参数数组，禁止被覆盖
+        bindVariable(context, occupiedVariableNames, ARGUMENT_ARRAY_VARIABLE, args);
 
         String[] paramNames = parameterNameDiscoverer.getParameterNames(method);
-        if (paramNames != null) {
+        if (paramNames != null && args != null) {
             for (int i = 0; i < paramNames.length; i++) {
                 if (i < args.length) {
-                    bindVariable(holder, paramNames[i], args[i]);
+                    bindNamedParameter(context, occupiedVariableNames, paramNames[i], args[i], i);
                 }
             }
         }
+        bindIndexedParameters(context, occupiedVariableNames, args);
 
         // 智能解析：当只有一个DTO参数时，将其属性也绑定到上下文
         // 这样既支持 #dto.userId，也支持 #userId
         if (args != null && args.length == 1 && args[0] != null) {
-            bindDtoProperties(holder, args[0]);
+            bindDtoProperties(context, args[0], occupiedVariableNames);
         }
 
         return context;
+    }
+
+    private void bindNamedParameter(StandardEvaluationContext context,
+                                    Set<String> occupiedVariableNames,
+                                    String parameterName,
+                                    Object parameterValue,
+                                    int parameterIndex) {
+        if (parameterName == null || parameterName.isBlank()) {
+            return;
+        }
+        if (RESERVED_VARIABLE_NAMES.contains(parameterName)) {
+            log.debug("[cascade-bloom] Parameter name [{}] conflicts with reserved SpEL variable; " +
+                            "skip parameter-name binding. use #p{} / #a{} / #args[{}] instead.",
+                    parameterName, parameterIndex, parameterIndex, parameterIndex);
+            return;
+        }
+        bindVariableIfAbsent(context, occupiedVariableNames, parameterName, parameterValue);
+    }
+
+    private static void bindIndexedParameters(StandardEvaluationContext context,
+                                              Set<String> occupiedVariableNames,
+                                              Object[] args) {
+        if (args == null) {
+            return;
+        }
+        for (int i = 0; i < args.length; i++) {
+            Object arg = args[i];
+            bindVariableIfAbsent(context, occupiedVariableNames, "p" + i, arg);
+            bindVariableIfAbsent(context, occupiedVariableNames, "a" + i, arg);
+        }
     }
 
     /**
@@ -299,10 +311,13 @@ public class BloomFilterAspect {
      * <p>
      * 只绑定简单类型的属性（基本类型、String、Number等），忽略复杂对象和集合。
      *
-     * @param holder EvaluationContext 持有者
-     * @param dto    DTO对象
+     * @param context               EvaluationContext
+     * @param dto                   DTO对象
+     * @param occupiedVariableNames 已占用变量名集合（用于避免覆盖）
      */
-    private void bindDtoProperties(EvaluationContextHolder holder, Object dto) {
+    private void bindDtoProperties(StandardEvaluationContext context,
+                                   Object dto,
+                                   Set<String> occupiedVariableNames) {
         if (shouldSkipDtoBinding(dto)) {
             log.debug("[cascade-bloom] Skipping DTO property binding: dto={}", dto.getClass().getSimpleName());
             return;
@@ -312,7 +327,7 @@ public class BloomFilterAspect {
         Method[] methods = dto.getClass().getMethods();
         int boundCount = 0;
         for (Method method : methods) {
-            if (tryBindDtoProperty(holder, dto, method)) {
+            if (tryBindDtoProperty(context, dto, method, occupiedVariableNames)) {
                 boundCount++;
             }
         }
@@ -332,12 +347,16 @@ public class BloomFilterAspect {
     /**
      * 尝试绑定DTO的单个属性到SpEL上下文
      *
-     * @param holder EvaluationContext 持有者
-     * @param dto    DTO对象
-     * @param method 方法对象
+     * @param context               EvaluationContext
+     * @param dto                   DTO对象
+     * @param method                方法对象
+     * @param occupiedVariableNames 已占用变量名集合（用于避免覆盖）
      * @return 如果成功绑定返回true，否则返回false
      */
-    private boolean tryBindDtoProperty(EvaluationContextHolder holder, Object dto, Method method) {
+    private boolean tryBindDtoProperty(StandardEvaluationContext context,
+                                       Object dto,
+                                       Method method,
+                                       Set<String> occupiedVariableNames) {
         if (!isBindableGetter(method)) {
             return false;
         }
@@ -346,10 +365,14 @@ public class BloomFilterAspect {
         if (propertyName == null || propertyName.isEmpty()) {
             return false;
         }
+        if (occupiedVariableNames.contains(propertyName)) {
+            log.debug("[cascade-bloom] Skip DTO property [{}] binding: variable already occupied", propertyName);
+            return false;
+        }
 
         Object value = invokeGetterSafely(dto, method);
         if (shouldBindProperty(value)) {
-            bindVariable(holder, propertyName, value);
+            bindVariable(context, occupiedVariableNames, propertyName, value);
             log.debug("[cascade-bloom] Bound DTO property: {}={}", propertyName, value);
             return true;
         }
@@ -434,7 +457,8 @@ public class BloomFilterAspect {
     /**
      * 从getter方法名中提取属性名
      * <p>
-     * 提取规则：
+     * 使用 JavaBean 规范 {@link Introspector#decapitalize(String)} 提取属性名。
+     * 提取示例：
      * - getUserId -> userId
      * - isActive -> active
      * - getURL -> URL
@@ -444,22 +468,11 @@ public class BloomFilterAspect {
      */
     private static String extractPropertyName(String methodName) {
         if (methodName.startsWith("get") && methodName.length() > 3) {
-            String propertyName = methodName.substring(3);
-            // 如果首字母是大写，转换为小写
-            if (propertyName.length() > 1 && Character.isUpperCase(propertyName.charAt(1))) {
-                return propertyName;
-            }
-            // 单字符大写情况：getX -> x
-            return Character.toLowerCase(propertyName.charAt(0)) + propertyName.substring(1);
+            return Introspector.decapitalize(methodName.substring(3));
         }
 
         if (methodName.startsWith("is") && methodName.length() > 2) {
-            String propertyName = methodName.substring(2);
-            // 布尔属性的命名规则与普通属性相同
-            if (propertyName.length() > 1 && Character.isUpperCase(propertyName.charAt(1))) {
-                return propertyName;
-            }
-            return Character.toLowerCase(propertyName.charAt(0)) + propertyName.substring(1);
+            return Introspector.decapitalize(methodName.substring(2));
         }
 
         return null;
@@ -525,37 +538,32 @@ public class BloomFilterAspect {
         return Enum.class.isAssignableFrom(clazz);
     }
 
-
     /**
-     * 清空 EvaluationContext 中已绑定的变量
+     * 绑定变量到 EvaluationContext
      * <p>
-     * 将已绑定变量的值设置为 null，并清空变量名称集合，
-     * 避免 ThreadLocal 复用时产生变量污染，确保每次使用时状态干净。
+     * 将变量名和值设置到 SpEL 上下文中。
      *
-     * @param holder EvaluationContext 持有者，包含上下文对象和已绑定变量名称集合
+     * @param context               EvaluationContext
+     * @param occupiedVariableNames 已占用变量名集合（用于避免覆盖）
+     * @param variableName          变量名称，用于在 SpEL 表达式中引用
+     * @param value                 变量值，可以是任意对象
      */
-    private static void clearEvaluationContextVariables(EvaluationContextHolder holder) {
-        // 将所有已绑定变量置为 null
-        for (String variableName : holder.boundVariableNames) {
-            holder.context.setVariable(variableName, null);
-        }
-        // 清空变量名称记录
-        holder.boundVariableNames.clear();
+    private static void bindVariable(StandardEvaluationContext context,
+                                     Set<String> occupiedVariableNames,
+                                     String variableName,
+                                     Object value) {
+        context.setVariable(variableName, value);
+        occupiedVariableNames.add(variableName);
     }
 
-    /**
-     * 绑定变量到 EvaluationContext 并记录变量名
-     * <p>
-     * 将变量名和值设置到 SpEL 上下文中，同时记录变量名到集合中，
-     * 以便后续清空时能够追踪所有已绑定的变量。
-     *
-     * @param holder       EvaluationContext 持有者，包含上下文对象和已绑定变量名称集合
-     * @param variableName 变量名称，用于在 SpEL 表达式中引用
-     * @param value        变量值，可以是任意对象
-     */
-    private static void bindVariable(EvaluationContextHolder holder, String variableName, Object value) {
-        holder.context.setVariable(variableName, value);
-        holder.boundVariableNames.add(variableName);
+    private static void bindVariableIfAbsent(StandardEvaluationContext context,
+                                             Set<String> occupiedVariableNames,
+                                             String variableName,
+                                             Object value) {
+        if (occupiedVariableNames.contains(variableName)) {
+            return;
+        }
+        bindVariable(context, occupiedVariableNames, variableName, value);
     }
 
     /**
@@ -649,37 +657,21 @@ public class BloomFilterAspect {
      * @return 编译后的 Expression 对象
      */
     private Expression getOrParseExpression(String expressionString) {
-        synchronized (cacheLock) {
-            Expression expression = expressionCache.get(expressionString);
-            if (expression != null) {
-                cacheHits.incrementAndGet();
-                return expression;
-            }
-
-            cacheMisses.incrementAndGet();
-            ensureCapacityBeforeCreate();
-
-            Expression newExpression = expressionParser.parseExpression(expressionString);
-            expressionCache.put(expressionString, newExpression);
-            return newExpression;
+        Expression expression = expressionCache.get(expressionString);
+        if (expression != null) {
+            cacheHits.incrementAndGet();
+            return expression;
         }
+
+        cacheMisses.incrementAndGet();
+        Expression parsedExpression = expressionParser.parseExpression(expressionString);
+        return expressionCache.putIfAbsent(expressionString, parsedExpression);
     }
 
-    /**
-     * 确保创建新表达式前有足够容量
-     * <p>
-     * 如果缓存已满，淘汰最久未使用的表达式。
-     */
-    private void ensureCapacityBeforeCreate() {
-        int maxSize = properties.getMaxExpressionCacheSize();
-        if (expressionCache.size() >= maxSize) {
-            Map.Entry<String, Expression> eldest = expressionCache.entrySet().iterator().next();
-            String evictedExpression = eldest.getKey();
-            expressionCache.remove(evictedExpression);
-            evictions.incrementAndGet();
-            log.info("[cascade-bloom] Expression cache full (size={}), evicting oldest expression [{}], maxExpressionCacheSize={}",
-                    expressionCache.size(), evictedExpression, maxSize);
-        }
+    private void onExpressionEvicted(String expression, int sizeAfterPut, int maxSize) {
+        evictions.incrementAndGet();
+        log.info("[cascade-bloom] Expression cache full (size={}), evicting oldest expression [{}], maxExpressionCacheSize={}",
+                sizeAfterPut, expression, maxSize);
     }
 
     /**
@@ -688,24 +680,12 @@ public class BloomFilterAspect {
      * 主要用于测试或特殊场景，生产环境一般不需要调用。
      */
     public void clearExpressionCache() {
-        synchronized (cacheLock) {
-            int previousSize = expressionCache.size();
-            expressionCache.clear();
-            cacheHits.set(0);
-            cacheMisses.set(0);
-            evictions.set(0);
-            log.info("[cascade-bloom] SpEL expression cache cleared. previousSize={}", previousSize);
-        }
-    }
-
-    /**
-     * 清空 ThreadLocal 缓存
-     * <p>
-     * 防止内存泄漏，建议在应用关闭或不再使用时调用。
-     */
-    public void clearThreadLocalCache() {
-        evaluationContextThreadLocal.remove();
-        log.info("[cascade-bloom] ThreadLocal EvaluationContext cache cleared");
+        int previousSize = expressionCache.size();
+        expressionCache.clear();
+        cacheHits.set(0);
+        cacheMisses.set(0);
+        evictions.set(0);
+        log.info("[cascade-bloom] SpEL expression cache cleared. previousSize={}", previousSize);
     }
 
     /**
@@ -714,9 +694,7 @@ public class BloomFilterAspect {
      * @return 缓存中的表达式数量
      */
     public int getExpressionCacheSize() {
-        synchronized (cacheLock) {
-            return expressionCache.size();
-        }
+        return expressionCache.size();
     }
 
     /**
@@ -761,17 +739,64 @@ public class BloomFilterAspect {
         return (double) hits / total;
     }
 
-    /**
-     * EvaluationContext 持有者
-     * <p>
-     * 封装 StandardEvaluationContext 实例和已绑定变量名称集合，
-     * 用于 ThreadLocal 缓存，避免重复创建 EvaluationContext 对象。
-     * boundVariableNames 用于追踪已绑定的变量，便于后续清空操作。
-     */
-    private static final class EvaluationContextHolder {
-        // SpEL 表达式求值上下文
-        private final StandardEvaluationContext context = new StandardEvaluationContext();
-        // 记录已绑定的变量名称，用于清空时追踪
-        private final Set<String> boundVariableNames = new HashSet<>();
+    @FunctionalInterface
+    private interface ExpressionEvictionListener {
+        void onEvicted(String expression, int sizeAfterPut, int maxSize);
     }
+
+    private static final class ExpressionLruCache {
+        private final Object lock = new Object();
+        private final int maxSize;
+        private final ExpressionEvictionListener evictionListener;
+        private final LinkedHashMap<String, Expression> cache;
+
+        private ExpressionLruCache(int maxSize, ExpressionEvictionListener evictionListener) {
+            this.maxSize = maxSize;
+            this.evictionListener = evictionListener;
+            this.cache = new LinkedHashMap<>(INITIAL_CAPACITY, LOAD_FACTOR, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Expression> eldest) {
+                    boolean shouldRemove = size() > ExpressionLruCache.this.maxSize;
+                    if (shouldRemove) {
+                        ExpressionLruCache.this.evictionListener.onEvicted(
+                                eldest.getKey(),
+                                size(),
+                                ExpressionLruCache.this.maxSize
+                        );
+                    }
+                    return shouldRemove;
+                }
+            };
+        }
+
+        private Expression get(String expressionString) {
+            synchronized (lock) {
+                return cache.get(expressionString);
+            }
+        }
+
+        private Expression putIfAbsent(String expressionString, Expression expression) {
+            synchronized (lock) {
+                Expression existing = cache.get(expressionString);
+                if (existing != null) {
+                    return existing;
+                }
+                cache.put(expressionString, expression);
+                return expression;
+            }
+        }
+
+        private int size() {
+            synchronized (lock) {
+                return cache.size();
+            }
+        }
+
+        private void clear() {
+            synchronized (lock) {
+                cache.clear();
+            }
+        }
+    }
+
 }

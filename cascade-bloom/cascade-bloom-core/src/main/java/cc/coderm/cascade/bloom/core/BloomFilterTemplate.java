@@ -44,6 +44,9 @@ public interface BloomFilterTemplate {
      *   <li>如果<strong>可能存在</strong>，执行 {@code loader} 加载数据并返回</li>
      *   <li>如果 loader 返回非 null 数据，自动写回布隆过滤器</li>
      * </ol>
+     * <p>
+     * <strong>异常语义</strong>：若 {@code loader} 抛出异常，异常会直接向上抛出（不吞异常）。
+     * 出现异常时不会执行写回逻辑。
      *
      * <p>使用示例：
      * <pre>{@code
@@ -73,6 +76,9 @@ public interface BloomFilterTemplate {
      *   <li>若 loader 返回非 null 数据，自动写回布隆过滤器并返回</li>
      *   <li>若 loader 返回 null，返回 {@code fallback}</li>
      * </ol>
+     * <p>
+     * <strong>异常语义</strong>：若 {@code loader} 抛出异常，异常会直接向上抛出（不吞异常）。
+     * 出现异常时不会执行写回逻辑。
      * <p>
      * <strong>适用场景</strong>：
      * <ul>

@@ -5,8 +5,8 @@ import cc.coderm.cascade.bloom.config.BloomFilterProperties;
 import cc.coderm.cascade.bloom.core.BloomFilterManager;
 import cc.coderm.cascade.bloom.core.CascadeBloomFilter;
 import cc.coderm.cascade.bloom.exception.BloomFilterException;
-import cc.coderm.cascade.bloom.exception.BloomFilterInitException;
 import cc.coderm.cascade.bloom.exception.BloomFilterNotFoundException;
+import cc.coderm.cascade.bloom.util.BloomFilterArgumentValidator;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RBloomFilter;
 import org.redisson.api.RedissonClient;
@@ -15,6 +15,10 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -58,6 +62,14 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
     private final AtomicLong cacheHits = new AtomicLong(0);
     private final AtomicLong cacheMisses = new AtomicLong(0);
     private final AtomicLong evictions = new AtomicLong(0);
+    /**
+     * 正在创建中的过滤器（按 name 去重），用于避免同 key 的重复 Redis I/O。
+     */
+    private final ConcurrentHashMap<String, InFlightCreation> inFlightCreations = new ConcurrentHashMap<>();
+    /**
+     * 每个过滤器的创建世代（epoch），用于 remove/get 并发时的结果失效控制。
+     */
+    private final ConcurrentHashMap<String, AtomicLong> creationEpochs = new ConcurrentHashMap<>();
 
     private static final int INITIAL_CAPACITY = 16;
     private static final float LOAD_FACTOR = 0.75f;
@@ -72,8 +84,9 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
 
     @Override
     public <T> CascadeBloomFilter<T> getFilter(String name) {
+        String normalizedName = BloomFilterArgumentValidator.normalizeFilterName(name);
         return getOrCreate(
-                name,
+                normalizedName,
                 properties.getDefaultExpectedInsertions(),
                 properties.getDefaultFalseProbability()
         );
@@ -81,9 +94,10 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
 
     @Override
     public <T> CascadeBloomFilter<T> getOrCreate(String name, long expectedInsertions, double falseProbability) {
-        validateParams(name, expectedInsertions, falseProbability);
+        String normalizedName = BloomFilterArgumentValidator.normalizeFilterName(name);
+        BloomFilterArgumentValidator.validateCreateParams(expectedInsertions, falseProbability);
 
-        CascadeBloomFilter<?> filter = getFromCacheOrCompute(name,
+        CascadeBloomFilter<?> filter = getFromCacheOrCompute(normalizedName,
                 filterName -> createNewFilter(filterName, expectedInsertions, falseProbability)
         );
 
@@ -92,27 +106,31 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
 
     @Override
     public boolean exists(String name) {
-        validateName(name);
-
-        boolean redisExists = redissonClient.<String>getBloomFilter(buildRedisKey(name)).isExists();
-        if (!redisExists) {
-            evictIfCached(name);
-            return false;
+        String normalizedName = BloomFilterArgumentValidator.normalizeFilterName(name);
+        CascadeBloomFilter<?> cachedFilter = getCachedFilter(normalizedName);
+        if (cachedFilter != null) {
+            return true;
         }
 
-        touchIfCached(name);
+        boolean redisExists = redissonClient.<String>getBloomFilter(buildRedisKey(normalizedName)).isExists();
+        if (!redisExists) {
+            evictIfCached(normalizedName);
+            return false;
+        }
         return true;
     }
 
     @Override
     public void remove(String name) {
-        validateName(name);
-        CascadeBloomFilter<?> cachedFilter = getCachedFilter(name);
+        String normalizedName = BloomFilterArgumentValidator.normalizeFilterName(name);
+        long invalidatedEpoch = incrementEpoch(normalizedName);
+        invalidateInFlightCreation(normalizedName, invalidatedEpoch);
+        CascadeBloomFilter<?> cachedFilter = getCachedFilter(normalizedName);
 
         if (cachedFilter != null) {
-            removeCachedFilter(name, cachedFilter);
+            removeCachedFilter(normalizedName, cachedFilter);
         } else {
-            removeFromRedisDirectly(name);
+            removeFromRedisDirectly(normalizedName);
         }
     }
 
@@ -211,21 +229,118 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
      * @param computer 计算函数
      * @return 缓存条目
      */
-    private CascadeBloomFilter<?> getFromCacheOrCompute(String name, java.util.function.Function<String, CascadeBloomFilter<?>> computer) {
-        synchronized (cacheLock) {
-            CascadeBloomFilter<?> cached = filterCache.get(name);
+    private CascadeBloomFilter<?> getFromCacheOrCompute(String name, Function<String, CascadeBloomFilter<?>> computer) {
+        boolean missRecorded = false;
+        while (true) {
+            long observedEpoch = currentEpoch(name);
+
+            CascadeBloomFilter<?> cached = getCachedFilter(name);
             if (cached != null) {
-                cacheHits.incrementAndGet();
+                if (!missRecorded) {
+                    cacheHits.incrementAndGet();
+                }
                 return cached;
             }
+            if (!missRecorded) {
+                cacheMisses.incrementAndGet();
+                missRecorded = true;
+            }
 
-            cacheMisses.incrementAndGet();
-            ensureCapacityBeforeCreate();
+            InFlightCreation inFlight = inFlightCreations.get(name);
+            if (inFlight != null) {
+                if (inFlight.epoch != observedEpoch) {
+                    inFlightCreations.remove(name, inFlight);
+                    continue;
+                }
+                try {
+                    return awaitInFlightCreation(name, inFlight);
+                } catch (StaleCreationException ignored) {
+                    continue;
+                }
+            }
 
-            CascadeBloomFilter<?> newFilter = computer.apply(name);
-            filterCache.put(name, newFilter);
-            return newFilter;
+            InFlightCreation candidate = new InFlightCreation(observedEpoch);
+            InFlightCreation existing = inFlightCreations.putIfAbsent(name, candidate);
+            if (existing != null) {
+                continue;
+            }
+            try {
+                return createAndPublishFilter(name, observedEpoch, computer, candidate);
+            } catch (StaleCreationException ignored) {
+                continue;
+            }
         }
+    }
+
+    private CascadeBloomFilter<?> createAndPublishFilter(String name,
+                                                         long observedEpoch,
+                                                         Function<String, CascadeBloomFilter<?>> computer,
+                                                         InFlightCreation creation) {
+        try {
+            // Redis I/O 在线程外层执行，不占用 cacheLock。
+            CascadeBloomFilter<?> created = computer.apply(name);
+            CascadeBloomFilter<?> published = publishToCache(name, observedEpoch, created);
+            creation.future.complete(published);
+            return published;
+        } catch (Throwable ex) {
+            creation.future.completeExceptionally(ex);
+            if (ex instanceof StaleCreationException staleCreationException) {
+                throw staleCreationException;
+            }
+            if (ex instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            if (ex instanceof Error error) {
+                throw error;
+            }
+            throw new BloomFilterException("Failed to create bloom filter [" + name + "]", ex);
+        } finally {
+            inFlightCreations.remove(name, creation);
+        }
+    }
+
+    private CascadeBloomFilter<?> awaitInFlightCreation(String name,
+                                                        InFlightCreation creation) {
+        try {
+            return creation.future.join();
+        } catch (CompletionException ex) {
+            Throwable cause = ex.getCause();
+            if (cause instanceof StaleCreationException staleCreationException) {
+                throw staleCreationException;
+            }
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            throw new BloomFilterException("Failed to create bloom filter [" + name + "]", cause);
+        }
+    }
+
+    private CascadeBloomFilter<?> publishToCache(String name,
+                                                 long observedEpoch,
+                                                 CascadeBloomFilter<?> created) {
+        CascadeBloomFilter<?> cached;
+        boolean stale;
+        synchronized (cacheLock) {
+            long latestEpoch = currentEpoch(name);
+            stale = latestEpoch != observedEpoch;
+            cached = filterCache.get(name);
+            if (!stale && cached == null) {
+                ensureCapacityBeforeCreate();
+                filterCache.put(name, created);
+                cached = created;
+            }
+        }
+
+        if (!stale) {
+            return cached;
+        }
+        if (cached != null) {
+            return cached;
+        }
+        throw StaleCreationException.invalidated(name);
     }
 
     /**
@@ -271,10 +386,20 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
         }
     }
 
-    private void touchIfCached(String name) {
-        synchronized (cacheLock) {
-            filterCache.get(name);
+    private void invalidateInFlightCreation(String name, long invalidatedEpoch) {
+        InFlightCreation inFlight = inFlightCreations.get(name);
+        if (inFlight != null && inFlight.epoch < invalidatedEpoch) {
+            inFlightCreations.remove(name, inFlight);
         }
+    }
+
+    private long currentEpoch(String name) {
+        AtomicLong epoch = creationEpochs.get(name);
+        return epoch == null ? 0L : epoch.get();
+    }
+
+    private long incrementEpoch(String name) {
+        return creationEpochs.computeIfAbsent(name, key -> new AtomicLong(0)).incrementAndGet();
     }
 
     /**
@@ -310,7 +435,7 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
             log.info("[cascade-bloom] BloomFilter [{}] already exists in Redis, reusing. key={}", name, redisKey);
         }
 
-        return new RedissonBloomFilter<>(stringBloomFilter, name, effectiveExpectedInsertions, effectiveFalseProbability);
+        return new RedissonBloomFilter<>(stringBloomFilter, redissonClient, name, effectiveExpectedInsertions, effectiveFalseProbability);
     }
 
     /**
@@ -356,24 +481,22 @@ public class RedissonBloomFilterManager implements BloomFilterManager {
         return properties.getKeyPrefix() + name;
     }
 
-    /**
-     * 验证参数
-     */
-    private static void validateParams(String name, long expectedInsertions, double falseProbability) {
-        validateName(name);
-        if (expectedInsertions <= 0) {
-            throw new BloomFilterInitException(
-                    "expectedInsertions must be positive, but got: " + expectedInsertions);
-        }
-        if (falseProbability <= 0 || falseProbability >= 1) {
-            throw new BloomFilterInitException(
-                    "falseProbability must be in range (0, 1), but got: " + falseProbability);
+    private static final class InFlightCreation {
+        private final long epoch;
+        private final CompletableFuture<CascadeBloomFilter<?>> future = new CompletableFuture<>();
+
+        private InFlightCreation(long epoch) {
+            this.epoch = epoch;
         }
     }
 
-    private static void validateName(String name) {
-        if (name == null || name.trim().isEmpty()) {
-            throw new BloomFilterInitException("BloomFilter name must not be blank");
+    private static final class StaleCreationException extends RuntimeException {
+        private StaleCreationException(String name) {
+            super("BloomFilter creation invalidated for [" + name + "]", null, false, false);
+        }
+
+        private static StaleCreationException invalidated(String name) {
+            return new StaleCreationException(name);
         }
     }
 }

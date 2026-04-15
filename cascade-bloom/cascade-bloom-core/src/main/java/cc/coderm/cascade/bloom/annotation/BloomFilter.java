@@ -46,7 +46,8 @@ public @interface BloomFilter {
      * 从方法参数提取过滤 key 的 SpEL 表达式
      * <p>
      * 默认取第一个方法参数的 {@code toString()}：{@code "#args[0]"}
-     * <p>
+     * - "#id"        : 使用参数id作为键
+     * - "#user.id"   : 使用参数user的id属性作为键
      * 支持使用参数名（需开启 {@code -parameters} 编译选项）：{@code "#userId"}
      */
     String key() default "#args[0]";

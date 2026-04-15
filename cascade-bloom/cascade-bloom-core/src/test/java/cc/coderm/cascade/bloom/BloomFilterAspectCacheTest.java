@@ -17,7 +17,12 @@ import org.springframework.context.annotation.EnableAspectJAutoProxy;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,7 +44,6 @@ class BloomFilterAspectCacheTest {
     void tearDown() {
         if (aspect != null) {
             aspect.clearExpressionCache();
-            aspect.clearThreadLocalCache();
         }
         if (context != null) {
             context.close();
@@ -107,15 +111,44 @@ class BloomFilterAspectCacheTest {
     }
 
     @Test
-    @DisplayName("clearThreadLocalCache 后再次解析表达式仍可命中缓存")
-    void shouldKeepExpressionCacheEffectiveAfterClearingThreadLocal() {
-        assertThat(service.byId("u-1")).isNull(); // miss
-        aspect.clearThreadLocalCache();
-        assertThat(service.byId("u-2")).isNull(); // hit
+    @DisplayName("并发解析同一 SpEL 表达式应线程安全且缓存大小稳定")
+    void shouldBeThreadSafeUnderConcurrentExpressionReads() throws InterruptedException {
+        int threadCount = 8;
+        int callsPerThread = 30;
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch start = new CountDownLatch(1);
+        CompletableFuture<?>[] futures = new CompletableFuture<?>[threadCount];
 
-        assertThat(aspect.getExpressionCacheSize()).isEqualTo(1);
-        assertThat(aspect.getCacheMisses()).isEqualTo(1);
-        assertThat(aspect.getCacheHits()).isEqualTo(1);
+        try {
+            for (int i = 0; i < threadCount; i++) {
+                final int worker = i;
+                futures[i] = CompletableFuture.runAsync(() -> {
+                    awaitStartSignal(start);
+                    for (int j = 0; j < callsPerThread; j++) {
+                        assertThat(service.byId("u-" + worker + "-" + j)).isNull();
+                    }
+                }, executor);
+            }
+
+            start.countDown();
+            CompletableFuture.allOf(futures).join();
+
+            assertThat(aspect.getExpressionCacheSize()).isEqualTo(1);
+            assertThat(aspect.getCacheMisses()).isGreaterThanOrEqualTo(1);
+            assertThat(aspect.getCacheHits()).isGreaterThan(0);
+        } finally {
+            executor.shutdownNow();
+            executor.awaitTermination(1, TimeUnit.SECONDS);
+        }
+    }
+
+    private static void awaitStartSignal(CountDownLatch start) {
+        try {
+            start.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting start signal", e);
+        }
     }
 
     @Configuration

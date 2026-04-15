@@ -12,8 +12,17 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.redisson.api.BatchResult;
+import org.redisson.api.RBatch;
+import org.redisson.api.RBitSetAsync;
 import org.redisson.api.RBloomFilter;
 import org.redisson.api.RedissonClient;
+import org.redisson.client.codec.Codec;
+import org.redisson.client.protocol.Encoder;
+
+import io.netty.buffer.Unpooled;
+
+import java.nio.charset.StandardCharsets;
 
 import java.util.Arrays;
 import java.util.List;
@@ -40,12 +49,22 @@ class BloomFilterTest {
 
     @Mock
     private RBloomFilter<String> stringBloomFilter;
+    @Mock
+    private RBatch batch;
+    @Mock
+    private RBitSetAsync bitSet;
+    @Mock
+    private BatchResult<?> batchResult;
+    @Mock
+    private Codec codec;
+    @Mock
+    private Encoder valueEncoder;
 
     private RedissonBloomFilterManager manager;
     private BloomFilterProperties properties;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         properties = new BloomFilterProperties();
         properties.setKeyPrefix("test:bloom:");
         properties.setDefaultExpectedInsertions(100_000L);
@@ -54,7 +73,17 @@ class BloomFilterTest {
         manager = new RedissonBloomFilterManager(redissonClient, properties);
 
         when(redissonClient.<String>getBloomFilter(anyString())).thenReturn((RBloomFilter) stringBloomFilter);
+        when(redissonClient.createBatch(any())).thenReturn(batch);
+        when(batch.getBitSet(anyString())).thenReturn(bitSet);
+        when(batch.execute()).thenReturn((BatchResult) batchResult);
         when(stringBloomFilter.tryInit(anyLong(), anyDouble())).thenReturn(true);
+        when(stringBloomFilter.getCodec()).thenReturn(codec);
+        when(stringBloomFilter.getName()).thenReturn("test:bloom:user-bloom");
+        when(codec.getValueEncoder()).thenReturn(valueEncoder);
+        doAnswer(invocation -> {
+            String value = (String) invocation.getArgument(0);
+            return Unpooled.copiedBuffer(value, StandardCharsets.UTF_8);
+        }).when(valueEncoder).encode(any());
     }
 
     // =========================================================================
@@ -120,6 +149,15 @@ class BloomFilterTest {
     }
 
     @Test
+    @DisplayName("getOrCreate - 过滤器名称应自动 trim 规范化")
+    void testGetOrCreateShouldNormalizeFilterName() {
+        CascadeBloomFilter<Object> filter = manager.getOrCreate("  normalized-bloom  ", 100_000L, 0.03);
+
+        assertThat(filter.getName()).isEqualTo("normalized-bloom");
+        verify(redissonClient).getBloomFilter("test:bloom:normalized-bloom");
+    }
+
+    @Test
     @DisplayName("listFilterNames - 返回已注册过滤器列表")
     void testListFilterNames() {
         manager.getFilter("filter-a");
@@ -130,11 +168,8 @@ class BloomFilterTest {
     }
 
     @Test
-    @DisplayName("exists - 本地缓存命中但 Redis 不存在时应返回 false 并清理本地缓存")
-    void testExistsShouldEvictStaleCacheWhenRedisMissing() {
-        manager.getFilter("user-bloom");
-        assertThat(manager.listFilterNames()).contains("user-bloom");
-
+    @DisplayName("exists - 本地缓存未命中且 Redis 不存在时应返回 false")
+    void testExistsShouldReturnFalseWhenCacheMissAndRedisMissing() {
         when(stringBloomFilter.isExists()).thenReturn(false);
 
         boolean exists = manager.exists("user-bloom");
@@ -145,15 +180,26 @@ class BloomFilterTest {
     }
 
     @Test
-    @DisplayName("exists - 本地缓存命中且 Redis 存在时应返回 true 并保留缓存")
-    void testExistsShouldReturnTrueWhenRedisExists() {
+    @DisplayName("exists - 本地缓存命中时应直接返回 true 且不访问 Redis")
+    void testExistsShouldShortCircuitWhenCacheHit() {
         manager.getFilter("user-bloom");
-        when(stringBloomFilter.isExists()).thenReturn(true);
+        when(stringBloomFilter.isExists()).thenReturn(false);
 
         boolean exists = manager.exists("user-bloom");
 
         assertThat(exists).isTrue();
         assertThat(manager.listFilterNames()).contains("user-bloom");
+        verify(stringBloomFilter, never()).isExists();
+    }
+
+    @Test
+    @DisplayName("exists - 本地缓存未命中且 Redis 存在时应返回 true")
+    void testExistsShouldReturnTrueWhenCacheMissAndRedisExists() {
+        when(stringBloomFilter.isExists()).thenReturn(true);
+
+        boolean exists = manager.exists("user-bloom");
+
+        assertThat(exists).isTrue();
         verify(stringBloomFilter).isExists();
     }
 
@@ -220,17 +266,17 @@ class BloomFilterTest {
     }
 
     @Test
-    @DisplayName("addAll - 逐个添加元素")
+    @DisplayName("addAll - 使用 pipeline 批量写入")
     void testAddAll() {
         List<String> values = Arrays.asList("id:1", "id:2", "id:3");
-        when(stringBloomFilter.add(anyString())).thenReturn(true);
 
         CascadeBloomFilter<Object> filter = manager.getFilter("user-bloom");
         filter.addAll((List) values);
 
-        verify(stringBloomFilter).add("id:1");
-        verify(stringBloomFilter).add("id:2");
-        verify(stringBloomFilter).add("id:3");
+        verify(redissonClient).createBatch(any());
+        verify(batch).execute();
+        verify(bitSet, atLeastOnce()).setAsync(anyLong());
+        verify(stringBloomFilter, never()).add(anyString());
     }
 
     @Test

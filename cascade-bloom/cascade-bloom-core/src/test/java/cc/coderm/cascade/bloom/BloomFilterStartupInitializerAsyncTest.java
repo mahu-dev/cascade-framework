@@ -14,11 +14,18 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class BloomFilterStartupInitializerAsyncTest {
+
+    private static final Executor DAEMON_ASYNC_EXECUTOR = command -> {
+        Thread thread = new Thread(command, "bloom-init-async-test");
+        thread.setDaemon(true);
+        thread.start();
+    };
 
     @Test
     @DisplayName("runInitializers 应异步提交，不阻塞 ApplicationReady 线程")
@@ -52,7 +59,12 @@ class BloomFilterStartupInitializerAsyncTest {
         };
 
         BloomFilterStartupInitializer startupInitializer =
-                new BloomFilterStartupInitializer(manager, properties, List.of(slowInitializer));
+                new BloomFilterStartupInitializer(
+                        manager,
+                        properties,
+                        List.of(slowInitializer),
+                        DAEMON_ASYNC_EXECUTOR
+                );
 
         long startNanos = System.nanoTime();
         startupInitializer.onApplicationEvent(null);
@@ -62,6 +74,45 @@ class BloomFilterStartupInitializerAsyncTest {
         assertThat(initializerStarted.await(200, TimeUnit.MILLISECONDS)).isTrue();
         assertThat(initializerFinished.await(2, TimeUnit.SECONDS)).isTrue();
         assertThat(manager.getFilter("slow-bloom").mightContain("warmup-done")).isTrue();
+    }
+
+    @Test
+    @DisplayName("waitForInitialization=false 且初始化失败时，不应阻塞或抛出启动异常")
+    void shouldNotFailStartupWhenAsyncInitializerThrows() throws Exception {
+        BloomFilterProperties properties = new BloomFilterProperties();
+        properties.setEnabled(true);
+        properties.setWaitForInitialization(false);
+
+        InMemoryBloomFilterManager manager = new InMemoryBloomFilterManager();
+        CountDownLatch started = new CountDownLatch(1);
+
+        BloomFilterInitializer failingInitializer = new BloomFilterInitializer() {
+            @Override
+            public String filterName() {
+                return "broken-bloom";
+            }
+
+            @Override
+            public void initialize(CascadeBloomFilter<String> filter) {
+                started.countDown();
+                throw new IllegalStateException("async init failed");
+            }
+        };
+
+        BloomFilterStartupInitializer startupInitializer =
+                new BloomFilterStartupInitializer(
+                        manager,
+                        properties,
+                        List.of(failingInitializer),
+                        DAEMON_ASYNC_EXECUTOR
+                );
+
+        long startNanos = System.nanoTime();
+        startupInitializer.onApplicationEvent(null);
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+
+        assertThat(elapsedMillis).isLessThan(300);
+        assertThat(started.await(500, TimeUnit.MILLISECONDS)).isTrue();
     }
 
     private static final class InMemoryBloomFilterManager implements BloomFilterManager {

@@ -1,10 +1,20 @@
 package cc.coderm.cascade.bloom.impl;
 
 import cc.coderm.cascade.bloom.core.CascadeBloomFilter;
+import cc.coderm.cascade.bloom.exception.BloomFilterException;
 import cc.coderm.cascade.bloom.util.BloomFilterKeyUtil;
+import io.netty.buffer.ByteBuf;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.BatchOptions;
+import org.redisson.api.RBatch;
+import org.redisson.api.RBitSetAsync;
 import org.redisson.api.RBloomFilter;
+import org.redisson.api.RedissonClient;
+import org.redisson.misc.Hash;
 
+import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -33,16 +43,23 @@ import java.util.Objects;
 @Slf4j
 public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
 
+    private static final double LOG_OF_TWO = Math.log(2D);
+    private static final int MAX_PIPELINE_BIT_OPERATIONS = 50_000;
     private final RBloomFilter<String> stringBloomFilter;
+    private final RedissonClient redissonClient;
+    private final Method nativeBulkAddMethod;
     private final String name;
     private final long expectedInsertions;
     private final double falseProbability;
 
     public RedissonBloomFilter(RBloomFilter<String> stringBloomFilter,
+                               RedissonClient redissonClient,
                                String name,
                                long expectedInsertions,
                                double falseProbability) {
-        this.stringBloomFilter = stringBloomFilter;
+        this.stringBloomFilter = Objects.requireNonNull(stringBloomFilter, "stringBloomFilter must not be null");
+        this.redissonClient = Objects.requireNonNull(redissonClient, "redissonClient must not be null");
+        this.nativeBulkAddMethod = resolveNativeBulkAddMethod(stringBloomFilter.getClass());
         this.name = name;
         this.expectedInsertions = expectedInsertions;
         this.falseProbability = falseProbability;
@@ -71,7 +88,7 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
     /**
      * 批量添加元素到布隆过滤器
      * <p>
-     * 兼容旧版 Redisson API，逐个写入并统计首次添加数量。
+     * 基于 Redisson pipeline 批量写入，避免每个元素一次 Redis 往返。
      *
      * @param values 待添加的元素集合，不能为 null
      * @throws NullPointerException 当 values 为 null 时抛出
@@ -88,15 +105,32 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
             normalizedValues.add(BloomFilterKeyUtil.toKey(value));
         }
 
-        long firstAddCount = 0L;
-        for (String normalizedValue : normalizedValues) {
-            if (stringBloomFilter.add(normalizedValue)) {
-                firstAddCount++;
-            }
+        if (normalizedValues.size() == 1) {
+            stringBloomFilter.add(normalizedValues.iterator().next());
+            return;
         }
+
+        Long firstAddCount = tryAddAllByNativeApi(normalizedValues);
+        if (firstAddCount != null) {
+            if (log.isDebugEnabled()) {
+                log.debug("[cascade-bloom] addAll to [{}] by native RBloomFilter.add(Collection): valueCount={}, firstAddCount={}",
+                        name, normalizedValues.size(), firstAddCount);
+            }
+            return;
+        }
+
+        long bitSize = calculateBitSize(expectedInsertions, falseProbability);
+        int hashIterations = calculateHashIterations(expectedInsertions, bitSize);
+        if (bitSize <= 0 || hashIterations <= 0) {
+            throw new BloomFilterException("Bloom filter config is invalid for addAll. name=" + name
+                    + ", expectedInsertions=" + expectedInsertions
+                    + ", falseProbability=" + falseProbability);
+        }
+
+        long bitOperations = addAllByPipeline(normalizedValues, bitSize, hashIterations);
         if (log.isDebugEnabled()) {
-            log.debug("[cascade-bloom] addAll to [{}]: count={}, firstAddCount={}",
-                    name, values.size(), firstAddCount);
+            log.debug("[cascade-bloom] addAll to [{}] by pipeline: valueCount={}, hashIterations={}, bitOperations={}",
+                    name, normalizedValues.size(), hashIterations, bitOperations);
         }
     }
 
@@ -149,5 +183,97 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
     public void delete() {
         log.warn("[cascade-bloom] deleting bloom filter [{}], all data will be lost!", name);
         stringBloomFilter.delete();
+    }
+
+    private long addAllByPipeline(Collection<String> normalizedValues, long bitSize, int hashIterations) {
+        RBatch batch = redissonClient.createBatch(BatchOptions.defaults().skipResult());
+        RBitSetAsync bitSet = batch.getBitSet(stringBloomFilter.getName());
+
+        long bitOperations = 0L;
+        int pendingOperations = 0;
+        for (String normalizedValue : normalizedValues) {
+            long[] hash = hash128(normalizedValue);
+            long hash1 = hash[0];
+            long hash2 = hash[1];
+            long nextHash = hash1;
+            for (int i = 0; i < hashIterations; i++) {
+                long index = (nextHash & Long.MAX_VALUE) % bitSize;
+                bitSet.setAsync(index);
+                nextHash = (i & 1) == 0 ? nextHash + hash2 : nextHash + hash1;
+                bitOperations++;
+                pendingOperations++;
+                if (pendingOperations >= MAX_PIPELINE_BIT_OPERATIONS) {
+                    batch.execute();
+                    batch = redissonClient.createBatch(BatchOptions.defaults().skipResult());
+                    bitSet = batch.getBitSet(stringBloomFilter.getName());
+                    pendingOperations = 0;
+                }
+            }
+        }
+        if (pendingOperations > 0) {
+            batch.execute();
+        }
+        return bitOperations;
+    }
+
+    private long[] hash128(String value) {
+        ByteBuf encoded = null;
+        try {
+            encoded = stringBloomFilter.getCodec().getValueEncoder().encode(value);
+            return Hash.hash128(encoded);
+        } catch (IOException e) {
+            throw new BloomFilterException("Failed to encode bloom filter element. name=" + name + ", value=" + value, e);
+        } finally {
+            if (encoded != null) {
+                encoded.release();
+            }
+        }
+    }
+
+    private static long calculateBitSize(long expectedInsertions, double falseProbability) {
+        double probability = falseProbability == 0D ? Double.MIN_VALUE : falseProbability;
+        return (long) (-expectedInsertions * Math.log(probability) / (LOG_OF_TWO * LOG_OF_TWO));
+    }
+
+    private static int calculateHashIterations(long expectedInsertions, long bitSize) {
+        return Math.max(1, (int) Math.round((double) bitSize / expectedInsertions * LOG_OF_TWO));
+    }
+
+    private static Method resolveNativeBulkAddMethod(Class<?> bloomFilterType) {
+        try {
+            Method method = bloomFilterType.getMethod("add", Collection.class);
+            Class<?> returnType = method.getReturnType();
+            if (returnType == long.class || returnType == Long.class) {
+                return method;
+            }
+            return null;
+        } catch (NoSuchMethodException ignored) {
+            return null;
+        }
+    }
+
+    private Long tryAddAllByNativeApi(Collection<String> normalizedValues) {
+        if (nativeBulkAddMethod == null) {
+            return null;
+        }
+        try {
+            Object result = nativeBulkAddMethod.invoke(stringBloomFilter, normalizedValues);
+            if (result instanceof Number number) {
+                return number.longValue();
+            }
+            throw new BloomFilterException("Unsupported return type for RBloomFilter.add(Collection): "
+                    + nativeBulkAddMethod.getReturnType().getName());
+        } catch (IllegalAccessException e) {
+            throw new BloomFilterException("Failed to access RBloomFilter.add(Collection) for [" + name + "]", e);
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            throw new BloomFilterException("Failed to invoke RBloomFilter.add(Collection) for [" + name + "]", cause);
+        }
     }
 }
