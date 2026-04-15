@@ -1,7 +1,11 @@
 package io.github.cascade.cache.configuration;
 
 import io.github.cascade.cache.v2.api.CacheManager;
-import io.github.cascade.cache.v2.facade.CacheAspect;
+import io.github.cascade.cache.v2.facade.CacheAspectSupport;
+import io.github.cascade.cache.v2.facade.CacheEvictAspect;
+import io.github.cascade.cache.v2.facade.CacheInvocationSnapshotSupport;
+import io.github.cascade.cache.v2.facade.CachePutAspect;
+import io.github.cascade.cache.v2.facade.CacheableAspect;
 import io.github.cascade.cache.v2.facade.FunctionalCacheManager;
 import io.github.cascade.cache.v2.loader.CacheLoaderResolver;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -91,16 +95,52 @@ public class CacheAutoConfiguration {
         return cacheManager;
     }
 
-    /**
-     * 缓存切面配置
-     */
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnClass(name = "org.aspectj.lang.annotation.Aspect")
     @ConditionalOnProperty(prefix = "cascade.cache.annotation", name = "enabled",
             havingValue = "true", matchIfMissing = true)
-    public CacheAspect cacheAspect(CacheManager cacheManager, CascadeCacheProperties defaultConfig) {
-        LOGGER.info("创建缓存切面");
-        return new CacheAspect(cacheManager, defaultConfig);
+    public CacheInvocationSnapshotSupport cacheInvocationSnapshotSupport() {
+        LOGGER.info("创建缓存快照支持");
+        return new CacheInvocationSnapshotSupport();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(name = "org.aspectj.lang.annotation.Aspect")
+    @ConditionalOnProperty(prefix = "cascade.cache.annotation", name = "enabled",
+            havingValue = "true", matchIfMissing = true)
+    public CacheAspectSupport cacheAspectSupport(CacheManager cacheManager,
+                                                 CascadeCacheProperties defaultConfig,
+                                                 CacheInvocationSnapshotSupport snapshotSupport) {
+        LOGGER.info("创建缓存切面共享支持");
+        return new CacheAspectSupport(cacheManager, defaultConfig, snapshotSupport);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(name = "org.aspectj.lang.annotation.Aspect")
+    @ConditionalOnProperty(prefix = "cascade.cache.annotation", name = "enabled",
+            havingValue = "true", matchIfMissing = true)
+    public CacheableAspect cacheableAspect(CacheAspectSupport support) {
+        return new CacheableAspect(support);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(name = "org.aspectj.lang.annotation.Aspect")
+    @ConditionalOnProperty(prefix = "cascade.cache.annotation", name = "enabled",
+            havingValue = "true", matchIfMissing = true)
+    public CachePutAspect cachePutAspect(CacheAspectSupport support) {
+        return new CachePutAspect(support);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(name = "org.aspectj.lang.annotation.Aspect")
+    @ConditionalOnProperty(prefix = "cascade.cache.annotation", name = "enabled",
+            havingValue = "true", matchIfMissing = true)
+    public CacheEvictAspect cacheEvictAspect(CacheAspectSupport support) {
+        return new CacheEvictAspect(support);
     }
 }

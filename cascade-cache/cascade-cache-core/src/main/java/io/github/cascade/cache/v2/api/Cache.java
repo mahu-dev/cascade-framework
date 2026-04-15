@@ -36,6 +36,11 @@ public interface Cache<K, V> {
     Optional<V> get(K key);
 
     /**
+     * 仅在缓存已存在时读取，不触发任何加载器。
+     */
+    Optional<V> getIfPresent(K key);
+
+    /**
      * 获取缓存值，如果不存在则使用loader加载
      */
     V getOrLoad(K key, Function<K, V> loader);

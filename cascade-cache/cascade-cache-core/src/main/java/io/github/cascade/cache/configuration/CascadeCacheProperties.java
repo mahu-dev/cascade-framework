@@ -46,11 +46,15 @@ public class CascadeCacheProperties {
 
     /**
      * 刷新调度器配置
+     * <p>
+     * 同时承载自动刷新、软过期扫描、刷新线程池等参数。
      */
     private RefreshConfig refresh = new RefreshConfig();
 
     /**
      * 防护与加载协调配置
+     * <p>
+     * 控制 singleflight、分布式锁和热点 key 追踪等保护能力。
      */
     private ProtectionConfig protection = new ProtectionConfig();
 
@@ -147,6 +151,8 @@ public class CascadeCacheProperties {
 
         /**
          * 默认刷新间隔（秒）
+         * <p>
+         * 也是统一引擎默认采用的软 TTL 基准值。
          */
         private long defaultRefreshIntervalSeconds = 300; // 5分钟
 
@@ -203,6 +209,8 @@ public class CascadeCacheProperties {
 
         /**
          * 是否在初始化时启动调度器
+         * <p>
+         * 关闭后会在首次需要刷新时惰性启动。
          */
         private boolean startOnInit = true;
 
@@ -342,6 +350,8 @@ public class CascadeCacheProperties {
 
     /**
      * 获取同步配置
+     * <p>
+     * 注解式和编程式最终都会转换到该配置对象上。
      */
     public SyncProperties getSyncConfig() {
         return sync;
@@ -363,6 +373,8 @@ public class CascadeCacheProperties {
 
     /**
      * 刷新间隔（秒）
+     * <p>
+     * 对统一缓存引擎而言，它同时承担默认软 TTL 的语义。
      */
     public long getRefreshIntervalSeconds() {
         return refresh.defaultRefreshIntervalSeconds;
@@ -370,6 +382,9 @@ public class CascadeCacheProperties {
 
     /**
      * 软TTL（秒）
+     * <p>
+     * 当前实现直接复用 {@link RefreshConfig#defaultRefreshIntervalSeconds}，
+     * 让“多久认为需要刷新”和“刷新扫描间隔”在默认配置下保持一致。
      */
     public long getSoftTtlSeconds() {
         return refresh.defaultRefreshIntervalSeconds;
@@ -428,6 +443,8 @@ public class CascadeCacheProperties {
 
     /**
      * 深拷贝当前配置，避免运行时修改污染默认配置实例。
+     * <p>
+     * 切面路径会先复制默认配置，再叠加注解参数，防止不同方法互相串配置。
      */
     public CascadeCacheProperties deepCopy() {
         CascadeCacheProperties target = CascadeCacheProperties.defaults();
@@ -473,6 +490,8 @@ public class CascadeCacheProperties {
 
     /**
      * 多级缓存配置
+     * <p>
+     * 默认同时启用 L1、L2 和同步，适合作为统一缓存引擎的标准配置模板。
      */
     public static CascadeCacheProperties tiered() {
         CascadeCacheProperties config = new CascadeCacheProperties();

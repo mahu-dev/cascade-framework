@@ -1,24 +1,17 @@
 package io.github.cascade.cache.v2.facade;
 
+import io.github.cascade.cache.configuration.CascadeCacheProperties;
+import io.github.cascade.cache.configuration.SyncProperties;
 import io.github.cascade.cache.v2.api.Cache;
 import io.github.cascade.cache.v2.api.CacheLoader;
-import io.github.cascade.cache.v2.api.CacheManager.CacheBuilder;
-import io.github.cascade.cache.v2.api.CacheManager.CacheBuilderKeyStage;
-import io.github.cascade.cache.v2.api.CacheManager.CacheBuilderValueStage;
 import io.github.cascade.cache.v2.api.CacheManager;
 import io.github.cascade.cache.v2.common.exception.CacheConfigurationException;
 import io.github.cascade.cache.v2.common.exception.CacheException;
-import io.github.cascade.cache.configuration.CascadeCacheProperties;
-import io.github.cascade.cache.configuration.SyncProperties;
-import io.github.cascade.cache.v2.support.NodeIdManager;
-import io.github.cascade.cache.v2.support.TypeUtils;
-import io.github.cascade.cache.v2.loader.CacheLoaderResolver;
-import io.github.cascade.cache.v2.consistency.LocalVersionManager;
-import io.github.cascade.cache.v2.loader.LoaderPriority;
-import io.github.cascade.cache.v2.consistency.RedisVersionManager;
-import io.github.cascade.cache.v2.consistency.VersionManager;
+import io.github.cascade.cache.v2.consistency.*;
 import io.github.cascade.cache.v2.engine.EngineBackedCache;
+import io.github.cascade.cache.v2.loader.CacheLoaderResolver;
 import io.github.cascade.cache.v2.loader.DistLockCoordinator;
+import io.github.cascade.cache.v2.loader.LoaderPriority;
 import io.github.cascade.cache.v2.loader.RedisDistLockCoordinator;
 import io.github.cascade.cache.v2.observability.CacheMetricsCollector;
 import io.github.cascade.cache.v2.policy.CachePolicy;
@@ -28,10 +21,10 @@ import io.github.cascade.cache.v2.store.l1.CaffeineL1Store;
 import io.github.cascade.cache.v2.store.l1.L1CacheStore;
 import io.github.cascade.cache.v2.store.l2.L2CacheStore;
 import io.github.cascade.cache.v2.store.l2.RedissonL2Store;
-import io.github.cascade.cache.v2.consistency.InvalidationBus;
-import io.github.cascade.cache.v2.consistency.RedisInvalidationBus;
-import lombok.Getter;
+import io.github.cascade.cache.v2.support.NodeIdManager;
+import io.github.cascade.cache.v2.support.TypeUtils;
 import io.micrometer.core.instrument.MeterRegistry;
+import lombok.Getter;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,7 +38,7 @@ import java.util.function.Function;
 
 /**
  * V2 函数式缓存管理器。
- *
+ * <p>
  * 说明：
  * 1. 注解式与编程式都经由同一内核 EngineBackedCache。
  * 2. 默认支持回填、自动刷新、失效同步（配置可关闭）。
@@ -54,16 +47,46 @@ public class FunctionalCacheManager implements CacheManager {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(FunctionalCacheManager.class);
 
+    /**
+     * 已创建缓存注册表。
+     * <p>
+     * 注解式和编程式最终都会命中这里，确保同名缓存复用同一实例。
+     */
     private final ConcurrentHashMap<String, Cache<?, ?>> cacheRegistry = new ConcurrentHashMap<>();
+
+    /**
+     * 缓存定义指纹注册表。
+     * <p>
+     * 用于阻止“同名不同配置”被静默覆盖，避免线上出现语义漂移。
+     */
     private final ConcurrentHashMap<String, CacheDefinitionFingerprint> definitionRegistry = new ConcurrentHashMap<>();
+
+    /**
+     * L2、同步、分布式锁等能力的底层客户端；为 null 时自动降级到仅 L1。
+     */
     private final RedissonClient redissonClient;
+    /**
+     * 管理器级默认配置，会在每次建缓存时复制并叠加局部配置。
+     */
     private final CascadeCacheProperties defaultConfig;
+    /**
+     * Loader 解析器，负责桥接显式 loader、注册 loader 和自动发现 loader。
+     */
     private final CacheLoaderResolver loaderResolver;
+    /**
+     * 指标注册表；为空时仅保留内存态统计。
+     */
     private final MeterRegistry meterRegistry;
 
+    /**
+     * 当前节点标识，用于同步去环和诊断。
+     */
     @Getter
     private final String nodeId;
 
+    /**
+     * 管理器生命周期标记，防止 close 后继续创建或注册缓存。
+     */
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     public FunctionalCacheManager(
@@ -117,6 +140,7 @@ public class FunctionalCacheManager implements CacheManager {
                                                Class<V> valueType,
                                                CascadeCacheProperties config,
                                                Function<K, V> loader) {
+        // 统一入口：注解式与编程式都会先归一化类型、配置、loader，再落到同一引擎。
         checkNotClosed();
         validateParameters(cacheName, keyType, valueType);
         Class<K> normalizedKeyType = TypeUtils.boxedType(keyType);
@@ -136,6 +160,7 @@ public class FunctionalCacheManager implements CacheManager {
 
         Cache<?, ?> existing = cacheRegistry.get(cacheName);
         if (existing != null) {
+            // 同名缓存必须定义兼容，只允许 loader 在优先级更高时被升级。
             ensureDefinitionCompatible(cacheName, expected);
             Cache<K, V> casted = (Cache<K, V>) existing;
             if (casted instanceof EngineBackedCache<?, ?> && finalLoader != null) {
@@ -201,6 +226,7 @@ public class FunctionalCacheManager implements CacheManager {
 
         Cache<?, ?> existing = cacheRegistry.get(cacheName);
         if (existing instanceof EngineBackedCache<?, ?> engineBackedCache) {
+            // 缓存已创建时，允许后注册 loader 立即补挂到已有引擎上。
             CacheLoader<K, V> resolved = loaderResolver.resolveCacheLoader(cacheName, normalizedKeyType, normalizedValueType, false);
             if (resolved != null) {
                 ((EngineBackedCache<K, V>) engineBackedCache).setLoaderIfAbsent(resolved);
@@ -335,6 +361,7 @@ public class FunctionalCacheManager implements CacheManager {
                                            CascadeCacheProperties config,
                                            Function<K, V> loader,
                                            CachePolicy policy) {
+        // 按策略裁剪实际组件：允许仅 L1、仅 L2，或 L1+L2 的统一建模。
 
         L1CacheStore<K, V> l1Store = null;
         if (policy.isL1Enabled()) {
@@ -439,8 +466,8 @@ public class FunctionalCacheManager implements CacheManager {
     }
 
     private static void throwDefinitionConflict(String cacheName,
-                                         CacheDefinitionFingerprint existing,
-                                         CacheDefinitionFingerprint requested) {
+                                                CacheDefinitionFingerprint existing,
+                                                CacheDefinitionFingerprint requested) {
         throw new CacheConfigurationException(
                 "cacheName",
                 cacheName,
@@ -456,6 +483,7 @@ public class FunctionalCacheManager implements CacheManager {
             softTtl = hardTtl > 0 ? Math.max(1, hardTtl / 3) : 300;
         }
 
+        // 同步依赖共享层；没有 L2 时即使声明了同步也必须降级为 NONE。
         boolean l2Enabled = config.isL2Enabled() && redissonClient != null;
         SyncMode configuredSyncMode = config.getSyncConfig().getMode();
         boolean syncEnabled = config.isSyncEnabled() && l2Enabled;
@@ -506,6 +534,7 @@ public class FunctionalCacheManager implements CacheManager {
             LOGGER.warn("刷新执行参数在refresh.enabled=false时不生效: cache={}", cacheName);
         }
         try {
+            // 这里做参数对象收敛，保证后续引擎只面向已校验的不可变配置工作。
             return new RefreshExecutionOptions(
                     refreshConfig.getThreadPoolSize(),
                     refreshConfig.getQueueCapacity(),
@@ -679,6 +708,15 @@ public class FunctionalCacheManager implements CacheManager {
         }
         if (keyType == null || valueType == null) {
             throw new CacheConfigurationException("types", null, "键类型和值类型不能为空", null);
+        }
+        Class<?> normalizedKeyType = TypeUtils.boxedType(keyType);
+        if (!String.class.equals(normalizedKeyType)) {
+            throw new CacheConfigurationException(
+                    "keyType",
+                    normalizedKeyType.getName(),
+                    "缓存业务键必须是java.lang.String",
+                    null
+            );
         }
     }
 

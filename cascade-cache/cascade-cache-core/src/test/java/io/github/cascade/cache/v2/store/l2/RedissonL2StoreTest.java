@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -191,6 +192,67 @@ class RedissonL2StoreTest {
         assertTrue(unlinkedPatterns.isEmpty(), "当前Redisson API不支持unlink时不应调用");
         assertEquals(List.of("it:user:ns:1:data:*"), deletedPatterns, "应回收上一个命名空间的数据");
         assertTrue(requestedAtomicKeys.contains("it:user:ns:version"));
+    }
+
+    @Test
+    void nextVersionShouldUseBoundedSequenceKey() {
+        AtomicLong namespaceVersion = new AtomicLong(1L);
+        AtomicLong sequenceVersion = new AtomicLong(10L);
+        List<String> requestedAtomicKeys = new ArrayList<>();
+
+        RAtomicLong namespaceCounter = (RAtomicLong) Proxy.newProxyInstance(
+                RAtomicLong.class.getClassLoader(),
+                new Class<?>[]{RAtomicLong.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "incrementAndGet" -> namespaceVersion.incrementAndGet();
+                    case "get" -> namespaceVersion.get();
+                    case "compareAndSet" -> namespaceVersion.compareAndSet((Long) args[0], (Long) args[1]);
+                    case "toString" -> "RAtomicLongNamespaceProxy";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == (args != null && args.length > 0 ? args[0] : null);
+                    default -> throw new UnsupportedOperationException("Unsupported RAtomicLong method: " + method.getName());
+                }
+        );
+        RAtomicLong sequenceCounter = (RAtomicLong) Proxy.newProxyInstance(
+                RAtomicLong.class.getClassLoader(),
+                new Class<?>[]{RAtomicLong.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "incrementAndGet" -> sequenceVersion.incrementAndGet();
+                    case "get" -> sequenceVersion.get();
+                    case "toString" -> "RAtomicLongSequenceProxy";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == (args != null && args.length > 0 ? args[0] : null);
+                    default -> throw new UnsupportedOperationException("Unsupported RAtomicLong method: " + method.getName());
+                }
+        );
+
+        RedissonClient client = (RedissonClient) Proxy.newProxyInstance(
+                RedissonClient.class.getClassLoader(),
+                new Class<?>[]{RedissonClient.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "getAtomicLong" -> {
+                        String key = (String) args[0];
+                        requestedAtomicKeys.add(key);
+                        if ("it:user:ns:version".equals(key)) {
+                            yield namespaceCounter;
+                        }
+                        if ("it:user:ver:sequence".equals(key)) {
+                            yield sequenceCounter;
+                        }
+                        throw new AssertionError("unexpected atomic key: " + key);
+                    }
+                    case "toString" -> "RedissonClientProxy";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == (args != null && args.length > 0 ? args[0] : null);
+                    default -> throw new UnsupportedOperationException("Unsupported RedissonClient method: " + method.getName());
+                }
+        );
+
+        RedissonL2Store<String, String> store = new RedissonL2Store<>("user", client, "it");
+        assertEquals(11L, store.nextVersion("u1"));
+        assertEquals(12L, store.nextVersion("u2"));
+        assertFalse(requestedAtomicKeys.stream()
+                .anyMatch(key -> key.startsWith("it:user:ver:") && !"it:user:ver:sequence".equals(key)));
     }
 
     private static Object readPrivateField(Object target, String fieldName) throws Exception {

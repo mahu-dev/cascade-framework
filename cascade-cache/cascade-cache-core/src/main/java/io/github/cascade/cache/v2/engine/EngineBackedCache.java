@@ -2,18 +2,18 @@ package io.github.cascade.cache.v2.engine;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.cascade.cache.v2.api.Cache;
+import io.github.cascade.cache.v2.consistency.InvalidationBus;
 import io.github.cascade.cache.v2.consistency.VersionManager;
 import io.github.cascade.cache.v2.loader.DistLockCoordinator;
-import io.github.cascade.cache.v2.store.model.CacheRecord;
+import io.github.cascade.cache.v2.loader.LoaderPriority;
+import io.github.cascade.cache.v2.loader.SingleFlight;
 import io.github.cascade.cache.v2.observability.CacheMetricsCollector;
 import io.github.cascade.cache.v2.observability.CacheStatsSnapshot;
 import io.github.cascade.cache.v2.policy.CachePolicy;
 import io.github.cascade.cache.v2.policy.RefreshExecutionOptions;
 import io.github.cascade.cache.v2.store.l1.L1CacheStore;
 import io.github.cascade.cache.v2.store.l2.L2CacheStore;
-import io.github.cascade.cache.v2.loader.LoaderPriority;
-import io.github.cascade.cache.v2.loader.SingleFlight;
-import io.github.cascade.cache.v2.consistency.InvalidationBus;
+import io.github.cascade.cache.v2.store.model.CacheRecord;
 import io.github.cascade.cache.v2.support.ObjectMapperHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,15 +21,10 @@ import org.slf4j.LoggerFactory;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 /**
@@ -38,43 +33,108 @@ import java.util.function.Function;
 public class EngineBackedCache<K, V> implements Cache<K, V> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(EngineBackedCache.class);
-    /** 异步包装任务线程数；主链路仍同步执行，2 线程足够覆盖常见并发且避免过度切换。 */
+    /**
+     * 异步包装任务线程数；主链路仍同步执行，2 线程足够覆盖常见并发且避免过度切换。
+     */
     private static final int ASYNC_POOL_SIZE = 2;
-    /** 异步有界队列上限；满载后回退同步执行，避免无界堆积。 */
+    /**
+     * 异步有界队列上限；满载后回退同步执行，避免无界堆积。
+     */
     private static final int ASYNC_QUEUE_CAPACITY = 1024;
-    /** 热点读计数容量系数：maxTrackedKeys * 4，覆盖短时并发尖峰。 */
+    /**
+     * 热点读计数容量系数：maxTrackedKeys * 4，覆盖短时并发尖峰。
+     */
     private static final int READ_COUNTER_MAX_FACTOR = 4;
-    /** 热点读计数访问后过期（分钟）：平衡热点识别窗口与内存占用。 */
+    /**
+     * 热点读计数访问后过期（分钟）：平衡热点识别窗口与内存占用。
+     */
     private static final long READ_COUNTER_EXPIRE_AFTER_ACCESS_MINUTES = 30L;
-    /** 本地版本去重容量系数：高于读计数，降低高基数场景误淘汰。 */
+    /**
+     * 本地版本去重容量系数：高于读计数，降低高基数场景误淘汰。
+     */
     private static final int LOCAL_VERSION_MAX_FACTOR = 16;
-    /** 本地版本去重最小容量下限，避免低配置下频繁抖动。 */
+    /**
+     * 本地版本去重最小容量下限，避免低配置下频繁抖动。
+     */
     private static final long LOCAL_VERSION_MIN_MAX_SIZE = 10_000L;
-    /** 本地版本去重访问后过期（分钟）：覆盖事件传播延迟与重试窗口。 */
+    /**
+     * 本地版本去重访问后过期（分钟）：覆盖事件传播延迟与重试窗口。
+     */
     private static final long LOCAL_VERSION_EXPIRE_AFTER_ACCESS_MINUTES = 60L;
     private static final AtomicInteger ASYNC_THREAD_COUNTER = new AtomicInteger(0);
     private static final AtomicInteger REFRESH_THREAD_COUNTER = new AtomicInteger(0);
 
+    /**
+     * 缓存名称，贯穿日志、指标、同步主题和诊断输出。
+     */
     private final String cacheName;
+    /**
+     * 统一运行策略，决定 TTL、刷新、同步、回填和保护能力。
+     */
     private final CachePolicy policy;
+    /**
+     * 本地一级缓存；为空表示禁用 L1。
+     */
     private final L1CacheStore<K, V> l1Store;
+    /**
+     * 共享二级缓存；为空表示禁用 L2。
+     */
     private final L2CacheStore<K, V> l2Store;
+    /**
+     * 指标采集器。
+     */
     private final CacheMetricsCollector metricsCollector;
+    /**
+     * 值类型，用于同步 UPDATE 事件反序列化。
+     */
     private final Class<V> valueType;
     private final ObjectMapper objectMapper = ObjectMapperHolder.getInstance();
+    /**
+     * 当前节点标识，用于同步消息去环与诊断。
+     */
     private final String nodeId;
+    /**
+     * 刷新执行参数快照。
+     */
     private final RefreshExecutionOptions refreshOptions;
+    /**
+     * 对外异步 API 的轻量线程池。
+     */
     private final ExecutorService asyncExecutor;
+    /**
+     * 实际执行刷新任务的线程池。
+     */
     private final ThreadPoolExecutor refreshExecutor;
+    /**
+     * 刷新定时扫描调度器。
+     */
     private final ScheduledExecutorService refreshScheduler;
+    /**
+     * 同 key 并发加载合并器。
+     */
     private final SingleFlight<K, V> singleFlight = new SingleFlight<>();
     private final ReadPipeline<K, V> readPipeline = new ReadPipeline<>();
     private final WritePipeline<V> writePipeline = new WritePipeline<>();
     private final RefreshPipeline refreshPipeline = new RefreshPipeline();
+    /**
+     * 已被识别为热点且需要纳入自动刷新的 key 集。
+     */
     private final Set<K> trackedKeys = ConcurrentHashMap.newKeySet();
+    /**
+     * 正在刷新中的 key 集，避免同 key 重复提交刷新任务。
+     */
     private final Set<K> refreshingKeys = ConcurrentHashMap.newKeySet();
+    /**
+     * 本地观察到的 key 版本，用于过滤旧同步事件。
+     */
     private final com.github.benmanes.caffeine.cache.Cache<K, Long> localVersion;
+    /**
+     * 热点 key 访问计数。
+     */
     private final com.github.benmanes.caffeine.cache.Cache<K, AtomicLong> readCounter;
+    /**
+     * clear 操作的逻辑版本号。
+     */
     private final AtomicLong clearVersion = new AtomicLong(0L);
     private final AtomicLong l1Hit = new AtomicLong(0L);
     private final AtomicLong l2Hit = new AtomicLong(0L);
@@ -93,13 +153,34 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicBoolean subscribed = new AtomicBoolean(false);
     private final AtomicBoolean refreshStarted = new AtomicBoolean(false);
+    /**
+     * 驱逐相关委托，统一处理版本推进和本地状态清理。
+     */
     private final EngineBackedCacheEviction<K, V> evictionDelegate;
+    /**
+     * 写链路委托，统一处理回源、写透、回填和同步事件发布。
+     */
     private final EngineBackedCacheWrite<K, V> writeDelegate;
+    /**
+     * 刷新链路委托，统一处理热点追踪和异步刷新。
+     */
     private final EngineBackedCacheRefresh<K, V> refreshDelegate;
+    /**
+     * 同步链路委托，统一处理失效/更新事件的发布与消费。
+     */
     private final EngineBackedCacheSync<K, V> syncDelegate;
+    /**
+     * 生命周期委托，统一处理订阅、关闭和线程池释放。
+     */
     private final EngineBackedCacheLifecycle<K, V> lifecycleDelegate;
 
+    /**
+     * 当前生效的加载器，可由注册表或注解回放补挂。
+     */
     private volatile Function<K, V> loader;
+    /**
+     * 当前加载器优先级，确保显式 loader 能覆盖兜底 loader。
+     */
     private volatile int loaderPriority = LoaderPriority.DEFAULT;
 
     public EngineBackedCache(String cacheName,
@@ -189,7 +270,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
                 lockCoordinator,
                 singleFlight,
                 writePipeline,
-                () -> loader,
+                () -> this.loader,
                 evictionDelegate::nextVersion,
                 this::readFromL2,
                 this::isHardExpired,
@@ -213,12 +294,12 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
                 trackedKeys,
                 refreshingKeys,
                 readCounter,
-                () -> loader,
+                () -> this.loader,
                 this::readFromL1,
                 this::readFromL2,
                 this::isHardExpired,
                 this::pruneTrackingState,
-                writeDelegate::invokeLoaderAndWrite,
+                writeDelegate::invokeLoaderAndWriteForRefresh,
                 this::markRefreshSuccess,
                 this::markRefreshFail
         );
@@ -268,6 +349,13 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         return (Class<T>) Object.class;
     }
 
+    /**
+     * 在缓存已创建后按优先级补挂 loader。
+     * <p>
+     * 典型场景：
+     * 1. 编程式先建缓存，后注册强类型 loader；
+     * 2. 注解式先拿到缓存，再补上 snapshot fallback loader。
+     */
     public void setLoaderIfAbsent(Function<K, V> candidate) {
         if (candidate == null) {
             return;
@@ -296,6 +384,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         if (key == null) {
             return Optional.empty();
         }
+        // 命中路径也要先做热点追踪，后续自动刷新依赖这些访问样本。
         refreshDelegate.trackKey(key);
         Optional<V> cached = readCachedValue(key);
         if (cached.isPresent()) {
@@ -305,6 +394,19 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
         markMiss();
         V loaded = writeDelegate.loadAndWriteBack(key, policy.getHardTtlSeconds());
         return Optional.ofNullable(loaded);
+    }
+
+    @Override
+    public Optional<V> getIfPresent(K key) {
+        checkNotClosed();
+        if (key == null) {
+            return Optional.empty();
+        }
+        Optional<V> cached = readCachedValue(key);
+        if (cached.isPresent()) {
+            refreshDelegate.trackKey(key);
+        }
+        return cached;
     }
 
     @Override
@@ -407,21 +509,21 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     @Override
     public Map<K, V> getAll(Iterable<K> keys) {
         checkNotClosed();
-        return EngineBackedCacheRead.getAll(
-                keys,
-                refreshDelegate::trackKey,
-                this::readFromL1,
-                l1Store != null ? l1Store::evict : ignored -> {
-                },
-                l2Store,
-                this::isHardExpired,
-                this::markL1Hit,
-                this::markL2Hit,
-                this::markMiss,
-                this::writeBackL1,
-                refreshDelegate::triggerRefreshIfSoftExpired,
-                key -> writeDelegate.loadAndWriteBack(key, policy.getHardTtlSeconds())
-        );
+        EngineBackedCacheRead.BatchReadContext<K, V> context = EngineBackedCacheRead.BatchReadContext.<K, V>builder()
+                .trackKey(refreshDelegate::trackKey)
+                .readFromL1(this::readFromL1)
+                .evictL1(l1Store != null ? l1Store::evict : ignored -> {
+                })
+                .l2Store(l2Store)
+                .isHardExpired(this::isHardExpired)
+                .markL1Hit(this::markL1Hit)
+                .markL2Hit(this::markL2Hit)
+                .markMiss(this::markMiss)
+                .writeBackL1(this::writeBackL1)
+                .triggerRefreshIfSoftExpired(refreshDelegate::triggerRefreshIfSoftExpired)
+                .loadOnMiss(key -> writeDelegate.loadAndWriteBack(key, policy.getHardTtlSeconds()))
+                .build();
+        return EngineBackedCacheRead.getAll(keys, context);
     }
 
     @Override
@@ -474,6 +576,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
     }
 
     private Optional<V> readCachedValue(K key) {
+        // 统一读链路：先判定 L1/L2 命中，再处理硬过期淘汰、L2->L1 回填和软过期刷新。
         ReadPipeline.ReadResult<V> readResult = readPipeline.read(
                 key,
                 this::readFromL1,
@@ -520,6 +623,7 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
             return;
         }
         localVersion.put(key, record.getVersion());
+        // 回填只写本地 L1，不回写 L2；这样可以把共享层命中的结果快速带回本节点。
         if (l1Store != null) {
             l1Store.put(key, record);
             markBackfillL1();

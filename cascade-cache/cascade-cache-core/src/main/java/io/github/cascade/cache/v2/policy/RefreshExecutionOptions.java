@@ -18,13 +18,21 @@ public record RefreshExecutionOptions(
         long shutdownTimeoutSeconds
 ) {
 
+    /** 默认刷新线程数。 */
     public static final int DEFAULT_THREAD_POOL_SIZE = 2;
+    /** 默认刷新排队容量。 */
     public static final int DEFAULT_QUEUE_CAPACITY = 1000;
+    /** 默认串行执行多 key 刷新，降低下游加载压力。 */
     public static final boolean DEFAULT_ALLOW_CONCURRENT_REFRESH = false;
+    /** 单次刷新默认超时时间。 */
     public static final long DEFAULT_REFRESH_TIMEOUT_SECONDS = 30L;
+    /** 单次刷新失败后的默认最大重试次数。 */
     public static final int DEFAULT_MAX_RETRIES = 3;
+    /** 刷新失败后的默认重试间隔。 */
     public static final long DEFAULT_RETRY_INTERVAL_SECONDS = 5L;
+    /** 默认在缓存初始化时启动刷新调度。 */
     public static final boolean DEFAULT_START_ON_INIT = true;
+    /** 默认关闭等待时间，避免应用停机时无限阻塞。 */
     public static final long DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 10L;
 
     public RefreshExecutionOptions {
@@ -48,6 +56,11 @@ public record RefreshExecutionOptions(
         }
     }
 
+    /**
+     * 返回默认刷新执行参数。
+     * <p>
+     * 注解式和编程式都会共享这组默认值。
+     */
     public static RefreshExecutionOptions defaults() {
         return new RefreshExecutionOptions(
                 DEFAULT_THREAD_POOL_SIZE,
@@ -61,6 +74,12 @@ public record RefreshExecutionOptions(
         );
     }
 
+    /**
+     * 计算实际生效的刷新并发度。
+     * <p>
+     * 当 {@code allowConcurrentRefresh=false} 时，无论线程池配置多大，
+     * 同一缓存实例的多 key 刷新都会退化为串行执行。
+     */
     public int effectiveThreadPoolSize() {
         return allowConcurrentRefresh ? threadPoolSize : 1;
     }

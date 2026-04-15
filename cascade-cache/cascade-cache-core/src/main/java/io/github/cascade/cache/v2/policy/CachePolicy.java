@@ -2,25 +2,78 @@ package io.github.cascade.cache.v2.policy;
 
 /**
  * V2 缓存策略。
+ * <p>
+ * 该对象是统一引擎的只读运行策略，负责把配置中心、注解参数、Builder 参数
+ * 收敛为一份可直接执行的缓存语义。
  */
 public final class CachePolicy {
-
+    /**
+     * 是否启用本地 L1 命中层。
+     */
     private final boolean l1Enabled;
+    /**
+     * 是否启用共享 L2 命中层。
+     */
     private final boolean l2Enabled;
+    /**
+     * 硬过期时间，超过后必须重新加载。
+     */
     private final long hardTtlSeconds;
+    /**
+     * 软过期时间，超过后允许旧值兜底并触发刷新。
+     */
     private final long softTtlSeconds;
+    /**
+     * 定时扫描热点 key 的刷新周期。
+     */
     private final long refreshIntervalSeconds;
+    /**
+     * 是否启用自动刷新链路。
+     */
     private final boolean autoRefreshEnabled;
+    /**
+     * 刷新线程池、超时、重试等执行细节。
+     */
     private final RefreshExecutionOptions refreshExecutionOptions;
+    /**
+     * 多节点同步模式。
+     */
     private final SyncMode syncMode;
+    /**
+     * 是否允许以 UPDATE 事件直接下发新值。
+     */
     private final boolean syncUpdateEnabled;
+    /**
+     * UPDATE 事件可携带的最大 payload 大小。
+     */
     private final int syncUpdateMaxPayloadBytes;
+    /**
+     * 是否合并同 key 并发加载。
+     */
     private final boolean singleFlightEnabled;
+    /**
+     * 是否启用分布式锁，约束跨节点并发回源。
+     */
     private final boolean distributedLockEnabled;
+    /**
+     * 分布式锁失败时的降级策略。
+     */
     private final LockFailureStrategy lockFailureStrategy;
+    /**
+     * 分布式锁获取等待时间。
+     */
     private final long distributedLockWaitMs;
+    /**
+     * 分布式锁租期。
+     */
     private final long distributedLockLeaseMs;
+    /**
+     * key 被视为热点前需要累计的访问次数。
+     */
     private final int hotKeyAccessThreshold;
+    /**
+     * 最多追踪多少个热点 key 参与自动刷新。
+     */
     private final int maxTrackedKeys;
 
     private CachePolicy(Builder builder) {
@@ -116,11 +169,29 @@ public final class CachePolicy {
     }
 
     public static final class Builder {
+        /**
+         * Builder 默认即启用 L1，本地命中优先。
+         */
         private boolean l1Enabled = true;
+        /**
+         * Builder 默认启用 L2，用于共享与回填。
+         */
         private boolean l2Enabled = true;
+        /**
+         * 默认硬 TTL。
+         */
         private long hardTtlSeconds = 1800;
+        /**
+         * 默认软 TTL。
+         */
         private long softTtlSeconds = 300;
+        /**
+         * 默认刷新扫描周期。
+         */
         private long refreshIntervalSeconds = 300;
+        /**
+         * 默认开启自动刷新。
+         */
         private boolean autoRefreshEnabled = true;
         private RefreshExecutionOptions refreshExecutionOptions = RefreshExecutionOptions.defaults();
         private SyncMode syncMode = SyncMode.INVALIDATE;
@@ -219,6 +290,11 @@ public final class CachePolicy {
             return this;
         }
 
+        /**
+         * 规整配置并构造只读策略对象。
+         * <p>
+         * 这里会补齐默认值，并修正软 TTL、刷新周期、锁参数之间的边界关系。
+         */
         public CachePolicy build() {
             if (hardTtlSeconds == 0) {
                 hardTtlSeconds = 1800;

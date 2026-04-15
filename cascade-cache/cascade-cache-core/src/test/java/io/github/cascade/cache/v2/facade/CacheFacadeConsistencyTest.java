@@ -4,7 +4,6 @@ import io.github.cascade.cache.v2.api.Cache;
 import io.github.cascade.cache.v2.api.annotations.CacheEvict;
 import io.github.cascade.cache.v2.api.annotations.CachePut;
 import io.github.cascade.cache.v2.api.annotations.Cacheable;
-import io.github.cascade.cache.v2.facade.CacheAspect;
 import io.github.cascade.cache.configuration.CascadeCacheProperties;
 import io.github.cascade.cache.v2.consistency.InvalidationBus;
 import io.github.cascade.cache.v2.consistency.InvalidationEvent;
@@ -12,17 +11,19 @@ import io.github.cascade.cache.v2.consistency.LocalVersionManager;
 import io.github.cascade.cache.v2.common.exception.CacheConfigurationException;
 import io.github.cascade.cache.v2.engine.EngineBackedCache;
 import io.github.cascade.cache.v2.facade.FunctionalCacheManager;
-import io.github.cascade.cache.v2.api.annotations.CascadeCached;
 import io.github.cascade.cache.v2.loader.DistLockCoordinator;
 import io.github.cascade.cache.v2.loader.CacheLoaderResolver;
 import io.github.cascade.cache.v2.policy.CachePolicy;
 import io.github.cascade.cache.v2.policy.SyncMode;
 import io.github.cascade.cache.v2.store.l1.CaffeineL1Store;
 import io.github.cascade.cache.v2.store.model.CacheRecord;
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
 import org.junit.jupiter.api.Test;
 import org.springframework.aop.aspectj.annotation.AspectJProxyFactory;
+import org.springframework.core.annotation.Order;
 
-import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -87,9 +88,9 @@ class CacheFacadeConsistencyTest {
             programmatic.get("k1");
 
             DemoService target = new DemoService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             DemoService proxy = proxyFactory.getProxy();
             proxy.load("u1");
 
@@ -123,9 +124,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         try {
             RefreshAliasService target = new RefreshAliasService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             RefreshAliasService proxy = proxyFactory.getProxy();
 
             assertEquals("enable-off-1", proxy.loadEnableOff("u1"));
@@ -176,6 +177,39 @@ class CacheFacadeConsistencyTest {
     }
 
     @Test
+    void shouldSupportSingleDtoPropertyShortcutsInCacheExpressions() {
+        CascadeCacheProperties defaults = CascadeCacheProperties.defaults();
+        defaults.getL1().setEnabled(true);
+        defaults.getL2().setEnabled(false);
+        defaults.getSync().setEnabled(false);
+        defaults.getRefresh().setEnabled(false);
+        defaults.getProtection().setSingleFlightEnabled(true);
+        defaults.getProtection().setDistributedLockEnabled(false);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
+        try {
+            DtoExpressionService target = new DtoExpressionService();
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
+            AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
+            addAnnotationAspects(proxyFactory, aspects);
+            DtoExpressionService proxy = proxyFactory.getProxy();
+
+            DtoExpressionRequest request = new DtoExpressionRequest("cache-user", new NestedUser("42"));
+            String first = proxy.load(request);
+            String second = proxy.load(new DtoExpressionRequest("cache-user", new NestedUser("42")));
+
+            assertEquals(first, second, "相同 DTO 属性值应命中同一个缓存键");
+            assertEquals(1, target.calls.get(), "命中缓存后不应再次执行源方法");
+
+            Cache<Object, Object> cache = manager.getCache("annotation-dto-expression");
+            assertTrue(cache.containsKey("user:cache-user:42"),
+                    "单 DTO 参数场景应支持 #id / #user.id / 字符串拼接 组合键");
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
     void shouldCleanupInvocationSnapshotsOnEvictAndClear() throws Exception {
         CascadeCacheProperties defaults = CascadeCacheProperties.defaults();
         defaults.getL1().setEnabled(true);
@@ -188,29 +222,29 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         try {
             SnapshotCleanupService target = new SnapshotCleanupService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             SnapshotCleanupService proxy = proxyFactory.getProxy();
 
             proxy.load("u1");
             proxy.load("u2");
-            assertEquals(2L, snapshotSize(cacheAspect), "应记录两个方法快照");
+            assertEquals(2L, snapshotSize(aspects), "应记录两个方法快照");
 
             proxy.evictOne("u1");
-            assertEquals(1L, snapshotSize(cacheAspect), "evict(key) 后应清理对应快照");
+            assertEquals(1L, snapshotSize(aspects), "evict(key) 后应清理对应快照");
 
             proxy.load("u1");
-            assertEquals(2L, snapshotSize(cacheAspect), "再次访问后应恢复对应快照");
+            assertEquals(2L, snapshotSize(aspects), "再次访问后应恢复对应快照");
 
             proxy.evictMany();
-            assertEquals(0L, snapshotSize(cacheAspect), "evict(multi-key) 后应逐个清理对应快照");
+            assertEquals(0L, snapshotSize(aspects), "evict(multi-key) 后应逐个清理对应快照");
 
             proxy.load("u3");
-            assertEquals(1L, snapshotSize(cacheAspect), "新访问后应重新建立快照");
+            assertEquals(1L, snapshotSize(aspects), "新访问后应重新建立快照");
 
             proxy.evictAll();
-            assertEquals(0L, snapshotSize(cacheAspect), "clear(allEntries) 后应清理该cache全部快照");
+            assertEquals(0L, snapshotSize(aspects), "clear(allEntries) 后应清理该cache全部快照");
         } finally {
             manager.close();
         }
@@ -229,9 +263,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         try {
             MultiKeyEvictService target = new MultiKeyEvictService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             MultiKeyEvictService proxy = proxyFactory.getProxy();
 
             assertEquals("v-1", proxy.load("k1"));
@@ -263,9 +297,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         try {
             InvalidUnlessService target = new InvalidUnlessService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             InvalidUnlessService proxy = proxyFactory.getProxy();
 
             assertEquals("legacy-1", proxy.loadLegacy("u1"));
@@ -274,7 +308,107 @@ class CacheFacadeConsistencyTest {
 
             assertEquals("cascade-1", proxy.loadCascade("u2"));
             assertEquals("cascade-1", proxy.loadCascade("u2"));
-            assertEquals(1, target.cascadeCalls.get(), "@CascadeCached 无效unless应按false处理并正常缓存");
+            assertEquals(1, target.cascadeCalls.get(), "统一 @Cacheable 无效unless应按false处理并正常缓存");
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldFailFastWhenCacheKeyExpressionEvaluatesToNull() {
+        CascadeCacheProperties defaults = CascadeCacheProperties.defaults();
+        defaults.getL1().setEnabled(true);
+        defaults.getL2().setEnabled(false);
+        defaults.getSync().setEnabled(false);
+        defaults.getRefresh().setEnabled(false);
+        defaults.getProtection().setSingleFlightEnabled(true);
+        defaults.getProtection().setDistributedLockEnabled(false);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
+        try {
+            InvalidKeyExpressionService target = new InvalidKeyExpressionService();
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
+            AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
+            addAnnotationAspects(proxyFactory, aspects);
+            InvalidKeyExpressionService proxy = proxyFactory.getProxy();
+
+            assertThrows(CacheConfigurationException.class, () -> proxy.load("u1"));
+            assertEquals(0, target.calls.get(), "key表达式求值为null时应fail-fast，不应执行源方法");
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldFailFastWhenCacheKeyExpressionResultIsNotString() {
+        CascadeCacheProperties defaults = CascadeCacheProperties.defaults();
+        defaults.getL1().setEnabled(true);
+        defaults.getL2().setEnabled(false);
+        defaults.getSync().setEnabled(false);
+        defaults.getRefresh().setEnabled(false);
+        defaults.getProtection().setSingleFlightEnabled(true);
+        defaults.getProtection().setDistributedLockEnabled(false);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
+        try {
+            NonStringKeyExpressionService target = new NonStringKeyExpressionService();
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
+            AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
+            addAnnotationAspects(proxyFactory, aspects);
+            NonStringKeyExpressionService proxy = proxyFactory.getProxy();
+
+            assertThrows(CacheConfigurationException.class, () -> proxy.load(1L));
+            assertEquals(0, target.calls.get(), "key表达式结果非String时应fail-fast，不应执行源方法");
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldFailFastWhenCachePutKeyExpressionResultIsNotString() {
+        CascadeCacheProperties defaults = CascadeCacheProperties.defaults();
+        defaults.getL1().setEnabled(true);
+        defaults.getL2().setEnabled(false);
+        defaults.getSync().setEnabled(false);
+        defaults.getRefresh().setEnabled(false);
+        defaults.getProtection().setSingleFlightEnabled(true);
+        defaults.getProtection().setDistributedLockEnabled(false);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
+        try {
+            NonStringCachePutKeyExpressionService target = new NonStringCachePutKeyExpressionService();
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
+            AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
+            addAnnotationAspects(proxyFactory, aspects);
+            NonStringCachePutKeyExpressionService proxy = proxyFactory.getProxy();
+
+            assertThrows(CacheConfigurationException.class, () -> proxy.put(1L));
+            assertEquals(1, target.calls.get(), "@CachePut 按语义先执行方法，再在key校验处fail-fast");
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldFailFastWhenCacheEvictKeyExpressionResultIsNotString() {
+        CascadeCacheProperties defaults = CascadeCacheProperties.defaults();
+        defaults.getL1().setEnabled(true);
+        defaults.getL2().setEnabled(false);
+        defaults.getSync().setEnabled(false);
+        defaults.getRefresh().setEnabled(false);
+        defaults.getProtection().setSingleFlightEnabled(true);
+        defaults.getProtection().setDistributedLockEnabled(false);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
+        try {
+            NonStringCacheEvictKeyExpressionService target = new NonStringCacheEvictKeyExpressionService();
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
+            AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
+            addAnnotationAspects(proxyFactory, aspects);
+            NonStringCacheEvictKeyExpressionService proxy = proxyFactory.getProxy();
+
+            assertThrows(CacheConfigurationException.class, () -> proxy.evict(1L));
+            assertEquals(0, target.calls.get(), "@CacheEvict key校验应先于方法执行");
         } finally {
             manager.close();
         }
@@ -295,13 +429,66 @@ class CacheFacadeConsistencyTest {
             manager.getOrCreateCache("annotation-definition-conflict", String.class, Long.class);
 
             AnnotationDefinitionConflictService target = new AnnotationDefinitionConflictService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             AnnotationDefinitionConflictService proxy = proxyFactory.getProxy();
 
+            assertEquals(0L, snapshotSize(aspects), "调用前不应存在快照");
             assertThrows(CacheConfigurationException.class, () -> proxy.load("u1"));
             assertEquals(0, target.calls.get(), "定义冲突时应fail-fast，不应静默降级为直调方法");
+            assertEquals(0L, snapshotSize(aspects), "缓存实例创建失败时不应留下孤儿快照");
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldRegisterSnapshotAfterCacheCreationSucceeds() {
+        CascadeCacheProperties defaults = CascadeCacheProperties.defaults();
+        defaults.getL1().setEnabled(true);
+        defaults.getL2().setEnabled(false);
+        defaults.getSync().setEnabled(false);
+        defaults.getRefresh().setEnabled(false);
+        defaults.getProtection().setSingleFlightEnabled(true);
+        defaults.getProtection().setDistributedLockEnabled(false);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
+        try {
+            SnapshotCleanupService target = new SnapshotCleanupService();
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
+            AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
+            addAnnotationAspects(proxyFactory, aspects);
+            SnapshotCleanupService proxy = proxyFactory.getProxy();
+
+            assertEquals(0L, snapshotSize(aspects), "调用前不应存在快照");
+            assertEquals("v-1", proxy.load("u1"));
+            assertEquals(1L, snapshotSize(aspects), "缓存实例创建成功后应注册快照");
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldFailFastWhenConditionUsesMethodVariableAsString() {
+        CascadeCacheProperties defaults = CascadeCacheProperties.defaults();
+        defaults.getL1().setEnabled(true);
+        defaults.getL2().setEnabled(false);
+        defaults.getSync().setEnabled(false);
+        defaults.getRefresh().setEnabled(false);
+        defaults.getProtection().setSingleFlightEnabled(true);
+        defaults.getProtection().setDistributedLockEnabled(false);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
+        try {
+            InvalidMethodVariableConditionService target = new InvalidMethodVariableConditionService();
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
+            AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
+            addAnnotationAspects(proxyFactory, aspects);
+            InvalidMethodVariableConditionService proxy = proxyFactory.getProxy();
+
+            assertThrows(CacheConfigurationException.class, () -> proxy.load("u1"));
+            assertEquals(0, target.calls.get(), "condition中错误使用#method时应fail-fast，不应执行源方法");
         } finally {
             manager.close();
         }
@@ -329,9 +516,9 @@ class CacheFacadeConsistencyTest {
             );
 
             AnnotationLoaderPriorityService target = new AnnotationLoaderPriorityService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             AnnotationLoaderPriorityService proxy = proxyFactory.getProxy();
 
             assertEquals("registered-u1", proxy.load("u1"));
@@ -357,9 +544,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, resolver);
         try {
             AnnotationLoaderPriorityService target = new AnnotationLoaderPriorityService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             AnnotationLoaderPriorityService proxy = proxyFactory.getProxy();
 
             assertEquals("snapshot-1", proxy.load("u3"));
@@ -397,9 +584,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, resolver);
         try {
             AnnotationLoaderPriorityService target = new AnnotationLoaderPriorityService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             AnnotationLoaderPriorityService proxy = proxyFactory.getProxy();
 
             assertEquals("snapshot-1", proxy.load("u2"));
@@ -423,9 +610,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         try {
             CachePutOnlyService target = new CachePutOnlyService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             CachePutOnlyService proxy = proxyFactory.getProxy();
 
             assertEquals("put-1", proxy.put("u1"));
@@ -457,9 +644,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         try {
             SharedCachePutRefreshService target = new SharedCachePutRefreshService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             SharedCachePutRefreshService proxy = proxyFactory.getProxy();
 
             assertEquals("read-1", proxy.read("u1"));
@@ -493,9 +680,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         try {
             DefaultKeyInteropService target = new DefaultKeyInteropService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             DefaultKeyInteropService proxy = proxyFactory.getProxy();
 
             assertEquals("read-1", proxy.read("u1"));
@@ -528,9 +715,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         try {
             AnnotationProgrammaticInteropService target = new AnnotationProgrammaticInteropService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             AnnotationProgrammaticInteropService proxy = proxyFactory.getProxy();
 
             assertEquals("u1-v1", proxy.load("u1"));
@@ -562,9 +749,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         try {
             AsyncPrimitiveService target = new AsyncPrimitiveService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             AsyncPrimitiveService proxy = proxyFactory.getProxy();
 
             assertEquals(1, proxy.load("p1"), "primitive返回类型应降级为同步执行，避免返回null触发拆箱异常");
@@ -589,9 +776,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         try {
             PositionalInteropService target = new PositionalInteropService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             PositionalInteropService proxy = proxyFactory.getProxy();
 
             KeyPayload payload = new KeyPayload("u-positional");
@@ -624,9 +811,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         try {
             InheritRefreshInteropService target = new InheritRefreshInteropService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             InheritRefreshInteropService proxy = proxyFactory.getProxy();
 
             assertEquals("u-refresh-v1", proxy.load("u-refresh"));
@@ -659,9 +846,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         try {
             AsyncLoadService target = new AsyncLoadService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             AsyncLoadService proxy = proxyFactory.getProxy();
 
             assertEquals(null, proxy.load("u-async"), "asyncLoad=true 的miss应立即返回null");
@@ -680,6 +867,39 @@ class CacheFacadeConsistencyTest {
     }
 
     @Test
+    void shouldFallbackToBusinessMethodWhenAsyncLoadCacheReadThrows() {
+        CascadeCacheProperties defaults = CascadeCacheProperties.defaults();
+        defaults.getL1().setEnabled(true);
+        defaults.getL2().setEnabled(false);
+        defaults.getSync().setEnabled(false);
+        defaults.getRefresh().setEnabled(false);
+        defaults.getProtection().setSingleFlightEnabled(true);
+        defaults.getProtection().setDistributedLockEnabled(false);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
+        try {
+            Cache<String, String> cache = manager.getOrCreateCache(
+                    "annotation-async-read-failure-fallback",
+                    String.class,
+                    String.class,
+                    defaults
+            );
+            cache.close();
+
+            AsyncLoadCacheReadFailureFallbackService target = new AsyncLoadCacheReadFailureFallbackService();
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
+            AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
+            addAnnotationAspects(proxyFactory, aspects);
+            AsyncLoadCacheReadFailureFallbackService proxy = proxyFactory.getProxy();
+
+            assertEquals("biz-1", proxy.load("u1"), "缓存读取异常时应降级执行业务方法，而不是返回null");
+            assertEquals(1, target.calls.get(), "降级后应执行一次业务方法");
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
     void shouldHandlePrimitiveReturnTypeOnSnapshotLoaderMissPath() {
         CascadeCacheProperties defaults = CascadeCacheProperties.defaults();
         defaults.getL1().setEnabled(true);
@@ -692,9 +912,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         try {
             PrimitiveReturnService target = new PrimitiveReturnService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             PrimitiveReturnService proxy = proxyFactory.getProxy();
 
             assertEquals(1, proxy.load("k1"));
@@ -707,6 +927,45 @@ class CacheFacadeConsistencyTest {
 
             assertEquals(2, proxy.load("k1"), "primitive返回值在miss链路应正常通过loader类型校验");
             assertEquals(2, target.calls.get(), "miss后应仅回放一次方法，不应因类型误判触发额外降级调用");
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void shouldKeepProxyChainDuringSnapshotReplay() {
+        CascadeCacheProperties defaults = CascadeCacheProperties.defaults();
+        defaults.getL1().setEnabled(true);
+        defaults.getL2().setEnabled(false);
+        defaults.getSync().setEnabled(false);
+        defaults.getRefresh().setEnabled(false);
+        defaults.getProtection().setSingleFlightEnabled(true);
+        defaults.getProtection().setDistributedLockEnabled(false);
+        defaults.getLoader().setAutoDiscover(false);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
+        try {
+            ProxyChainReplayService target = new ProxyChainReplayService();
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
+            ProxyChainMarkerAspect markerAspect = new ProxyChainMarkerAspect();
+            AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
+            addAnnotationAspects(proxyFactory, aspects);
+            proxyFactory.addAspect(markerAspect);
+            ProxyChainReplayService proxy = proxyFactory.getProxy();
+
+            assertEquals("replay-1", proxy.load("u1"));
+            assertEquals(1, target.calls.get(), "首次应执行一次源方法");
+            assertEquals(1, markerAspect.calls.get(), "首次应经过额外切面");
+            assertEquals(0, target.proxyBypassCalls.get(), "首次调用不应绕过代理链");
+
+            Cache<String, String> cache = manager.getCache("annotation-proxy-chain-replay");
+            assertTrue(cache != null);
+            cache.evict("u1");
+
+            assertEquals("replay-2", proxy.load("u1"), "驱逐后应由快照回放重新加载");
+            assertEquals(2, target.calls.get(), "快照回放应执行一次源方法");
+            assertEquals(2, markerAspect.calls.get(), "快照回放应继续经过额外切面");
+            assertEquals(0, target.proxyBypassCalls.get(), "快照回放不应绕过代理链");
         } finally {
             manager.close();
         }
@@ -745,9 +1004,9 @@ class CacheFacadeConsistencyTest {
         try {
             manager.registerCache("annotation-evict-sync", cache);
             CacheEvictSyncService target = new CacheEvictSyncService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             CacheEvictSyncService proxy = proxyFactory.getProxy();
 
             cache.put("k1", "v1");
@@ -773,6 +1032,56 @@ class CacheFacadeConsistencyTest {
     }
 
     @Test
+    void shouldEvaluateCacheEvictKeyOnlyWhenConditionMatches() {
+        CascadeCacheProperties defaults = CascadeCacheProperties.defaults();
+        defaults.getL1().setEnabled(true);
+        defaults.getL2().setEnabled(false);
+        defaults.getSync().setEnabled(false);
+        defaults.getRefresh().setEnabled(false);
+        defaults.getProtection().setSingleFlightEnabled(true);
+        defaults.getProtection().setDistributedLockEnabled(false);
+
+        FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
+        try {
+            CacheEvictConditionOrderService target = new CacheEvictConditionOrderService();
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
+            AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
+            addAnnotationAspects(proxyFactory, aspects);
+            CacheEvictConditionOrderService proxy = proxyFactory.getProxy();
+
+            assertEquals("v-1", proxy.load("u1"));
+            assertEquals("v-1", proxy.load("u1"));
+            assertEquals(1, target.loadCalls.get(), "预热后应命中缓存");
+
+            EvictConditionRequest afterFalse = new EvictConditionRequest("u1", false);
+            proxy.evictAfter(afterFalse);
+            assertEquals(0, afterFalse.keyReadCount(), "condition=false 时 afterInvocation 不应求值 key");
+            assertEquals("v-1", proxy.load("u1"));
+            assertEquals(1, target.loadCalls.get(), "condition=false 时不应发生驱逐");
+
+            EvictConditionRequest beforeFalse = new EvictConditionRequest("u1", false);
+            proxy.evictBefore(beforeFalse);
+            assertEquals(0, beforeFalse.keyReadCount(), "condition=false 时 beforeInvocation 不应求值 key");
+            assertEquals("v-1", proxy.load("u1"));
+            assertEquals(1, target.loadCalls.get(), "condition=false 时不应发生驱逐");
+
+            EvictConditionRequest afterTrue = new EvictConditionRequest("u1", true);
+            proxy.evictAfter(afterTrue);
+            assertEquals(1, afterTrue.keyReadCount(), "condition=true 时 afterInvocation 应求值 key");
+            assertEquals("v-2", proxy.load("u1"));
+            assertEquals(2, target.loadCalls.get(), "condition=true 时 afterInvocation 应驱逐缓存");
+
+            EvictConditionRequest beforeTrue = new EvictConditionRequest("u1", true);
+            proxy.evictBefore(beforeTrue);
+            assertEquals(1, beforeTrue.keyReadCount(), "condition=true 时 beforeInvocation 应求值 key");
+            assertEquals("v-3", proxy.load("u1"));
+            assertEquals(3, target.loadCalls.get(), "condition=true 时 beforeInvocation 应驱逐缓存");
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
     void shouldKeepCacheEvictBeforeInvocationDefaultFalse() throws Exception {
         assertEquals(false, CacheEvict.class.getMethod("beforeInvocation").getDefaultValue());
 
@@ -787,9 +1096,9 @@ class CacheFacadeConsistencyTest {
         FunctionalCacheManager manager = new FunctionalCacheManager(null, defaults, null);
         try {
             CacheEvictBeforeInvocationService target = new CacheEvictBeforeInvocationService();
-            CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+            AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
             AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-            proxyFactory.addAspect(cacheAspect);
+            addAnnotationAspects(proxyFactory, aspects);
             CacheEvictBeforeInvocationService proxy = proxyFactory.getProxy();
 
             assertEquals("v-1", proxy.load("u1"));
@@ -834,9 +1143,9 @@ class CacheFacadeConsistencyTest {
     private void verifyAnnotationBehavior(FunctionalCacheManager manager,
                                           CascadeCacheProperties defaults) throws InterruptedException {
         DemoService target = new DemoService();
-        CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+        AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
         AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-        proxyFactory.addAspect(cacheAspect);
+        addAnnotationAspects(proxyFactory, aspects);
         DemoService proxy = proxyFactory.getProxy();
 
         assertEquals("A-1", proxy.load("u2"));
@@ -889,22 +1198,22 @@ class CacheFacadeConsistencyTest {
     private void verifyAnnotationConditionUnlessBehavior(FunctionalCacheManager manager,
                                                          CascadeCacheProperties defaults) {
         ConditionUnlessService target = new ConditionUnlessService();
-        CacheAspect cacheAspect = new CacheAspect(manager, defaults);
+        AnnotationAspects aspects = newAnnotationAspects(manager, defaults);
         AspectJProxyFactory proxyFactory = new AspectJProxyFactory(target);
-        proxyFactory.addAspect(cacheAspect);
+        addAnnotationAspects(proxyFactory, aspects);
         ConditionUnlessService proxy = proxyFactory.getProxy();
 
         assertEquals("keep-1", proxy.loadCascade("cache-keep"));
         assertEquals("keep-1", proxy.loadCascade("cache-keep"));
-        assertEquals(1, target.cascadeCalls.get(), "@CascadeCached condition/unless 语义不符合预期");
+        assertEquals(1, target.cascadeCalls.get(), "统一 @Cacheable condition/unless 语义不符合预期");
 
         assertEquals("skip-2", proxy.loadCascade("cache-skip"));
         assertEquals("skip-3", proxy.loadCascade("cache-skip"));
-        assertEquals(3, target.cascadeCalls.get(), "@CascadeCached unless=true 应不缓存");
+        assertEquals(3, target.cascadeCalls.get(), "统一 @Cacheable unless=true 应不缓存");
 
         assertEquals("keep-4", proxy.loadCascade("nocache"));
         assertEquals("keep-5", proxy.loadCascade("nocache"));
-        assertEquals(5, target.cascadeCalls.get(), "@CascadeCached condition=false 应绕过缓存");
+        assertEquals(5, target.cascadeCalls.get(), "统一 @Cacheable condition=false 应绕过缓存");
 
         assertEquals("keep-1", proxy.loadLegacy("cache-keep"));
         assertEquals("keep-1", proxy.loadLegacy("cache-keep"));
@@ -937,23 +1246,46 @@ class CacheFacadeConsistencyTest {
         return key.contains("skip") ? "skip-" + seq : "keep-" + seq;
     }
 
-    private static long snapshotSize(CacheAspect cacheAspect) throws Exception {
-        Field field = CacheAspect.class.getDeclaredField("invocationSnapshots");
-        field.setAccessible(true);
-        Object cache = field.get(cacheAspect);
-        if (!(cache instanceof com.github.benmanes.caffeine.cache.Cache<?, ?> caffeineCache)) {
-            return -1L;
-        }
-        return caffeineCache.estimatedSize();
+    private static void addAnnotationAspects(AspectJProxyFactory proxyFactory, AnnotationAspects aspects) {
+        proxyFactory.addAspect(aspects.cacheableAspect());
+        proxyFactory.addAspect(aspects.cachePutAspect());
+        proxyFactory.addAspect(aspects.cacheEvictAspect());
+    }
+
+    private static long snapshotSize(AnnotationAspects aspects) {
+        return aspects.snapshotSupport().snapshotCount();
+    }
+
+    private record AnnotationAspects(
+            CacheInvocationSnapshotSupport snapshotSupport,
+            CacheAspectSupport support,
+            CacheableAspect cacheableAspect,
+            CachePutAspect cachePutAspect,
+            CacheEvictAspect cacheEvictAspect
+    ) {
+    }
+
+    private static AnnotationAspects newAnnotationAspects(FunctionalCacheManager manager,
+                                                          CascadeCacheProperties defaults) {
+        CacheInvocationSnapshotSupport snapshotSupport = new CacheInvocationSnapshotSupport();
+        CacheAspectSupport support = new CacheAspectSupport(manager, defaults, snapshotSupport);
+        return new AnnotationAspects(
+                snapshotSupport,
+                support,
+                new CacheableAspect(support),
+                new CachePutAspect(support),
+                new CacheEvictAspect(support)
+        );
     }
 
     static class DemoService {
         private final AtomicInteger sourceCalls = new AtomicInteger(0);
 
-        @CascadeCached(
-                name = "annotation-refresh",
-                ttl = "30s",
+        @Cacheable(
+                value = "annotation-refresh",
+                ttlString = "30s",
                 softTtl = "1s",
+                enableSync = false,
                 syncMode = SyncMode.NONE,
                 autoRefresh = true
         )
@@ -999,11 +1331,12 @@ class CacheFacadeConsistencyTest {
         private final AtomicInteger cascadeCalls = new AtomicInteger(0);
         private final AtomicInteger legacyCalls = new AtomicInteger(0);
 
-        @CascadeCached(
-                name = "annotation-condition-unless-cascade",
+        @Cacheable(
+                value = "annotation-condition-unless-cascade",
                 key = "#userId",
                 condition = "#userId.startsWith('cache')",
                 unless = "#result.startsWith('skip-')",
+                enableSync = false,
                 syncMode = SyncMode.NONE,
                 autoRefresh = false
         )
@@ -1061,6 +1394,54 @@ class CacheFacadeConsistencyTest {
         }
     }
 
+    static class DtoExpressionService {
+        private final AtomicInteger calls = new AtomicInteger(0);
+
+        @Cacheable(
+                value = "annotation-dto-expression",
+                key = "'user:' + #id + ':' + #user.id",
+                condition = "#id.startsWith('cache')",
+                enableL1 = true,
+                enableL2 = false,
+                enableSync = false,
+                enableRefresh = false,
+                autoRefresh = false
+        )
+        public String load(DtoExpressionRequest request) {
+            return "dto-" + calls.incrementAndGet();
+        }
+    }
+
+    static final class DtoExpressionRequest {
+        private final String id;
+        private final NestedUser user;
+
+        DtoExpressionRequest(String id, NestedUser user) {
+            this.id = id;
+            this.user = user;
+        }
+
+        public String getId() {
+            return id;
+        }
+
+        public NestedUser getUser() {
+            return user;
+        }
+    }
+
+    static final class NestedUser {
+        private final String id;
+
+        NestedUser(String id) {
+            this.id = id;
+        }
+
+        public String getId() {
+            return id;
+        }
+    }
+
     static class MultiKeyEvictService {
         private final AtomicInteger sourceCalls = new AtomicInteger(0);
 
@@ -1101,10 +1482,11 @@ class CacheFacadeConsistencyTest {
             return "legacy-" + legacyCalls.incrementAndGet();
         }
 
-        @CascadeCached(
-                name = "invalid-unless-cascade",
+        @Cacheable(
+                value = "invalid-unless-cascade",
                 key = "#id",
                 unless = "invalid-spel(",
+                enableSync = false,
                 syncMode = SyncMode.NONE,
                 autoRefresh = false,
                 enableL1 = true,
@@ -1112,6 +1494,83 @@ class CacheFacadeConsistencyTest {
         )
         public String loadCascade(String id) {
             return "cascade-" + cascadeCalls.incrementAndGet();
+        }
+    }
+
+    static class InvalidKeyExpressionService {
+        private final AtomicInteger calls = new AtomicInteger(0);
+
+        @Cacheable(
+                value = "annotation-invalid-key-expression",
+                key = "#user.id",
+                enableL1 = true,
+                enableL2 = false,
+                enableSync = false,
+                enableRefresh = false,
+                autoRefresh = false
+        )
+        public String load(String id) {
+            return "invalid-key-" + calls.incrementAndGet();
+        }
+    }
+
+    static class InvalidMethodVariableConditionService {
+        private final AtomicInteger calls = new AtomicInteger(0);
+
+        @Cacheable(
+                value = "annotation-invalid-method-variable-condition",
+                key = "#id",
+                condition = "#method == 'load'",
+                enableL1 = true,
+                enableL2 = false,
+                enableSync = false,
+                enableRefresh = false,
+                autoRefresh = false
+        )
+        public String load(String id) {
+            return "invalid-method-condition-" + calls.incrementAndGet();
+        }
+    }
+
+    static class NonStringKeyExpressionService {
+        private final AtomicInteger calls = new AtomicInteger(0);
+
+        @Cacheable(
+                value = "annotation-non-string-key-expression",
+                key = "#id",
+                enableL1 = true,
+                enableL2 = false,
+                enableSync = false,
+                enableRefresh = false,
+                autoRefresh = false
+        )
+        public String load(Long id) {
+            return "non-string-key-" + calls.incrementAndGet();
+        }
+    }
+
+    static class NonStringCachePutKeyExpressionService {
+        private final AtomicInteger calls = new AtomicInteger(0);
+
+        @CachePut(
+                value = "annotation-cacheput-non-string-key-expression",
+                key = "#id",
+                enableL1 = true,
+                enableL2 = false,
+                sync = false,
+                autoRefresh = false
+        )
+        public String put(Long id) {
+            return "put-non-string-key-" + calls.incrementAndGet();
+        }
+    }
+
+    static class NonStringCacheEvictKeyExpressionService {
+        private final AtomicInteger calls = new AtomicInteger(0);
+
+        @CacheEvict(value = "annotation-cacheevict-non-string-key-expression", key = "#id")
+        public void evict(Long id) {
+            calls.incrementAndGet();
         }
     }
 
@@ -1321,6 +1780,24 @@ class CacheFacadeConsistencyTest {
         }
     }
 
+    static class AsyncLoadCacheReadFailureFallbackService {
+        private final AtomicInteger calls = new AtomicInteger(0);
+
+        @Cacheable(
+                value = "annotation-async-read-failure-fallback",
+                key = "#id",
+                asyncLoad = true,
+                enableL1 = true,
+                enableL2 = false,
+                enableSync = false,
+                enableRefresh = false,
+                autoRefresh = false
+        )
+        public String load(String id) {
+            return "biz-" + calls.incrementAndGet();
+        }
+    }
+
     static class CacheEvictSyncService {
         @CacheEvict(value = "annotation-evict-sync", key = "#id", sync = false)
         public void evictLocal(String id) {
@@ -1360,6 +1837,62 @@ class CacheFacadeConsistencyTest {
         }
     }
 
+    static class CacheEvictConditionOrderService {
+        private final AtomicInteger loadCalls = new AtomicInteger(0);
+
+        @Cacheable(
+                value = "annotation-evict-condition-order",
+                key = "#id",
+                enableL1 = true,
+                enableL2 = false,
+                enableSync = false,
+                enableRefresh = false,
+                autoRefresh = false
+        )
+        public String load(String id) {
+            return "v-" + loadCalls.incrementAndGet();
+        }
+
+        @CacheEvict(value = "annotation-evict-condition-order", key = "#p0.key", condition = "#p0.allow")
+        public void evictAfter(EvictConditionRequest request) {
+            // no-op
+        }
+
+        @CacheEvict(
+                value = "annotation-evict-condition-order",
+                key = "#p0.key",
+                condition = "#p0.allow",
+                beforeInvocation = true
+        )
+        public void evictBefore(EvictConditionRequest request) {
+            // no-op
+        }
+    }
+
+    static final class EvictConditionRequest {
+        private final String key;
+        private final boolean allow;
+        private final AtomicInteger keyReads = new AtomicInteger(0);
+
+        EvictConditionRequest(String key, boolean allow) {
+            this.key = key;
+            this.allow = allow;
+        }
+
+        public String getKey() {
+            keyReads.incrementAndGet();
+            return key;
+        }
+
+        public boolean isAllow() {
+            return allow;
+        }
+
+        int keyReadCount() {
+            return keyReads.get();
+        }
+    }
+
     static class PrimitiveReturnService {
         private final AtomicInteger calls = new AtomicInteger(0);
 
@@ -1374,6 +1907,63 @@ class CacheFacadeConsistencyTest {
         )
         public int load(String id) {
             return calls.incrementAndGet();
+        }
+    }
+
+    static class ProxyChainReplayService {
+        private final AtomicInteger calls = new AtomicInteger(0);
+        private final AtomicInteger proxyBypassCalls = new AtomicInteger(0);
+
+        @Cacheable(
+                value = "annotation-proxy-chain-replay",
+                key = "#id",
+                enableL1 = true,
+                enableL2 = false,
+                enableSync = false,
+                enableRefresh = false,
+                autoRefresh = false
+        )
+        public String load(String id) {
+            if (!ProxyChainContext.isActive()) {
+                proxyBypassCalls.incrementAndGet();
+            }
+            return "replay-" + calls.incrementAndGet();
+        }
+    }
+
+    static final class ProxyChainContext {
+        private static final ThreadLocal<Boolean> ACTIVE = ThreadLocal.withInitial(() -> false);
+
+        private ProxyChainContext() {
+        }
+
+        static void enter() {
+            ACTIVE.set(true);
+        }
+
+        static void exit() {
+            ACTIVE.remove();
+        }
+
+        static boolean isActive() {
+            return Boolean.TRUE.equals(ACTIVE.get());
+        }
+    }
+
+    @Aspect
+    @Order(2)
+    static class ProxyChainMarkerAspect {
+        private final AtomicInteger calls = new AtomicInteger(0);
+
+        @Around("execution(* io.github.cascade.cache.v2.facade.CacheFacadeConsistencyTest.ProxyChainReplayService.load(..))")
+        public Object mark(ProceedingJoinPoint joinPoint) throws Throwable {
+            calls.incrementAndGet();
+            ProxyChainContext.enter();
+            try {
+                return joinPoint.proceed();
+            } finally {
+                ProxyChainContext.exit();
+            }
         }
     }
 

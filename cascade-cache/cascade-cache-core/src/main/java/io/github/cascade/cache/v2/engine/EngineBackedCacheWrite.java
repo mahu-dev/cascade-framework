@@ -1,6 +1,7 @@
 package io.github.cascade.cache.v2.engine;
 
 import io.github.cascade.cache.v2.common.exception.CacheConfigurationException;
+import io.github.cascade.cache.v2.common.exception.CacheLoadException;
 import io.github.cascade.cache.v2.loader.DistLockCoordinator;
 import io.github.cascade.cache.v2.loader.SingleFlight;
 import io.github.cascade.cache.v2.policy.CachePolicy;
@@ -122,9 +123,24 @@ final class EngineBackedCacheWrite<K, V> {
         } catch (CacheConfigurationException e) {
             throw e;
         } catch (Exception e) {
-            logger.warn("加载器执行失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
+            throw new CacheLoadException(key, "加载器执行失败: cache=" + cacheName, e);
+        }
+    }
+
+    /**
+     * 刷新链路专用：保留异常语义，让上层按重试策略处理失败。
+     */
+    V invokeLoaderAndWriteForRefresh(K key, Long ttlSeconds) {
+        Function<K, V> loadFunction = loaderSupplier.get();
+        if (loadFunction == null) {
             return null;
         }
+        long effectiveTtl = ttlSeconds != null ? ttlSeconds : policy.getHardTtlSeconds();
+        V loaded = loadFunction.apply(key);
+        if (loaded != null) {
+            writeThrough(key, loaded, effectiveTtl);
+        }
+        return loaded;
     }
 
     private V loadWithProtection(K key, long ttlSeconds) {

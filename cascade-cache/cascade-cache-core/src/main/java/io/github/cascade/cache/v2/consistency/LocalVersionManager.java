@@ -1,7 +1,5 @@
 package io.github.cascade.cache.v2.consistency;
 
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -9,18 +7,20 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class LocalVersionManager<K> implements VersionManager<K> {
 
-    private final ConcurrentMap<K, AtomicLong> keyVersions = new ConcurrentHashMap<>();
+    /**
+     * 与 RedisVersionManager 保持一致：使用缓存级全局序列，避免本地按 key 维护无限增长的版本表。
+     */
+    private final AtomicLong keyVersionSequence = new AtomicLong(0L);
     private final AtomicLong clearVersion = new AtomicLong(0L);
 
     @Override
     public long nextVersion(K key) {
-        return keyVersions.computeIfAbsent(key, ignored -> new AtomicLong(0L)).incrementAndGet();
+        return keyVersionSequence.incrementAndGet();
     }
 
     @Override
     public long currentVersion(K key) {
-        AtomicLong version = keyVersions.get(key);
-        return version == null ? 0L : version.get();
+        return keyVersionSequence.get();
     }
 
     @Override

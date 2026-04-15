@@ -17,7 +17,6 @@ import io.github.cascade.cache.v2.support.ObjectMapperHolder;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -1014,6 +1013,95 @@ class EngineBackedCacheTest {
     }
 
     @Test
+    void shouldReleaseRefreshingKeyWhenRefreshSubmissionRejected() throws Exception {
+        RefreshExecutionOptions options = new RefreshExecutionOptions(1, 1, true, 2, 0, 0, true, 1);
+        CachePolicy policy = CachePolicy.builder()
+                .l1Enabled(true)
+                .l2Enabled(false)
+                .autoRefreshEnabled(true)
+                .syncMode(SyncMode.NONE)
+                .refreshExecutionOptions(options)
+                .build();
+        CaffeineL1Store<String, String> l1 = new CaffeineL1Store<>(100, false);
+        VersionManager<String> versionManager = new LocalVersionManager<>();
+        TestBus<String> bus = new TestBus<>();
+        ConcurrentMap<String, AtomicInteger> attemptsByKey = new ConcurrentHashMap<>();
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+
+        EngineBackedCache<String, String> cache = new EngineBackedCache<>(
+                "user",
+                policy,
+                l1,
+                null,
+                key -> {
+                    attemptsByKey.computeIfAbsent(key, ignored -> new AtomicInteger(0)).incrementAndGet();
+                    if ("k1".equals(key)) {
+                        firstStarted.countDown();
+                        try {
+                            releaseFirst.await(1, TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                    return "value-" + key;
+                },
+                bus,
+                versionManager,
+                DistLockCoordinator.noop(),
+                "node-1"
+        );
+        try {
+            invokeTriggerRefresh(cache, "k1");
+            assertTrue(firstStarted.await(500, TimeUnit.MILLISECONDS), "第一个刷新任务应已占满工作线程");
+
+            invokeTriggerRefresh(cache, "k2");
+            assertDoesNotThrow(
+                    () -> invokeTriggerRefresh(cache, "k3"),
+                    "线程池拒绝提交时不应向调用方抛异常"
+            );
+
+            assertTrue(waitUntil(() -> {
+                try {
+                    return refreshingKeyCount(cache) <= 2;
+                } catch (Exception e) {
+                    return false;
+                }
+            }, 800L), "被拒绝提交的key不应长期滞留在refreshingKeys中");
+            assertEquals(
+                    0,
+                    attemptsByKey.containsKey("k3") ? attemptsByKey.get("k3").get() : 0,
+                    "拒绝提交流程不应实际执行loader"
+            );
+
+            releaseFirst.countDown();
+            assertTrue(waitUntil(() -> {
+                try {
+                    return refreshingKeyCount(cache) == 0;
+                } catch (Exception e) {
+                    return false;
+                }
+            }, 2000L), "队列任务完成后应释放所有refreshingKeys");
+
+            invokeTriggerRefresh(cache, "k3");
+            assertTrue(waitUntil(() -> {
+                AtomicInteger attempts = attemptsByKey.get("k3");
+                return attempts != null && attempts.get() >= 1;
+            }, 1000L), "释放占位后同key应可再次触发刷新");
+            assertTrue(waitUntil(() -> {
+                try {
+                    return refreshingKeyCount(cache) == 0;
+                } catch (Exception e) {
+                    return false;
+                }
+            }, 1000L), "二次刷新完成后应再次释放refreshingKeys");
+            assertEquals(1, attemptsByKey.get("k3").get(), "k3应仅在恢复后执行一次刷新");
+        } finally {
+            cache.close();
+        }
+    }
+
+    @Test
     void shouldStartRefreshSchedulerLazilyWhenStartOnInitDisabled() throws Exception {
         RefreshExecutionOptions options = new RefreshExecutionOptions(1, 16, false, 2, 0, 0, false, 1);
         CachePolicy policy = CachePolicy.builder()
@@ -1062,15 +1150,19 @@ class EngineBackedCacheTest {
     }
 
     private static void invokeRefreshTrackedKeys(EngineBackedCache<?, ?> cache) throws Exception {
-        Method method = EngineBackedCache.class.getDeclaredMethod("refreshTrackedKeys");
-        method.setAccessible(true);
-        method.invoke(cache);
+        refreshDelegate(cache).refreshTrackedKeys();
     }
 
+    @SuppressWarnings("unchecked")
     private static void invokeTriggerRefresh(EngineBackedCache<?, ?> cache, Object key) throws Exception {
-        Method method = EngineBackedCache.class.getDeclaredMethod("triggerRefresh", Object.class);
-        method.setAccessible(true);
-        method.invoke(cache, key);
+        EngineBackedCacheRefresh<Object, Object> delegate = (EngineBackedCacheRefresh<Object, Object>) refreshDelegate(cache);
+        delegate.triggerRefresh(key);
+    }
+
+    private static EngineBackedCacheRefresh<?, ?> refreshDelegate(EngineBackedCache<?, ?> cache) throws Exception {
+        Field field = EngineBackedCache.class.getDeclaredField("refreshDelegate");
+        field.setAccessible(true);
+        return (EngineBackedCacheRefresh<?, ?>) field.get(cache);
     }
 
     @SuppressWarnings("unchecked")

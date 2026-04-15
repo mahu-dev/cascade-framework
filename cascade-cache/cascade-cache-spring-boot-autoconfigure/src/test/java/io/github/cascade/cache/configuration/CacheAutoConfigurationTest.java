@@ -1,7 +1,11 @@
 package io.github.cascade.cache.configuration;
 
 import io.github.cascade.cache.v2.api.CacheManager;
-import io.github.cascade.cache.v2.facade.CacheAspect;
+import io.github.cascade.cache.v2.facade.CacheAspectSupport;
+import io.github.cascade.cache.v2.facade.CacheEvictAspect;
+import io.github.cascade.cache.v2.facade.CacheInvocationSnapshotSupport;
+import io.github.cascade.cache.v2.facade.CachePutAspect;
+import io.github.cascade.cache.v2.facade.CacheableAspect;
 import io.github.cascade.cache.v2.facade.FunctionalCacheManager;
 import io.github.cascade.cache.v2.loader.CacheLoaderResolver;
 import org.junit.jupiter.api.Test;
@@ -21,7 +25,11 @@ class CacheAutoConfigurationTest {
             assertThat(context).hasSingleBean(CacheLoaderResolver.class);
             assertThat(context).hasSingleBean(FunctionalCacheManager.class);
             assertThat(context).hasSingleBean(CacheManager.class);
-            assertThat(context).hasSingleBean(CacheAspect.class);
+            assertThat(context).hasSingleBean(CacheInvocationSnapshotSupport.class);
+            assertThat(context).hasSingleBean(CacheAspectSupport.class);
+            assertThat(context).hasSingleBean(CacheableAspect.class);
+            assertThat(context).hasSingleBean(CachePutAspect.class);
+            assertThat(context).hasSingleBean(CacheEvictAspect.class);
         });
     }
 

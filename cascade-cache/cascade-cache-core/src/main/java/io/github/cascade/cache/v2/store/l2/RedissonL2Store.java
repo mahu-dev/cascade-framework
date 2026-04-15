@@ -31,6 +31,7 @@ public class RedissonL2Store<K, V> implements L2CacheStore<K, V> {
     private final RedissonClient redissonClient;
     private final String keyPrefix;
     private final String namespaceVersionKey;
+    private final String keyVersionSequenceKey;
     private final ObjectMapper objectMapper = ObjectMapperHolder.getInstance();
     private volatile long cachedNamespaceVersion = -1L;
 
@@ -42,6 +43,7 @@ public class RedissonL2Store<K, V> implements L2CacheStore<K, V> {
         }
         this.keyPrefix = finalPrefix + cacheName + ":";
         this.namespaceVersionKey = this.keyPrefix + "ns:version";
+        this.keyVersionSequenceKey = this.keyPrefix + "ver:sequence";
     }
 
     @Override
@@ -114,7 +116,7 @@ public class RedissonL2Store<K, V> implements L2CacheStore<K, V> {
 
     @Override
     public long nextVersion(K key) {
-        RAtomicLong counter = redissonClient.getAtomicLong(versionKey(key));
+        RAtomicLong counter = redissonClient.getAtomicLong(keyVersionSequenceKey);
         return counter.incrementAndGet();
     }
 
@@ -129,10 +131,6 @@ public class RedissonL2Store<K, V> implements L2CacheStore<K, V> {
 
     private String dataKeyPattern(long namespaceVersion) {
         return keyPrefix + "ns:" + namespaceVersion + ":data:*";
-    }
-
-    private String versionKey(K key) {
-        return keyPrefix + "ver:" + encodeKey(key);
     }
 
     private String encodeKey(K key) {

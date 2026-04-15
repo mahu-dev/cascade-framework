@@ -1,39 +1,45 @@
 package io.github.cascade.cache.v2.support;
 
+import io.github.cascade.cache.v2.common.exception.CacheConfigurationException;
 import org.junit.jupiter.api.Test;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class CacheKeyEncoderTest {
 
     @Test
-    void shouldEncodeNullAsLiteralNull() {
-        assertEquals("null", CacheKeyEncoder.encodeKey(null, null));
-        assertEquals("null", CacheKeyEncoder.encodeKey(ObjectMapperHolder.getInstance(), null));
+    void shouldFailFastWhenKeyIsNull() {
+        assertThrows(CacheConfigurationException.class,
+                () -> CacheKeyEncoder.encodeKey(null, null));
+        assertThrows(CacheConfigurationException.class,
+                () -> CacheKeyEncoder.encodeKey(ObjectMapperHolder.getInstance(), null));
     }
 
     @Test
-    void shouldKeepLegacyJsonBase64FormatForSimpleType() {
-        String key = "u1";
-        String expected = Base64.getUrlEncoder().withoutPadding()
-                .encodeToString(("\"" + key + "\"").getBytes(StandardCharsets.UTF_8));
-        String actual = CacheKeyEncoder.encodeKey(ObjectMapperHolder.getInstance(), key);
-        assertEquals(expected, actual, "simple key编码应保持与历史实现兼容");
+    void shouldKeepStringKeyAsIs() {
+        assertEquals("u1", CacheKeyEncoder.encodeKey(ObjectMapperHolder.getInstance(), "u1"));
     }
 
     @Test
-    void shouldFallbackToToStringWhenSerializationFails() {
-        SelfRefKey key = new SelfRefKey();
-        key.self = key;
-
-        String encoded = CacheKeyEncoder.encodeKey(ObjectMapperHolder.getInstance(), key);
-        assertEquals(key.toString(), encoded);
+    void shouldEscapeControlCharactersAndBackslashReversibly() {
+        String raw = "line1\nline2\\tail";
+        String encoded = CacheKeyEncoder.encodeKey(ObjectMapperHolder.getInstance(), raw);
+        assertEquals("line1\\u000Aline2\\\\tail", encoded);
+        assertEquals(raw, CacheKeyEncoder.decodeKey(encoded));
     }
 
-    private static final class SelfRefKey {
-        private SelfRefKey self;
+    @Test
+    void shouldFailFastWhenKeyIsNotString() {
+        assertThrows(CacheConfigurationException.class,
+                () -> CacheKeyEncoder.encodeKey(ObjectMapperHolder.getInstance(), 1L));
+        assertThrows(CacheConfigurationException.class,
+                () -> CacheKeyEncoder.encodeKey(ObjectMapperHolder.getInstance(), new Object()));
+    }
+
+    @Test
+    void shouldDecodeInvalidEscapeSafely() {
+        assertEquals("abc\\x", CacheKeyEncoder.decodeKey("abc\\x"));
+        assertEquals("abc\\u12", CacheKeyEncoder.decodeKey("abc\\u12"));
     }
 }

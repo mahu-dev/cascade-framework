@@ -1,7 +1,11 @@
 package io.github.cascade.cache.starter;
 
 import io.github.cascade.cache.v2.api.CacheManager;
-import io.github.cascade.cache.v2.facade.CacheAspect;
+import io.github.cascade.cache.v2.facade.CacheAspectSupport;
+import io.github.cascade.cache.v2.facade.CacheEvictAspect;
+import io.github.cascade.cache.v2.facade.CacheInvocationSnapshotSupport;
+import io.github.cascade.cache.v2.facade.CachePutAspect;
+import io.github.cascade.cache.v2.facade.CacheableAspect;
 import io.github.cascade.cache.v2.facade.FunctionalCacheManager;
 import io.github.cascade.cache.v2.loader.CacheLoaderResolver;
 import org.junit.jupiter.api.Test;
@@ -29,7 +33,11 @@ class CacheSpringBoot4StarterTest {
             assertThat(assertable).hasSingleBean(CacheLoaderResolver.class);
             assertThat(assertable).hasSingleBean(FunctionalCacheManager.class);
             assertThat(assertable).hasSingleBean(CacheManager.class);
-            assertThat(assertable).hasSingleBean(CacheAspect.class);
+            assertThat(assertable).hasSingleBean(CacheInvocationSnapshotSupport.class);
+            assertThat(assertable).hasSingleBean(CacheAspectSupport.class);
+            assertThat(assertable).hasSingleBean(CacheableAspect.class);
+            assertThat(assertable).hasSingleBean(CachePutAspect.class);
+            assertThat(assertable).hasSingleBean(CacheEvictAspect.class);
         }
     }
 

@@ -249,7 +249,7 @@ class FunctionalCacheManagerBuilderTest {
     }
 
     @Test
-    void shouldFailFastWhenSameCacheNameHasDifferentKeyType() {
+    void shouldFailFastWhenCacheKeyTypeIsNotString() {
         CascadeCacheProperties config = CascadeCacheProperties.defaults();
         config.getL1().setEnabled(true);
         config.getL2().setEnabled(false);
@@ -257,9 +257,8 @@ class FunctionalCacheManagerBuilderTest {
 
         FunctionalCacheManager manager = new FunctionalCacheManager(null, config, null);
         try {
-            manager.getOrCreateCache("conflict-type", String.class, String.class);
             assertThrows(CacheConfigurationException.class,
-                    () -> manager.getOrCreateCache("conflict-type", Long.class, String.class));
+                    () -> manager.getOrCreateCache("non-string-key-type", Long.class, String.class));
         } finally {
             manager.close();
         }
@@ -547,6 +546,11 @@ class FunctionalCacheManagerBuilderTest {
 
         @Override
         public Optional<String> get(String key) {
+            return Optional.empty();
+        }
+
+        @Override
+        public Optional<String> getIfPresent(String key) {
             return Optional.empty();
         }
 

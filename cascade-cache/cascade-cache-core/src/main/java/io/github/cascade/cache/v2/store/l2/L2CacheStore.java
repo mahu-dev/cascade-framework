@@ -35,6 +35,9 @@ public interface L2CacheStore<K, V> {
 
     long size();
 
+    /**
+     * 生成下一写入版本；实现可按需采用“按 key”或“缓存级全局序列”。
+     */
     long nextVersion(K key);
 
     void close();

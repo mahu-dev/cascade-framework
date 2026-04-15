@@ -8,15 +8,13 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * 缓存注解 - 用于方法级别的缓存
+ * 统一读缓存注解。
  * <p>
- * 设计原则：
- * 1. 简洁实用：只包含核心配置项
- * 2. 见名知义：参数名称清晰易懂
- * 3. 默认合理：提供合理的默认值
- * 4. 向后兼容：支持未来扩展
- *
- * @author cascade
+ * 在保留传统 {@code Cacheable} 命名习惯的同时，吸收统一缓存引擎的能力：
+ * 1. L2 命中自动回填 L1；
+ * 2. 硬 TTL 与软 TTL；
+ * 3. 自动刷新与异步加载；
+ * 4. 多节点失效/更新同步。
  */
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.RUNTIME)
@@ -27,6 +25,13 @@ public @interface Cacheable {
      * 如果不指定，将使用 类名.方法名 作为缓存名称
      */
     String value() default "";
+
+    /**
+     * 缓存名称别名。
+     * <p>
+     * 与 {@link #value()} 语义一致，便于统一内部/外部配置风格。
+     */
+    String name() default "";
 
     /**
      * 缓存键表达式
@@ -59,10 +64,37 @@ public @interface Cacheable {
     String unless() default "";
 
     /**
-     * 缓存TTL（秒）
-     * 0表示使用配置的默认TTL，-1表示永不过期
+     * 硬 TTL（秒）。
+     * 0 表示使用默认值，-1 表示永不过期。
      */
     long ttl() default 0;
+
+    /**
+     * 硬 TTL 字符串格式。
+     * <p>
+     * 支持 {@code 30m}、{@code 120s}、{@code 1h}。
+     * 有值时优先于 {@link #ttl()}。
+     */
+    String ttlString() default "";
+
+    /**
+     * 硬 TTL 秒值别名。
+     * <p>
+     * 当需要与编程式 API 术语保持一致时可使用该字段。
+     */
+    long ttlSeconds() default 0;
+
+    /**
+     * 软 TTL 字符串格式。
+     * <p>
+     * 超时后允许先返回旧值，再异步刷新。
+     */
+    String softTtl() default "";
+
+    /**
+     * 软 TTL 秒值。
+     */
+    long softTtlSeconds() default 0;
 
     /**
      * 是否启用L1缓存（本地缓存）
@@ -98,7 +130,7 @@ public @interface Cacheable {
 
     /**
      * 刷新间隔（秒）
-     * 仅在刷新开关最终为启用时有效（enableRefresh 与 autoRefresh 均为 true）。
+     * 仅在未显式指定 {@link #softTtl()} / {@link #softTtlSeconds()} 时作为软 TTL 兜底。
      * {@code <= 0} 表示继承全局配置默认值。
      */
     long refreshInterval() default 0;

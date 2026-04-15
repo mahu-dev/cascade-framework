@@ -1,8 +1,5 @@
 package io.github.cascade.cache.v2.consistency;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.cascade.cache.v2.support.CacheKeyEncoder;
-import io.github.cascade.cache.v2.support.ObjectMapperHolder;
 import org.redisson.api.RAtomicLong;
 import org.redisson.api.RedissonClient;
 
@@ -12,9 +9,11 @@ import org.redisson.api.RedissonClient;
 public class RedisVersionManager<K> implements VersionManager<K> {
 
     private final RedissonClient redissonClient;
-    private final String keyPrefix;
     private final String namespaceVersionKey;
-    private final ObjectMapper objectMapper = ObjectMapperHolder.getInstance();
+    /**
+     * key 级版本采用“缓存级全局序列”，避免为每个业务 key 额外创建 Redis 计数键导致高基数膨胀。
+     */
+    private final String keyVersionSequenceKey;
 
     public RedisVersionManager(String cacheName, RedissonClient redissonClient, String prefix) {
         this.redissonClient = redissonClient;
@@ -22,18 +21,19 @@ public class RedisVersionManager<K> implements VersionManager<K> {
         if (!finalPrefix.isEmpty() && !finalPrefix.endsWith(":")) {
             finalPrefix += ":";
         }
-        this.keyPrefix = finalPrefix + cacheName + ":";
-        this.namespaceVersionKey = this.keyPrefix + "ns:version";
+        String keyPrefix = finalPrefix + cacheName + ":";
+        this.namespaceVersionKey = keyPrefix + "ns:version";
+        this.keyVersionSequenceKey = keyPrefix + "ver:sequence";
     }
 
     @Override
     public long nextVersion(K key) {
-        return redissonClient.getAtomicLong(versionKey(key)).incrementAndGet();
+        return redissonClient.getAtomicLong(keyVersionSequenceKey).incrementAndGet();
     }
 
     @Override
     public long currentVersion(K key) {
-        return redissonClient.getAtomicLong(versionKey(key)).get();
+        return redissonClient.getAtomicLong(keyVersionSequenceKey).get();
     }
 
     @Override
@@ -44,13 +44,5 @@ public class RedisVersionManager<K> implements VersionManager<K> {
     @Override
     public long currentClearVersion() {
         return redissonClient.getAtomicLong(namespaceVersionKey).get();
-    }
-
-    private String versionKey(K key) {
-        return keyPrefix + "ver:" + encodeKey(key);
-    }
-
-    private String encodeKey(K key) {
-        return CacheKeyEncoder.encodeKey(objectMapper, key);
     }
 }
