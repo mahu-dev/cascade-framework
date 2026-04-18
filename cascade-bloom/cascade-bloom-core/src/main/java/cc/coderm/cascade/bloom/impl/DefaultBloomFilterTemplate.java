@@ -44,7 +44,6 @@ public class DefaultBloomFilterTemplate implements BloomFilterTemplate {
     public <T> T getWithBloomGuard(String filterName, String key, Supplier<T> loader, T fallback) {
         String normalizedFilterName = BloomFilterArgumentValidator.normalizeFilterName(filterName);
         String normalizedKey = BloomFilterArgumentValidator.normalizeKey(key, "key");
-        Supplier<T> checkedLoader = BloomFilterArgumentValidator.requireLoader(loader);
         CascadeBloomFilter<Object> filter = bloomFilterManager.getFilter(normalizedFilterName);
 
         if (!filter.mightContain(normalizedKey)) {
@@ -52,7 +51,7 @@ public class DefaultBloomFilterTemplate implements BloomFilterTemplate {
                     normalizedFilterName, normalizedKey);
             return fallback;
         }
-
+        Supplier<T> checkedLoader = BloomFilterArgumentValidator.requireLoader(loader);
         // 可能存在，执行 loader 并返回
         T result = checkedLoader.get();
 

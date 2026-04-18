@@ -48,6 +48,7 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
     private final RBloomFilter<String> stringBloomFilter;
     private final RedissonClient redissonClient;
     private final Method nativeBulkAddMethod;
+    private volatile boolean nativeBulkAddUnavailable;
     private final String name;
     private final long expectedInsertions;
     private final double falseProbability;
@@ -253,7 +254,7 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
     }
 
     private Long tryAddAllByNativeApi(Collection<String> normalizedValues) {
-        if (nativeBulkAddMethod == null) {
+        if (nativeBulkAddMethod == null || nativeBulkAddUnavailable) {
             return null;
         }
         try {
@@ -261,12 +262,22 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
             if (result instanceof Number number) {
                 return number.longValue();
             }
-            throw new BloomFilterException("Unsupported return type for RBloomFilter.add(Collection): "
-                    + nativeBulkAddMethod.getReturnType().getName());
+            return disableNativeBulkAddAndFallback("Unsupported return type for RBloomFilter.add(Collection): "
+                    + nativeBulkAddMethod.getReturnType().getName(), null);
         } catch (IllegalAccessException e) {
-            throw new BloomFilterException("Failed to access RBloomFilter.add(Collection) for [" + name + "]", e);
+            return disableNativeBulkAddAndFallback(
+                    "Failed to access RBloomFilter.add(Collection), fallback to pipeline for [" + name + "]", e);
+        } catch (IllegalArgumentException e) {
+            return disableNativeBulkAddAndFallback(
+                    "Failed to invoke RBloomFilter.add(Collection) with current signature, fallback to pipeline for ["
+                            + name + "]", e);
         } catch (InvocationTargetException e) {
             Throwable cause = e.getCause();
+            if (isNativeBulkAddCompatibilityFailure(cause)) {
+                return disableNativeBulkAddAndFallback(
+                        "RBloomFilter.add(Collection) is incompatible in current Redisson runtime, fallback to pipeline for ["
+                                + name + "]", cause);
+            }
             if (cause instanceof RuntimeException runtimeException) {
                 throw runtimeException;
             }
@@ -275,5 +286,21 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
             }
             throw new BloomFilterException("Failed to invoke RBloomFilter.add(Collection) for [" + name + "]", cause);
         }
+    }
+
+    private Long disableNativeBulkAddAndFallback(String message, Throwable cause) {
+        nativeBulkAddUnavailable = true;
+        if (cause == null) {
+            log.warn("[cascade-bloom] {}", message);
+        } else {
+            log.warn("[cascade-bloom] {}", message, cause);
+        }
+        return null;
+    }
+
+    private static boolean isNativeBulkAddCompatibilityFailure(Throwable throwable) {
+        return throwable instanceof UnsupportedOperationException
+                || throwable instanceof IncompatibleClassChangeError
+                || throwable instanceof ClassCastException;
     }
 }

@@ -16,6 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -115,7 +116,73 @@ class BloomFilterStartupInitializerAsyncTest {
         assertThat(started.await(500, TimeUnit.MILLISECONDS)).isTrue();
     }
 
-    private static final class InMemoryBloomFilterManager implements BloomFilterManager {
+    @Test
+    @DisplayName("waitForInitialization=false 时预定义过滤器初始化应异步且先于自定义初始化器阶段")
+    void shouldInitializePredefinedFiltersAsyncAndBeforeCustomInitializers() throws Exception {
+        BloomFilterProperties properties = new BloomFilterProperties();
+        properties.setEnabled(true);
+        properties.setWaitForInitialization(false);
+        BloomFilterProperties.BloomFilterDefinition definition = new BloomFilterProperties.BloomFilterDefinition();
+        definition.setName("ordered-bloom");
+        definition.setExpectedInsertions(10_000L);
+        definition.setFalseProbability(0.01D);
+        properties.setFilters(List.of(definition));
+
+        CountDownLatch predefinedStarted = new CountDownLatch(1);
+        CountDownLatch predefinedFinished = new CountDownLatch(1);
+        CountDownLatch initializerStarted = new CountDownLatch(1);
+        AtomicBoolean initializerSawPredefinedReady = new AtomicBoolean(false);
+
+        InMemoryBloomFilterManager manager = new InMemoryBloomFilterManager() {
+            @Override
+            public <T> CascadeBloomFilter<T> getOrCreate(String name, long expectedInsertions, double falseProbability) {
+                predefinedStarted.countDown();
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(e);
+                }
+                CascadeBloomFilter<T> filter = super.getOrCreate(name, expectedInsertions, falseProbability);
+                predefinedFinished.countDown();
+                return filter;
+            }
+        };
+
+        BloomFilterInitializer initializer = new BloomFilterInitializer() {
+            @Override
+            public String filterName() {
+                return "ordered-bloom";
+            }
+
+            @Override
+            public void initialize(CascadeBloomFilter<String> filter) {
+                initializerStarted.countDown();
+                initializerSawPredefinedReady.set(predefinedFinished.getCount() == 0);
+                filter.add("warmup-done");
+            }
+        };
+
+        BloomFilterStartupInitializer startupInitializer =
+                new BloomFilterStartupInitializer(
+                        manager,
+                        properties,
+                        List.of(initializer),
+                        DAEMON_ASYNC_EXECUTOR
+                );
+
+        long startNanos = System.nanoTime();
+        startupInitializer.onApplicationEvent(null);
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+
+        assertThat(elapsedMillis).isLessThan(300);
+        assertThat(predefinedStarted.await(300, TimeUnit.MILLISECONDS)).isTrue();
+        assertThat(initializerStarted.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(initializerSawPredefinedReady.get()).isTrue();
+        assertThat(manager.getFilter("ordered-bloom").mightContain("warmup-done")).isTrue();
+    }
+
+    private static class InMemoryBloomFilterManager implements BloomFilterManager {
         private final ConcurrentHashMap<String, CascadeBloomFilter<Object>> filters = new ConcurrentHashMap<>();
 
         @SuppressWarnings("unchecked")

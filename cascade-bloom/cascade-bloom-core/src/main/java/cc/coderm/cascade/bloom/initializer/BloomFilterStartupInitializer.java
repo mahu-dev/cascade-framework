@@ -10,6 +10,7 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationListener;
 import org.springframework.util.CollectionUtils;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -47,101 +48,129 @@ public class BloomFilterStartupInitializer implements ApplicationListener<Applic
             return;
         }
 
-        // Step 1: 根据配置创建预定义过滤器
-        initPredefinedFilters();
+        boolean waitForCompletion = properties.isWaitForInitialization();
+        CompletableFuture<List<StartupTaskResult>> startupFuture = runStartupInitializationAsync(waitForCompletion);
+        if (waitForCompletion) {
+            runStartupSynchronously(startupFuture);
+            return;
+        }
 
-        // Step 2: 并行执行所有自定义初始化器
-        runInitializers();
+        startupFuture.whenComplete((results, throwable) -> {
+            if (throwable != null) {
+                log.error("[cascade-bloom] Bloom filter startup initialization callback failed: {}",
+                        throwable.getMessage(), throwable);
+                return;
+            }
+            logSummary(results, false);
+        });
+        log.info("[cascade-bloom] Bloom filter startup initialization submitted asynchronously; startup thread will not wait.");
     }
 
-    /**
-     * 根据 cascade.bloom.filters 配置批量创建过滤器
-     */
-    private void initPredefinedFilters() {
+    private CompletableFuture<List<StartupTaskResult>> runStartupInitializationAsync(boolean waitForCompletion) {
+        return runPredefinedFilterInitializationAsync(waitForCompletion)
+                .thenCompose(predefinedResults -> runCustomInitializerAsync(waitForCompletion)
+                        .thenApply(initializerResults -> mergeResults(predefinedResults, initializerResults)));
+    }
+
+    private CompletableFuture<List<StartupTaskResult>> runPredefinedFilterInitializationAsync(boolean waitForCompletion) {
         List<BloomFilterProperties.BloomFilterDefinition> filters = properties.getFilters();
         if (CollectionUtils.isEmpty(filters)) {
-            return;
+            return CompletableFuture.completedFuture(List.of());
         }
 
-        log.info("[cascade-bloom] Initializing {} predefined bloom filter(s)...", filters.size());
-        for (BloomFilterProperties.BloomFilterDefinition def : filters) {
-            String filterName = def.getName();
-            if (filterName == null || filterName.isBlank()) {
-                throw new IllegalStateException(
-                        "[cascade-bloom] Invalid filter definition encountered at runtime: name must not be blank"
-                );
-            }
-            long expectedInsertions = def.getExpectedInsertions() != null
-                    ? def.getExpectedInsertions()
-                    : properties.getDefaultExpectedInsertions();
-            double falseProbability = def.getFalseProbability() != null
-                    ? def.getFalseProbability()
-                    : properties.getDefaultFalseProbability();
+        log.info("[cascade-bloom] Initializing {} predefined bloom filter(s) in parallel, waitForCompletion={}...",
+                filters.size(), waitForCompletion);
 
-            bloomFilterManager.getOrCreate(filterName, expectedInsertions, falseProbability);
-        }
-        log.info("[cascade-bloom] Predefined bloom filter(s) initialized.");
+        List<CompletableFuture<StartupTaskResult>> futures = filters.stream()
+                .map(definition -> CompletableFuture.supplyAsync(
+                        () -> executePredefinedFilterInitialization(definition),
+                        initializationExecutor
+                ))
+                .toList();
+
+        return collectResults(futures);
     }
 
-    /**
-     * 并行执行所有 BloomFilterInitializer
-     */
-    private void runInitializers() {
+    private CompletableFuture<List<StartupTaskResult>> runCustomInitializerAsync(boolean waitForCompletion) {
         if (CollectionUtils.isEmpty(initializers)) {
-            return;
+            return CompletableFuture.completedFuture(List.of());
         }
 
-        boolean waitForCompletion = properties.isWaitForInitialization();
         log.info("[cascade-bloom] Running {} bloom filter initializer(s) in parallel, waitForCompletion={}...",
                 initializers.size(), waitForCompletion);
 
-        List<CompletableFuture<InitializerResult>> futures = initializers.stream()
+        List<CompletableFuture<StartupTaskResult>> futures = initializers.stream()
                 .map(initializer -> CompletableFuture.supplyAsync(
                         () -> executeInitializer(initializer),
                         initializationExecutor
                 ))
                 .toList();
 
-        // 根据配置决定是否等待初始化完成
-        if (waitForCompletion) {
-            runInitializersSynchronously(futures);
-        } else {
-            // 异步非阻塞：异步汇总初始化结果，不阻塞启动线程
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-                    .thenApply(unused -> futures.stream().map(CompletableFuture::join).toList())
-                    .whenComplete((results, throwable) -> {
-                        if (throwable != null) {
-                            log.error("[cascade-bloom] Bloom filter initializer completion callback failed: {}",
-                                    throwable.getMessage(), throwable);
-                            return;
-                        }
-                        logSummary(results, false);
-                    });
+        return collectResults(futures);
+    }
 
-            log.info("[cascade-bloom] Bloom filter initializers submitted asynchronously; startup thread will not wait.");
+    private StartupTaskResult executePredefinedFilterInitialization(BloomFilterProperties.BloomFilterDefinition definition) {
+        String filterName = definition.getName();
+        try {
+            if (filterName == null || filterName.isBlank()) {
+                throw new IllegalStateException("[cascade-bloom] predefined filter name must not be blank");
+            }
+            long expectedInsertions = definition.getExpectedInsertions() != null
+                    ? definition.getExpectedInsertions()
+                    : properties.getDefaultExpectedInsertions();
+            double falseProbability = definition.getFalseProbability() != null
+                    ? definition.getFalseProbability()
+                    : properties.getDefaultFalseProbability();
+
+            bloomFilterManager.getOrCreate(filterName, expectedInsertions, falseProbability);
+            if (log.isDebugEnabled()) {
+                log.debug("[cascade-bloom] Predefined bloom filter [{}] initialized. expectedInsertions={}, falseProbability={}",
+                        filterName, expectedInsertions, falseProbability);
+            }
+            return StartupTaskResult.success(StartupTaskType.PREDEFINED_FILTER, filterName);
+        } catch (Exception exception) {
+            log.error("[cascade-bloom] Predefined bloom filter [{}] initialization failed: {}",
+                    filterName, exception.getMessage(), exception);
+            return StartupTaskResult.failure(StartupTaskType.PREDEFINED_FILTER, filterName, exception);
         }
     }
 
-    private InitializerResult executeInitializer(BloomFilterInitializer initializer) {
+    private StartupTaskResult executeInitializer(BloomFilterInitializer initializer) {
         String filterName = initializer.filterName();
         try {
             log.info("[cascade-bloom] Starting initializer for filter [{}]", filterName);
             CascadeBloomFilter<String> filter = bloomFilterManager.getFilter(filterName);
             initializer.initialize(filter);
             log.info("[cascade-bloom] Initializer for filter [{}] completed. count={}", filterName, filter.count());
-            return InitializerResult.success(filterName);
+            return StartupTaskResult.success(StartupTaskType.INITIALIZER, filterName);
         } catch (Exception exception) {
             log.error("[cascade-bloom] Initializer for filter [{}] failed: {}",
                     filterName, exception.getMessage(), exception);
-            return InitializerResult.failure(filterName, exception);
+            return StartupTaskResult.failure(StartupTaskType.INITIALIZER, filterName, exception);
         }
     }
 
-    private void runInitializersSynchronously(List<CompletableFuture<InitializerResult>> futures) {
-        List<InitializerResult> results = awaitResults(futures);
+    private CompletableFuture<List<StartupTaskResult>> collectResults(List<CompletableFuture<StartupTaskResult>> futures) {
+        if (futures.isEmpty()) {
+            return CompletableFuture.completedFuture(List.of());
+        }
+        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                .thenApply(unused -> futures.stream().map(CompletableFuture::join).toList());
+    }
+
+    private List<StartupTaskResult> mergeResults(List<StartupTaskResult> predefinedResults,
+                                                 List<StartupTaskResult> initializerResults) {
+        List<StartupTaskResult> merged = new ArrayList<>(predefinedResults.size() + initializerResults.size());
+        merged.addAll(predefinedResults);
+        merged.addAll(initializerResults);
+        return merged;
+    }
+
+    private void runStartupSynchronously(CompletableFuture<List<StartupTaskResult>> startupFuture) {
+        List<StartupTaskResult> results = awaitResults(startupFuture);
         logSummary(results, true);
 
-        List<InitializerResult> failedResults = results.stream()
+        List<StartupTaskResult> failedResults = results.stream()
                 .filter(result -> !result.success())
                 .toList();
         if (failedResults.isEmpty()) {
@@ -151,12 +180,9 @@ public class BloomFilterStartupInitializer implements ApplicationListener<Applic
         throw buildStartupFailure(failedResults);
     }
 
-    private List<InitializerResult> awaitResults(List<CompletableFuture<InitializerResult>> futures) {
+    private List<StartupTaskResult> awaitResults(CompletableFuture<List<StartupTaskResult>> startupFuture) {
         try {
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get();
-            return futures.stream()
-                    .map(CompletableFuture::join)
-                    .toList();
+            return startupFuture.get();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new BloomFilterInitException("[cascade-bloom] Bloom filter initialization interrupted", e);
@@ -166,30 +192,32 @@ public class BloomFilterStartupInitializer implements ApplicationListener<Applic
         }
     }
 
-    private void logSummary(List<InitializerResult> results, boolean sync) {
-        long success = results.stream().filter(InitializerResult::success).count();
+    private void logSummary(List<StartupTaskResult> results, boolean sync) {
+        long success = results.stream().filter(StartupTaskResult::success).count();
         long failed = results.size() - success;
+        long predefinedFilterTasks = results.stream().filter(result -> result.taskType() == StartupTaskType.PREDEFINED_FILTER).count();
+        long customInitializerTasks = results.stream().filter(result -> result.taskType() == StartupTaskType.INITIALIZER).count();
         String mode = sync ? "synchronously" : "asynchronously";
-        log.info("[cascade-bloom] All bloom filter initializers completed {}. success={}, failed={}",
-                mode, success, failed);
+        log.info("[cascade-bloom] Bloom filter startup initialization completed {}. predefinedFilters={}, initializers={}, success={}, failed={}",
+                mode, predefinedFilterTasks, customInitializerTasks, success, failed);
     }
 
-    private BloomFilterInitException buildStartupFailure(List<InitializerResult> failedResults) {
-        InitializerResult firstFailure = failedResults.get(0);
-        String failedFilters = failedResults.stream()
-                .map(InitializerResult::filterName)
+    private BloomFilterInitException buildStartupFailure(List<StartupTaskResult> failedResults) {
+        StartupTaskResult firstFailure = failedResults.get(0);
+        String failedTasks = failedResults.stream()
+                .map(StartupTaskResult::describe)
                 .toList()
                 .toString();
 
         BloomFilterInitException exception = new BloomFilterInitException(
-                "[cascade-bloom] Bloom filter startup initialization failed. failedInitializers="
-                        + failedResults.size() + ", filters=" + failedFilters,
+                "[cascade-bloom] Bloom filter startup initialization failed. failedTasks="
+                        + failedResults.size() + ", tasks=" + failedTasks,
                 firstFailure.cause()
         );
         for (int i = 1; i < failedResults.size(); i++) {
-            InitializerResult failure = failedResults.get(i);
+            StartupTaskResult failure = failedResults.get(i);
             exception.addSuppressed(new BloomFilterInitException(
-                    "Initializer failed for filter [" + failure.filterName() + "]",
+                    "Startup task failed [" + failure.describe() + "]",
                     failure.cause()
             ));
         }
@@ -204,29 +232,46 @@ public class BloomFilterStartupInitializer implements ApplicationListener<Applic
         return current;
     }
 
-    private static final class InitializerResult {
-        private final String filterName;
+    private enum StartupTaskType {
+        PREDEFINED_FILTER("predefined-filter"),
+        INITIALIZER("initializer");
+
+        private final String label;
+
+        StartupTaskType(String label) {
+            this.label = label;
+        }
+    }
+
+    private static final class StartupTaskResult {
+        private final StartupTaskType taskType;
+        private final String taskName;
         private final Throwable cause;
 
-        private InitializerResult(String filterName, Throwable cause) {
-            this.filterName = filterName;
+        private StartupTaskResult(StartupTaskType taskType, String taskName, Throwable cause) {
+            this.taskType = taskType;
+            this.taskName = taskName;
             this.cause = cause;
         }
 
-        private static InitializerResult success(String filterName) {
-            return new InitializerResult(filterName, null);
+        private static StartupTaskResult success(StartupTaskType taskType, String taskName) {
+            return new StartupTaskResult(taskType, taskName, null);
         }
 
-        private static InitializerResult failure(String filterName, Throwable cause) {
-            return new InitializerResult(filterName, cause);
+        private static StartupTaskResult failure(StartupTaskType taskType, String taskName, Throwable cause) {
+            return new StartupTaskResult(taskType, taskName, cause);
         }
 
         private boolean success() {
             return cause == null;
         }
 
-        private String filterName() {
-            return filterName;
+        private StartupTaskType taskType() {
+            return taskType;
+        }
+
+        private String describe() {
+            return taskType.label + ":" + taskName;
         }
 
         private Throwable cause() {

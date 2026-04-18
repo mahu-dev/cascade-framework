@@ -167,7 +167,7 @@ public class BloomFilterProperties implements InitializingBean {
         }
     }
 
-    private void validateInitializerExecutor(InitializerExecutorProperties executor) {
+    private static void validateInitializerExecutor(InitializerExecutorProperties executor) {
         if (executor.getCorePoolSize() <= 0) {
             throw new IllegalStateException("[cascade-bloom] initializerExecutor.corePoolSize must be positive");
         }

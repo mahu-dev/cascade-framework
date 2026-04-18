@@ -213,8 +213,8 @@ class BloomFilterStartupInitializerTest {
         BloomFilterInitException exception =
                 assertThrows(BloomFilterInitException.class, () -> initializer.onApplicationEvent(null));
 
-        assertTrue(exception.getMessage().contains("failedInitializers=1"));
-        assertTrue(exception.getMessage().contains("broken-filter"));
+        assertTrue(exception.getMessage().contains("failedTasks=1"));
+        assertTrue(exception.getMessage().contains("initializer:broken-filter"));
         assertTrue(bloomFilterManager.getFilter("ok-filter").mightContain("ok"));
     }
 

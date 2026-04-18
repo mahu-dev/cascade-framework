@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.atLeastOnce;
@@ -106,6 +107,68 @@ class RedissonBloomFilterKeyCanonicalizationTest {
         assertThat(nativeCollectionAddCalls.get()).isEqualTo(1);
         assertThat(singleAddCalls.get()).isZero();
         assertThat(nativeCollectionArgs.get()).containsExactly("123", "u-2", "789");
+        verifyNoInteractions(redissonClient);
+    }
+
+    @Test
+    @DisplayName("RedissonBloomFilter addAll 原生批量 API 不兼容时应降级到 pipeline")
+    void shouldFallbackToPipelineWhenNativeCollectionAddIsIncompatible() throws Exception {
+        AtomicInteger singleAddCalls = new AtomicInteger();
+        AtomicInteger nativeCollectionAddCalls = new AtomicInteger();
+        Codec codec = mock(Codec.class);
+        Encoder encoder = mock(Encoder.class);
+        when(codec.getValueEncoder()).thenReturn(encoder);
+        doAnswer(invocation -> Unpooled.copiedBuffer(
+                (String) invocation.getArgument(0), StandardCharsets.UTF_8)).when(encoder).encode(any());
+
+        RedissonClient redissonClient = mock(RedissonClient.class);
+        RBatch batch = mock(RBatch.class);
+        RBitSetAsync bitSet = mock(RBitSetAsync.class);
+        BatchResult<?> batchResult = mock(BatchResult.class);
+        when(redissonClient.createBatch(any())).thenReturn(batch);
+        when(batch.getBitSet("test:bloom:user-bloom")).thenReturn(bitSet);
+        when(bitSet.setAsync(anyLong())).thenReturn(null);
+        when(batch.execute()).thenReturn((BatchResult) batchResult);
+
+        RBloomFilter<String> delegate = createNativeCollectionAddFailureBloomFilterProxy(
+                codec,
+                singleAddCalls,
+                nativeCollectionAddCalls,
+                new UnsupportedOperationException("native addAll is not supported"));
+
+        RedissonBloomFilter<Object> filter = new RedissonBloomFilter<>(
+                delegate, redissonClient, "user-bloom", 1000L, 0.03D);
+
+        filter.addAll(List.of(123L, "u-2", 789));
+
+        assertThat(nativeCollectionAddCalls.get()).isEqualTo(1);
+        assertThat(singleAddCalls.get()).isZero();
+        verify(redissonClient).createBatch(any());
+        verify(bitSet, atLeastOnce()).setAsync(anyLong());
+        verify(batch).execute();
+    }
+
+    @Test
+    @DisplayName("RedissonBloomFilter addAll 原生批量 API 真实运行时失败应继续抛出异常")
+    void shouldRethrowWhenNativeCollectionAddFailsByBusinessRuntimeException() {
+        AtomicInteger singleAddCalls = new AtomicInteger();
+        AtomicInteger nativeCollectionAddCalls = new AtomicInteger();
+        RedissonClient redissonClient = mock(RedissonClient.class);
+
+        RBloomFilter<String> delegate = createNativeCollectionAddFailureBloomFilterProxy(
+                mock(Codec.class),
+                singleAddCalls,
+                nativeCollectionAddCalls,
+                new IllegalStateException("redis command failed"));
+
+        RedissonBloomFilter<Object> filter = new RedissonBloomFilter<>(
+                delegate, redissonClient, "user-bloom", 1000L, 0.03D);
+
+        assertThatThrownBy(() -> filter.addAll(List.of(123L, "u-2", 789)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("redis command failed");
+        assertThat(nativeCollectionAddCalls.get()).isEqualTo(1);
+        assertThat(singleAddCalls.get()).isZero();
         verifyNoInteractions(redissonClient);
     }
 
@@ -215,6 +278,58 @@ class RedissonBloomFilterKeyCanonicalizationTest {
             if ("add".equals(name)) {
                 singleAddCalls.incrementAndGet();
                 return true;
+            }
+            if ("contains".equals(name)) {
+                return true;
+            }
+            if ("count".equals(name)) {
+                return 0L;
+            }
+            if ("isExists".equals(name)) {
+                return true;
+            }
+            if ("delete".equals(name)) {
+                return true;
+            }
+            if ("toString".equals(name)) {
+                return "RBloomFilterProxy";
+            }
+            if ("hashCode".equals(name)) {
+                return System.identityHashCode(proxy);
+            }
+            if ("equals".equals(name)) {
+                return proxy == args[0];
+            }
+            return defaultValue(method);
+        };
+        return (RBloomFilter<String>) Proxy.newProxyInstance(
+                RBloomFilter.class.getClassLoader(),
+                new Class<?>[]{RBloomFilter.class, NativeCollectionAddCapable.class},
+                handler
+        );
+    }
+
+    @SuppressWarnings("unchecked")
+    private static RBloomFilter<String> createNativeCollectionAddFailureBloomFilterProxy(
+            Codec codec,
+            AtomicInteger singleAddCalls,
+            AtomicInteger nativeCollectionAddCalls,
+            RuntimeException failure) {
+        InvocationHandler handler = (proxy, method, args) -> {
+            String name = method.getName();
+            if ("add".equals(name) && args != null && args.length == 1 && args[0] instanceof Collection<?>) {
+                nativeCollectionAddCalls.incrementAndGet();
+                throw failure;
+            }
+            if ("add".equals(name)) {
+                singleAddCalls.incrementAndGet();
+                return true;
+            }
+            if ("getCodec".equals(name)) {
+                return codec;
+            }
+            if ("getName".equals(name)) {
+                return "test:bloom:user-bloom";
             }
             if ("contains".equals(name)) {
                 return true;
