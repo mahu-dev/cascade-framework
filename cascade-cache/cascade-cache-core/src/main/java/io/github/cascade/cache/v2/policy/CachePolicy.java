@@ -327,7 +327,7 @@ public final class CachePolicy {
                 distributedLockLeaseMs = 3000;
             }
             if (hotKeyAccessThreshold <= 0) {
-                hotKeyAccessThreshold = 1;
+                hotKeyAccessThreshold = 30;
             }
             if (maxTrackedKeys <= 0) {
                 maxTrackedKeys = 10_000;

@@ -195,14 +195,12 @@ public class FunctionalCacheManager implements CacheManager {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public <K, V> Cache<K, V> getCache(String cacheName) {
         checkNotClosed();
         return (Cache<K, V>) cacheRegistry.get(cacheName);
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public <K, V> void registerLoader(String cacheName,
                                       Class<K> keyType,
                                       Class<V> valueType,
@@ -397,11 +395,11 @@ public class FunctionalCacheManager implements CacheManager {
         return cache;
     }
 
-    private <K, V> CacheDefinitionFingerprint buildEngineFingerprint(String cacheName,
-                                                                     Class<K> keyType,
-                                                                     Class<V> valueType,
-                                                                     CachePolicy policy,
-                                                                     CascadeCacheProperties config) {
+    private static <K, V> CacheDefinitionFingerprint buildEngineFingerprint(String cacheName,
+                                                                            Class<K> keyType,
+                                                                            Class<V> valueType,
+                                                                            CachePolicy policy,
+                                                                            CascadeCacheProperties config) {
         long l1MaximumSize = policy.isL1Enabled() ? config.getL1MaxSize() : -1L;
         int l1InitialCapacity = policy.isL1Enabled() ? config.getL1InitialCapacity() : -1;
         long l1ExpireAfterWriteSeconds = policy.isL1Enabled() ? config.getL1ExpireAfterWriteSeconds() : -1L;
@@ -517,7 +515,7 @@ public class FunctionalCacheManager implements CacheManager {
                 .build();
     }
 
-    private RefreshExecutionOptions resolveRefreshExecutionOptions(String cacheName, CascadeCacheProperties config) {
+    private static RefreshExecutionOptions resolveRefreshExecutionOptions(String cacheName, CascadeCacheProperties config) {
         CascadeCacheProperties.RefreshConfig refreshConfig = config != null && config.getRefresh() != null
                 ? config.getRefresh()
                 : CascadeCacheProperties.defaults().getRefresh();

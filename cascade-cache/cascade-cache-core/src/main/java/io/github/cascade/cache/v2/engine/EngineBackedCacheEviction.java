@@ -3,6 +3,7 @@ package io.github.cascade.cache.v2.engine;
 import io.github.cascade.cache.v2.consistency.VersionManager;
 import io.github.cascade.cache.v2.store.l1.L1CacheStore;
 import io.github.cascade.cache.v2.store.l2.L2CacheStore;
+import org.slf4j.Logger;
 
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
@@ -11,6 +12,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * EngineBackedCache 驱逐与清空逻辑。
  */
 final class EngineBackedCacheEviction<K, V> {
+
+    private static final Logger LOGGER = org.slf4j.LoggerFactory.getLogger(EngineBackedCacheEviction.class);
 
     private final L1CacheStore<K, V> l1Store;
     private final L2CacheStore<K, V> l2Store;
@@ -39,9 +42,11 @@ final class EngineBackedCacheEviction<K, V> {
     long evict(K key) {
         long version = nextVersion(key);
         if (l2Store != null) {
+            LOGGER.debug("Evicting key from L2 cache: {}", key);
             l2Store.evict(key);
         }
         if (l1Store != null) {
+            LOGGER.debug("Evicting key from L1 cache: {}", key);
             l1Store.evict(key);
         }
         trackedKeys.remove(key);

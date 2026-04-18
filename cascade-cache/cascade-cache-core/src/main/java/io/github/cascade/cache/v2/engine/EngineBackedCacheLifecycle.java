@@ -5,6 +5,7 @@ import io.github.cascade.cache.v2.policy.RefreshExecutionOptions;
 import io.github.cascade.cache.v2.store.l1.L1CacheStore;
 import io.github.cascade.cache.v2.store.l2.L2CacheStore;
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
@@ -16,7 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 final class EngineBackedCacheLifecycle<K, V> {
 
-    private final Logger logger;
+    private static final Logger LOGGER = LoggerFactory.getLogger(EngineBackedCacheLifecycle.class);
     private final String cacheName;
     private final AtomicBoolean closed;
     private final AtomicBoolean subscribed;
@@ -28,8 +29,7 @@ final class EngineBackedCacheLifecycle<K, V> {
     private final L1CacheStore<K, V> l1Store;
     private final L2CacheStore<K, V> l2Store;
 
-    EngineBackedCacheLifecycle(Logger logger,
-                               String cacheName,
+    EngineBackedCacheLifecycle(String cacheName,
                                AtomicBoolean closed,
                                AtomicBoolean subscribed,
                                ScheduledExecutorService refreshScheduler,
@@ -39,7 +39,6 @@ final class EngineBackedCacheLifecycle<K, V> {
                                InvalidationBus<K> invalidationBus,
                                L1CacheStore<K, V> l1Store,
                                L2CacheStore<K, V> l2Store) {
-        this.logger = logger;
         this.cacheName = cacheName;
         this.closed = closed;
         this.subscribed = subscribed;
@@ -91,7 +90,7 @@ final class EngineBackedCacheLifecycle<K, V> {
         try {
             action.run();
         } catch (Exception e) {
-            logger.warn("关闭缓存步骤失败: cache={}, step={}, error={}", cacheName, step, e.getMessage(), e);
+            LOGGER.warn("关闭缓存步骤失败: cache={}, step={}, error={}", cacheName, step, e.getMessage(), e);
         }
     }
 }

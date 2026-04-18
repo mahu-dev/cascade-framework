@@ -6,6 +6,7 @@ import io.github.cascade.cache.v2.store.l1.L1CacheStore;
 import io.github.cascade.cache.v2.store.l2.L2CacheStore;
 import io.github.cascade.cache.v2.store.model.CacheRecord;
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Optional;
@@ -20,7 +21,7 @@ import java.util.function.*;
  */
 final class EngineBackedCacheRefresh<K, V> {
 
-    private final Logger logger;
+    private static final Logger LOGGER = LoggerFactory.getLogger(EngineBackedCacheRefresh.class);
     private final String cacheName;
     private final CachePolicy policy;
     private final RefreshExecutionOptions refreshOptions;
@@ -60,8 +61,7 @@ final class EngineBackedCacheRefresh<K, V> {
     private final Runnable markRefreshSuccess;
     private final Runnable markRefreshFail;
 
-    EngineBackedCacheRefresh(Logger logger,
-                             String cacheName,
+    EngineBackedCacheRefresh(String cacheName,
                              CachePolicy policy,
                              RefreshExecutionOptions refreshOptions,
                              ScheduledExecutorService refreshScheduler,
@@ -81,7 +81,6 @@ final class EngineBackedCacheRefresh<K, V> {
                              BiFunction<K, Long, V> invokeLoaderAndWrite,
                              Runnable markRefreshSuccess,
                              Runnable markRefreshFail) {
-        this.logger = logger;
         this.cacheName = cacheName;
         this.policy = policy;
         this.refreshOptions = refreshOptions;
@@ -133,7 +132,7 @@ final class EngineBackedCacheRefresh<K, V> {
             refreshScheduler.scheduleWithFixedDelay(this::refreshTrackedKeysSafely, interval, interval, TimeUnit.SECONDS);
         } catch (RejectedExecutionException e) {
             refreshStarted.set(false);
-            logger.warn("刷新调度启动失败: cache={}, error={}", cacheName, e.getMessage());
+            LOGGER.warn("刷新调度启动失败: cache={}, error={}", cacheName, e.getMessage());
         }
     }
 
@@ -141,7 +140,7 @@ final class EngineBackedCacheRefresh<K, V> {
         try {
             refreshTrackedKeys();
         } catch (Exception e) {
-            logger.debug("刷新任务执行失败: cache={}, error={}", cacheName, e.getMessage());
+            LOGGER.debug("刷新任务执行失败: cache={}, error={}", cacheName, e.getMessage());
         }
     }
 
@@ -217,15 +216,15 @@ final class EngineBackedCacheRefresh<K, V> {
                             return;
                         }
                         markRefreshFail.run();
-                        logger.warn("刷新失败: cache={}, key={}, error={}", cacheName, key,
+                        LOGGER.warn("刷新失败: cache={}, key={}, error={}", cacheName, key,
                                 throwable != null ? EngineBackedCacheCore.rootCauseMessage(throwable) : "loader返回null");
-                        logger.debug("刷新耗时(ms): cache={}, key={}, duration={}", cacheName, key,
+                        LOGGER.debug("刷新耗时(ms): cache={}, key={}, duration={}", cacheName, key,
                                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos));
                     });
         } catch (Exception e) {
             refreshingKeys.remove(key);
             markRefreshFail.run();
-            logger.warn("刷新提交失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
+            LOGGER.warn("刷新提交失败: cache={}, key={}, error={}", cacheName, key, e.getMessage());
         }
     }
 
@@ -254,7 +253,7 @@ final class EngineBackedCacheRefresh<K, V> {
                     )
                     .orTimeout(Math.max(1L, refreshOptions.refreshTimeoutSeconds()), TimeUnit.SECONDS);
         } catch (RejectedExecutionException e) {
-            logger.debug("刷新任务提交被线程池拒绝: cache={}, key={}, attempt={}", cacheName, key, attempt);
+            LOGGER.debug("刷新任务提交被线程池拒绝: cache={}, key={}, attempt={}", cacheName, key, attempt);
             refreshAttempt = CompletableFuture.failedFuture(e);
         }
 
@@ -262,10 +261,10 @@ final class EngineBackedCacheRefresh<K, V> {
             if (throwable == null) {
                 return CompletableFuture.completedFuture(value);
             }
-            logger.warn("刷新尝试失败: cache={}, key={}, attempt={}, error={}",
+            LOGGER.warn("刷新尝试失败: cache={}, key={}, attempt={}, error={}",
                     cacheName, key, attempt + 1, EngineBackedCacheCore.rootCauseMessage(throwable));
             if (EngineBackedCacheCore.isTimeout(throwable)) {
-                logger.debug("刷新超时: cache={}, key={}, timeoutSeconds={}",
+                LOGGER.debug("刷新超时: cache={}, key={}, timeoutSeconds={}",
                         cacheName, key, refreshOptions.refreshTimeoutSeconds());
             }
             return retryLaterOrComplete(key, attempt);

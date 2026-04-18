@@ -9,6 +9,7 @@ import io.github.cascade.cache.v2.policy.SyncMode;
 import io.github.cascade.cache.v2.store.l1.L1CacheStore;
 import io.github.cascade.cache.v2.store.model.CacheRecord;
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Optional;
 import java.util.Set;
@@ -23,8 +24,8 @@ import java.util.function.Function;
 final class EngineBackedCacheSync<K, V> {
 
     private static final String UPDATE_PAYLOAD_CODEC = "jackson-json-v1";
+    private static final Logger LOGGER = LoggerFactory.getLogger(EngineBackedCacheSync.class);
 
-    private final Logger logger;
     private final String cacheName;
     private final CachePolicy policy;
     private final InvalidationBus<K> invalidationBus;
@@ -46,8 +47,7 @@ final class EngineBackedCacheSync<K, V> {
     private final Runnable markSyncUpdateFallback;
     private final Runnable markBackfillL1;
 
-    EngineBackedCacheSync(Logger logger,
-                          String cacheName,
+    EngineBackedCacheSync(String cacheName,
                           CachePolicy policy,
                           InvalidationBus<K> invalidationBus,
                           String nodeId,
@@ -67,7 +67,6 @@ final class EngineBackedCacheSync<K, V> {
                           Runnable markSyncConsume,
                           Runnable markSyncUpdateFallback,
                           Runnable markBackfillL1) {
-        this.logger = logger;
         this.cacheName = cacheName;
         this.policy = policy;
         this.invalidationBus = invalidationBus;
@@ -99,7 +98,7 @@ final class EngineBackedCacheSync<K, V> {
             invalidationBus.subscribe(cacheName, this::handleInvalidationEvent);
             subscribed.set(true);
         } catch (Exception e) {
-            logger.warn("启动同步总线失败，降级为本地模式: cache={}, error={}", cacheName, e.getMessage());
+            LOGGER.warn("启动同步总线失败，降级为本地模式: cache={}, error={}", cacheName, e.getMessage());
         }
     }
 
@@ -110,7 +109,7 @@ final class EngineBackedCacheSync<K, V> {
         markSyncPublish.run();
         invalidationBus.publishInvalidation(cacheName, key, version, nodeId)
                 .exceptionally(throwable -> {
-                    logger.debug("发布失效事件失败: cache={}, key={}, error={}", cacheName, key, throwable.getMessage());
+                    LOGGER.debug("发布失效事件失败: cache={}, key={}, error={}", cacheName, key, throwable.getMessage());
                     return null;
                 });
     }
@@ -130,7 +129,7 @@ final class EngineBackedCacheSync<K, V> {
         markSyncPublish.run();
         invalidationBus.publishClear(cacheName, version, nodeId)
                 .exceptionally(throwable -> {
-                    logger.debug("发布清空事件失败: cache={}, error={}", cacheName, throwable.getMessage());
+                    LOGGER.debug("发布清空事件失败: cache={}, error={}", cacheName, throwable.getMessage());
                     return null;
                 });
     }
@@ -142,7 +141,7 @@ final class EngineBackedCacheSync<K, V> {
         markSyncPublish.run();
         invalidationBus.publishUpdate(cacheName, key, record, valueType.getName(), nodeId)
                 .exceptionally(throwable -> {
-                    logger.debug("发布更新事件失败: cache={}, key={}, error={}", cacheName, key, throwable.getMessage());
+                    LOGGER.debug("发布更新事件失败: cache={}, key={}, error={}", cacheName, key, throwable.getMessage());
                     return null;
                 });
     }
@@ -160,14 +159,14 @@ final class EngineBackedCacheSync<K, V> {
             int payloadBytes = objectMapper.writeValueAsBytes(value).length;
             if (payloadBytes > policy.getSyncUpdateMaxPayloadBytes()) {
                 markSyncUpdateFallback.run();
-                logger.debug("UPDATE事件payload超限，降级为INVALIDATE: cache={}, keyPayloadBytes={}, limit={}",
+                LOGGER.debug("UPDATE事件payload超限，降级为INVALIDATE: cache={}, keyPayloadBytes={}, limit={}",
                         cacheName, payloadBytes, policy.getSyncUpdateMaxPayloadBytes());
                 return false;
             }
             return true;
         } catch (Exception e) {
             markSyncUpdateFallback.run();
-            logger.debug("UPDATE事件payload序列化失败，降级为INVALIDATE: cache={}, error={}", cacheName, e.getMessage());
+            LOGGER.debug("UPDATE事件payload序列化失败，降级为INVALIDATE: cache={}, error={}", cacheName, e.getMessage());
             return false;
         }
     }
@@ -274,7 +273,7 @@ final class EngineBackedCacheSync<K, V> {
         if (l1Store != null) {
             l1Store.evict(key);
         }
-        logger.debug("UPDATE事件降级为INVALIDATE: cache={}, key={}, reason={}", cacheName, key, reason);
+        LOGGER.debug("UPDATE事件降级为INVALIDATE: cache={}, key={}, reason={}", cacheName, key, reason);
     }
 
     @SuppressWarnings("unchecked")

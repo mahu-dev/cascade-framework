@@ -262,7 +262,6 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
                 clearVersion
         );
         this.writeDelegate = new EngineBackedCacheWrite<>(
-                LOGGER,
                 cacheName,
                 nodeId,
                 policy,
@@ -281,7 +280,6 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
                 this::markDistLockDegrade
         );
         this.refreshDelegate = new EngineBackedCacheRefresh<>(
-                LOGGER,
                 cacheName,
                 policy,
                 this.refreshOptions,
@@ -304,7 +302,6 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
                 this::markRefreshFail
         );
         this.syncDelegate = new EngineBackedCacheSync<>(
-                LOGGER,
                 cacheName,
                 policy,
                 invalidationBus,
@@ -327,7 +324,6 @@ public class EngineBackedCache<K, V> implements Cache<K, V> {
                 this::markBackfillL1
         );
         this.lifecycleDelegate = new EngineBackedCacheLifecycle<>(
-                LOGGER,
                 cacheName,
                 closed,
                 subscribed,

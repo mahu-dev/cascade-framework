@@ -22,8 +22,9 @@ import java.util.function.Supplier;
  */
 final class EngineBackedCacheWrite<K, V> {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(EngineBackedCacheWrite.class);
 
-    private final Logger logger;
+
     private final String cacheName;
     private final String nodeId;
     private final CachePolicy policy;
@@ -41,24 +42,23 @@ final class EngineBackedCacheWrite<K, V> {
     private final Runnable markSingleFlightJoin;
     private final Runnable markDistLockDegrade;
 
-    EngineBackedCacheWrite(Logger logger,
-                           String cacheName,
-                           String nodeId,
-                           CachePolicy policy,
-                           L2CacheStore<K, V> l2Store,
-                           DistLockCoordinator<K> lockCoordinator,
-                           SingleFlight<K, V> singleFlight,
-                           WritePipeline<V> writePipeline,
-                           Supplier<Function<K, V>> loaderSupplier,
-                           Function<K, Long> nextVersion,
-                           Function<K, Optional<CacheRecord<V>>> readFromL2,
-                           Predicate<CacheRecord<V>> isHardExpired,
-                           BiConsumer<K, CacheRecord<V>> publishWriteEvent,
-                           BiConsumer<K, CacheRecord<V>> writeBackL1,
-                           Runnable markBackfillL2,
-                           Runnable markSingleFlightJoin,
-                           Runnable markDistLockDegrade) {
-        this.logger = logger;
+    EngineBackedCacheWrite(
+            String cacheName,
+            String nodeId,
+            CachePolicy policy,
+            L2CacheStore<K, V> l2Store,
+            DistLockCoordinator<K> lockCoordinator,
+            SingleFlight<K, V> singleFlight,
+            WritePipeline<V> writePipeline,
+            Supplier<Function<K, V>> loaderSupplier,
+            Function<K, Long> nextVersion,
+            Function<K, Optional<CacheRecord<V>>> readFromL2,
+            Predicate<CacheRecord<V>> isHardExpired,
+            BiConsumer<K, CacheRecord<V>> publishWriteEvent,
+            BiConsumer<K, CacheRecord<V>> writeBackL1,
+            Runnable markBackfillL2,
+            Runnable markSingleFlightJoin,
+            Runnable markDistLockDegrade) {
         this.cacheName = cacheName;
         this.nodeId = nodeId;
         this.policy = policy;
@@ -85,12 +85,14 @@ final class EngineBackedCacheWrite<K, V> {
 
         CacheRecord<V> record = writePipeline.createRecord(value, version, now, hardTtl, softTtl, nodeId);
         if (l2Store != null) {
-            logger.debug("写入L2缓存: cache={}, key={}, value={}, version={}, ttl={}",
+            LOGGER.debug("写入L2缓存: cache={}, key={}, value={}, version={}, ttl={}",
                     cacheName, key, value, version, hardTtl);
             l2Store.put(key, record, hardTtl);
             markBackfillL2.run();
         }
         publishWriteEvent.accept(key, record);
+        LOGGER.debug("写入L1缓存: cache={}, key={}, value={}, version={}, ttl={}",
+                cacheName, key, value, version, hardTtl);
         writeBackL1.accept(key, record);
     }
 
@@ -161,7 +163,7 @@ final class EngineBackedCacheWrite<K, V> {
         markDistLockDegrade.run();
         if (policy.getLockFailureStrategy() == LockFailureStrategy.STRICT) {
             if (result.error() != null) {
-                logger.warn("分布式锁异常且采用STRICT策略，放弃加载: cache={}, key={}, error={}",
+                LOGGER.warn("分布式锁异常且采用STRICT策略，放弃加载: cache={}, key={}, error={}",
                         cacheName, key, result.error().getMessage());
             }
             return null;
