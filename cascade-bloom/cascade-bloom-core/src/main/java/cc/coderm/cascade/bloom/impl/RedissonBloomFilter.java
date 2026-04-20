@@ -9,6 +9,7 @@ import org.redisson.api.BatchOptions;
 import org.redisson.api.RBatch;
 import org.redisson.api.RBitSetAsync;
 import org.redisson.api.RBloomFilter;
+import org.redisson.api.RFuture;
 import org.redisson.api.RedissonClient;
 import org.redisson.misc.Hash;
 
@@ -18,8 +19,14 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * 基于 Redisson {@link RBloomFilter} 的布隆过滤器实现
@@ -44,11 +51,13 @@ import java.util.Objects;
 public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
 
     private static final double LOG_OF_TWO = Math.log(2D);
-    private static final int MAX_PIPELINE_BIT_OPERATIONS = 50_000;
+    private static final int MAX_PIPELINE_PENDING_OPERATIONS = 50_000;
     private final RBloomFilter<String> stringBloomFilter;
     private final RedissonClient redissonClient;
     private final Method nativeBulkAddMethod;
+    private final Method nativeExistsAsyncMethod;
     private volatile boolean nativeBulkAddUnavailable;
+    private volatile boolean nativeExistsAsyncUnavailable;
     private final String name;
     private final long expectedInsertions;
     private final double falseProbability;
@@ -61,6 +70,7 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
         this.stringBloomFilter = Objects.requireNonNull(stringBloomFilter, "stringBloomFilter must not be null");
         this.redissonClient = Objects.requireNonNull(redissonClient, "redissonClient must not be null");
         this.nativeBulkAddMethod = resolveNativeBulkAddMethod(stringBloomFilter.getClass());
+        this.nativeExistsAsyncMethod = resolveNativeExistsAsyncMethod(stringBloomFilter.getClass());
         this.name = name;
         this.expectedInsertions = expectedInsertions;
         this.falseProbability = falseProbability;
@@ -148,11 +158,31 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
     @Override
     public Map<T, Boolean> mightContainAll(Collection<T> values) {
         Objects.requireNonNull(values, "BloomFilter elements collection must not be null");
-        Map<T, Boolean> result = new LinkedHashMap<>(values.size());
-        for (T value : values) {
-            result.put(value, mightContain(value));
+        if (values.isEmpty()) {
+            return new LinkedHashMap<>(0);
         }
-        return result;
+        if (values.size() == 1) {
+            T value = values.iterator().next();
+            boolean mayContain = mightContain(value);
+            Map<T, Boolean> result = new LinkedHashMap<>(1);
+            result.put(value, mayContain);
+            return result;
+        }
+
+        long bitSize = calculateBitSize(expectedInsertions, falseProbability);
+        int hashIterations = calculateHashIterations(expectedInsertions, bitSize);
+        if (bitSize <= 0 || hashIterations <= 0) {
+            throw new BloomFilterException("Bloom filter config is invalid for mightContainAll. name=" + name
+                    + ", expectedInsertions=" + expectedInsertions
+                    + ", falseProbability=" + falseProbability);
+        }
+
+        BatchContainResult<T> containResult = mightContainAllByPipeline(values, bitSize, hashIterations);
+        if (log.isDebugEnabled()) {
+            log.debug("[cascade-bloom] mightContainAll [{}] by pipeline: valueCount={}, hashIterations={}, bitReads={}",
+                    name, values.size(), hashIterations, containResult.bitReads);
+        }
+        return containResult.result;
     }
 
     @Override
@@ -180,6 +210,35 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
         return stringBloomFilter.isExists();
     }
 
+    boolean isExistsWithinTimeout(long timeoutMillis) {
+        if (timeoutMillis <= 0) {
+            return stringBloomFilter.isExists();
+        }
+        Future<Boolean> existsFuture = tryInvokeNativeExistsAsync();
+        if (existsFuture == null) {
+            return stringBloomFilter.isExists();
+        }
+        try {
+            return Boolean.TRUE.equals(existsFuture.get(timeoutMillis, TimeUnit.MILLISECONDS));
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new BloomFilterException("Interrupted while probing bloom filter existence for [" + name + "]", exception);
+        } catch (TimeoutException exception) {
+            existsFuture.cancel(true);
+            throw new BloomFilterException("Timed out while probing bloom filter existence for [" + name
+                    + "], timeoutMillis=" + timeoutMillis, exception);
+        } catch (ExecutionException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            throw new BloomFilterException("Failed to probe bloom filter existence for [" + name + "]", cause);
+        }
+    }
+
     @Override
     public void delete() {
         log.warn("[cascade-bloom] deleting bloom filter [{}], all data will be lost!", name);
@@ -192,29 +251,136 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
 
         long bitOperations = 0L;
         int pendingOperations = 0;
-        for (String normalizedValue : normalizedValues) {
-            long[] hash = hash128(normalizedValue);
-            long hash1 = hash[0];
-            long hash2 = hash[1];
-            long nextHash = hash1;
-            for (int i = 0; i < hashIterations; i++) {
-                long index = (nextHash & Long.MAX_VALUE) % bitSize;
-                bitSet.setAsync(index);
-                nextHash = (i & 1) == 0 ? nextHash + hash2 : nextHash + hash1;
-                bitOperations++;
-                pendingOperations++;
-                if (pendingOperations >= MAX_PIPELINE_BIT_OPERATIONS) {
-                    batch.execute();
-                    batch = redissonClient.createBatch(BatchOptions.defaults().skipResult());
-                    bitSet = batch.getBitSet(stringBloomFilter.getName());
-                    pendingOperations = 0;
+        boolean completed = false;
+        try {
+            for (String normalizedValue : normalizedValues) {
+                long[] hash = hash128(normalizedValue);
+                long hash1 = hash[0];
+                long hash2 = hash[1];
+                long nextHash = hash1;
+                for (int i = 0; i < hashIterations; i++) {
+                    long index = (nextHash & Long.MAX_VALUE) % bitSize;
+                    bitSet.setAsync(index);
+                    // Keep pipeline hash iteration fully aligned with Redisson RBloomFilter internals.
+                    nextHash += hash2;
+                    bitOperations++;
+                    pendingOperations++;
+                    if (pendingOperations >= MAX_PIPELINE_PENDING_OPERATIONS) {
+                        batch.execute();
+                        batch = redissonClient.createBatch(BatchOptions.defaults().skipResult());
+                        bitSet = batch.getBitSet(stringBloomFilter.getName());
+                        pendingOperations = 0;
+                    }
                 }
             }
+            if (pendingOperations > 0) {
+                batch.execute();
+                pendingOperations = 0;
+            }
+            completed = true;
+            return bitOperations;
+        } finally {
+            if (!completed && pendingOperations > 0) {
+                discardBatchQuietly(batch, pendingOperations);
+            }
         }
-        if (pendingOperations > 0) {
-            batch.execute();
+    }
+
+    private BatchContainResult<T> mightContainAllByPipeline(Collection<T> values, long bitSize, int hashIterations) {
+        RBatch batch = redissonClient.createBatch(BatchOptions.defaults());
+        RBitSetAsync bitSet = batch.getBitSet(stringBloomFilter.getName());
+        List<ContainProbe<T>> probes = new ArrayList<>(values.size());
+        Map<String, ContainDecision> normalizedDecisions = new LinkedHashMap<>(values.size());
+        List<PendingBitRead> pendingReads = new ArrayList<>();
+
+        long bitReads = 0L;
+        int pendingOperations = 0;
+        boolean completed = false;
+        try {
+            for (T value : values) {
+                String normalized = BloomFilterKeyUtil.toKey(value);
+                ContainDecision decision = normalizedDecisions.get(normalized);
+                if (decision == null) {
+                    decision = new ContainDecision();
+                    normalizedDecisions.put(normalized, decision);
+
+                    long[] hash = hash128(normalized);
+                    long hash1 = hash[0];
+                    long hash2 = hash[1];
+                    long nextHash = hash1;
+                    for (int i = 0; i < hashIterations; i++) {
+                        long index = (nextHash & Long.MAX_VALUE) % bitSize;
+                        RFuture<Boolean> future = bitSet.getAsync(index);
+                        pendingReads.add(new PendingBitRead(decision, future));
+                        // Keep pipeline hash iteration fully aligned with Redisson RBloomFilter internals.
+                        nextHash += hash2;
+                        bitReads++;
+                        pendingOperations++;
+                        if (pendingOperations >= MAX_PIPELINE_PENDING_OPERATIONS) {
+                            executeContainBatch(batch, pendingReads);
+                            batch = redissonClient.createBatch(BatchOptions.defaults());
+                            bitSet = batch.getBitSet(stringBloomFilter.getName());
+                            pendingOperations = 0;
+                        }
+                    }
+                }
+                probes.add(new ContainProbe<>(value, decision));
+            }
+
+            if (pendingOperations > 0) {
+                executeContainBatch(batch, pendingReads);
+                pendingOperations = 0;
+            }
+            completed = true;
+            return new BatchContainResult<>(toContainResultMap(probes), bitReads);
+        } finally {
+            if (!completed && pendingOperations > 0) {
+                discardBatchQuietly(batch, pendingOperations);
+            }
         }
-        return bitOperations;
+    }
+
+    private void executeContainBatch(RBatch batch, List<PendingBitRead> pendingReads) {
+        batch.execute();
+        for (PendingBitRead pendingRead : pendingReads) {
+            if (!pendingRead.decision.mightContain) {
+                continue;
+            }
+            if (!Boolean.TRUE.equals(pendingRead.future.join())) {
+                pendingRead.decision.mightContain = false;
+            }
+        }
+        pendingReads.clear();
+    }
+
+    private Map<T, Boolean> toContainResultMap(List<ContainProbe<T>> probes) {
+        Map<T, Boolean> result = new LinkedHashMap<>(probes.size());
+        for (ContainProbe<T> probe : probes) {
+            result.put(probe.value, probe.decision.mightContain);
+        }
+        return result;
+    }
+
+    private void discardBatchQuietly(RBatch batch, int pendingOperations) {
+        if (batch == null || pendingOperations <= 0) {
+            return;
+        }
+        try {
+            Method discardMethod = batch.getClass().getMethod("discard");
+            discardMethod.invoke(batch);
+            if (log.isDebugEnabled()) {
+                log.debug("[cascade-bloom] Pipeline batch discarded on failure. filter={}, pendingOperations={}",
+                        name, pendingOperations);
+            }
+        } catch (NoSuchMethodException noSuchMethodException) {
+            if (log.isDebugEnabled()) {
+                log.debug("[cascade-bloom] RBatch.discard() not available, skip explicit discard. filter={}, pendingOperations={}",
+                        name, pendingOperations);
+            }
+        } catch (IllegalAccessException | InvocationTargetException exception) {
+            log.warn("[cascade-bloom] Failed to discard pipeline batch. filter={}, pendingOperations={}",
+                    name, pendingOperations, exception);
+        }
     }
 
     private long[] hash128(String value) {
@@ -245,6 +411,19 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
             Method method = bloomFilterType.getMethod("add", Collection.class);
             Class<?> returnType = method.getReturnType();
             if (returnType == long.class || returnType == Long.class) {
+                return method;
+            }
+            return null;
+        } catch (NoSuchMethodException ignored) {
+            return null;
+        }
+    }
+
+    private static Method resolveNativeExistsAsyncMethod(Class<?> bloomFilterType) {
+        try {
+            Method method = bloomFilterType.getMethod("isExistsAsync");
+            Class<?> returnType = method.getReturnType();
+            if (Future.class.isAssignableFrom(returnType) || CompletionStage.class.isAssignableFrom(returnType)) {
                 return method;
             }
             return null;
@@ -298,9 +477,105 @@ public class RedissonBloomFilter<T> implements CascadeBloomFilter<T> {
         return null;
     }
 
+    @SuppressWarnings("unchecked")
+    private Future<Boolean> tryInvokeNativeExistsAsync() {
+        if (nativeExistsAsyncMethod == null || nativeExistsAsyncUnavailable) {
+            return null;
+        }
+        try {
+            Object result = nativeExistsAsyncMethod.invoke(stringBloomFilter);
+            if (result instanceof Future<?> future) {
+                return (Future<Boolean>) future;
+            }
+            if (result instanceof CompletionStage<?> completionStage) {
+                return ((CompletionStage<Boolean>) completionStage).toCompletableFuture();
+            }
+            if (result == null) {
+                log.warn("[cascade-bloom] RBloomFilter.isExistsAsync() returned null, fallback to sync exists for [{}]", name);
+                return null;
+            }
+            return disableNativeExistsAsyncAndFallback("Unsupported return type for RBloomFilter.isExistsAsync(): "
+                    + nativeExistsAsyncMethod.getReturnType().getName(), null);
+        } catch (IllegalAccessException exception) {
+            return disableNativeExistsAsyncAndFallback(
+                    "Failed to access RBloomFilter.isExistsAsync(), fallback to sync exists for [" + name + "]",
+                    exception);
+        } catch (IllegalArgumentException exception) {
+            return disableNativeExistsAsyncAndFallback(
+                    "Failed to invoke RBloomFilter.isExistsAsync() with current signature, fallback to sync exists for ["
+                            + name + "]", exception);
+        } catch (InvocationTargetException exception) {
+            Throwable cause = exception.getCause();
+            if (isNativeExistsAsyncCompatibilityFailure(cause)) {
+                return disableNativeExistsAsyncAndFallback(
+                        "RBloomFilter.isExistsAsync() is incompatible in current Redisson runtime, fallback to sync exists for ["
+                                + name + "]", cause);
+            }
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            throw new BloomFilterException("Failed to invoke RBloomFilter.isExistsAsync() for [" + name + "]", cause);
+        }
+    }
+
+    private Future<Boolean> disableNativeExistsAsyncAndFallback(String message, Throwable cause) {
+        nativeExistsAsyncUnavailable = true;
+        if (cause == null) {
+            log.warn("[cascade-bloom] {}", message);
+        } else {
+            log.warn("[cascade-bloom] {}", message, cause);
+        }
+        return null;
+    }
+
     private static boolean isNativeBulkAddCompatibilityFailure(Throwable throwable) {
         return throwable instanceof UnsupportedOperationException
                 || throwable instanceof IncompatibleClassChangeError
                 || throwable instanceof ClassCastException;
+    }
+
+    private static boolean isNativeExistsAsyncCompatibilityFailure(Throwable throwable) {
+        return throwable instanceof UnsupportedOperationException
+                || throwable instanceof IncompatibleClassChangeError
+                || throwable instanceof ClassCastException
+                || throwable instanceof AbstractMethodError
+                || throwable instanceof NoSuchMethodError;
+    }
+
+    private static final class ContainDecision {
+        private boolean mightContain = true;
+    }
+
+    private static final class ContainProbe<T> {
+        private final T value;
+        private final ContainDecision decision;
+
+        private ContainProbe(T value, ContainDecision decision) {
+            this.value = value;
+            this.decision = decision;
+        }
+    }
+
+    private static final class PendingBitRead {
+        private final ContainDecision decision;
+        private final RFuture<Boolean> future;
+
+        private PendingBitRead(ContainDecision decision, RFuture<Boolean> future) {
+            this.decision = decision;
+            this.future = future;
+        }
+    }
+
+    private static final class BatchContainResult<T> {
+        private final Map<T, Boolean> result;
+        private final long bitReads;
+
+        private BatchContainResult(Map<T, Boolean> result, long bitReads) {
+            this.result = result;
+            this.bitReads = bitReads;
+        }
     }
 }

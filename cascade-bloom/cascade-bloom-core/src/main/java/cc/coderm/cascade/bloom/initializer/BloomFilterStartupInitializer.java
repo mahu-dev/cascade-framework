@@ -4,18 +4,23 @@ import cc.coderm.cascade.bloom.config.BloomFilterProperties;
 import cc.coderm.cascade.bloom.core.BloomFilterManager;
 import cc.coderm.cascade.bloom.core.CascadeBloomFilter;
 import cc.coderm.cascade.bloom.exception.BloomFilterInitException;
-import lombok.RequiredArgsConstructor;
+import cc.coderm.cascade.bloom.util.BloomFilterArgumentValidator;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationListener;
 import org.springframework.util.CollectionUtils;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * 布隆过滤器启动初始化处理器
@@ -33,13 +38,34 @@ import java.util.concurrent.ExecutionException;
  * =============================
  */
 @Slf4j
-@RequiredArgsConstructor
 public class BloomFilterStartupInitializer implements ApplicationListener<ApplicationReadyEvent> {
 
     private final BloomFilterManager bloomFilterManager;
     private final BloomFilterProperties properties;
     private final List<BloomFilterInitializer> initializers;
     private final Executor initializationExecutor;
+    /**
+     * 预定义过滤器名称精确索引（trim 后，大小写敏感）。
+     */
+    private final Map<String, String> predefinedFilterNamesByExact;
+    /**
+     * 预定义过滤器名称大小写折叠索引（lowercase -> exactName）。
+     */
+    private final Map<String, String> predefinedFilterNamesByLowercase;
+
+    public BloomFilterStartupInitializer(BloomFilterManager bloomFilterManager,
+                                         BloomFilterProperties properties,
+                                         List<BloomFilterInitializer> initializers,
+                                         Executor initializationExecutor) {
+        this.bloomFilterManager = bloomFilterManager;
+        this.properties = properties;
+        this.initializers = initializers;
+        this.initializationExecutor = initializationExecutor;
+
+        PredefinedNameIndex predefinedNameIndex = buildPredefinedNameIndex(properties);
+        this.predefinedFilterNamesByExact = predefinedNameIndex.exactNames();
+        this.predefinedFilterNamesByLowercase = predefinedNameIndex.lowercaseNames();
+    }
 
     @Override
     public void onApplicationEvent(ApplicationReadyEvent event) {
@@ -136,8 +162,9 @@ public class BloomFilterStartupInitializer implements ApplicationListener<Applic
     }
 
     private StartupTaskResult executeInitializer(BloomFilterInitializer initializer) {
-        String filterName = initializer.filterName();
+        String filterName = BloomFilterArgumentValidator.normalizeFilterName(initializer.filterName());
         try {
+            filterName = resolveInitializerFilterName(filterName);
             log.info("[cascade-bloom] Starting initializer for filter [{}]", filterName);
             CascadeBloomFilter<String> filter = bloomFilterManager.getFilter(filterName);
             initializer.initialize(filter);
@@ -148,6 +175,45 @@ public class BloomFilterStartupInitializer implements ApplicationListener<Applic
                     filterName, exception.getMessage(), exception);
             return StartupTaskResult.failure(StartupTaskType.INITIALIZER, filterName, exception);
         }
+    }
+
+    private String resolveInitializerFilterName(String normalizedInitializerName) {
+        if (predefinedFilterNamesByExact.containsKey(normalizedInitializerName)) {
+            return normalizedInitializerName;
+        }
+        String predefinedName = predefinedFilterNamesByLowercase.get(normalizedInitializerName.toLowerCase(Locale.ROOT));
+        if (predefinedName == null) {
+            return normalizedInitializerName;
+        }
+        throw new IllegalStateException(
+                "[cascade-bloom] BloomFilterInitializer.filterName() must exactly match predefined filter name. "
+                        + "initializerName=[" + normalizedInitializerName + "], predefinedName=[" + predefinedName + "]."
+        );
+    }
+
+    private static PredefinedNameIndex buildPredefinedNameIndex(BloomFilterProperties properties) {
+        Map<String, String> exactNames = new HashMap<>();
+        Map<String, String> lowercaseNames = new HashMap<>();
+
+        if (!CollectionUtils.isEmpty(properties.getFilters())) {
+            for (BloomFilterProperties.BloomFilterDefinition definition : properties.getFilters()) {
+                if (definition == null || definition.getName() == null || definition.getName().isBlank()) {
+                    continue;
+                }
+                String normalizedName = BloomFilterArgumentValidator.normalizeFilterName(definition.getName());
+                exactNames.put(normalizedName, normalizedName);
+
+                String lowercaseName = normalizedName.toLowerCase(Locale.ROOT);
+                String existingName = lowercaseNames.putIfAbsent(lowercaseName, normalizedName);
+                if (existingName != null && !existingName.equals(normalizedName)) {
+                    throw new IllegalStateException(
+                            "[cascade-bloom] predefined filter names must be case-insensitively unique. conflict=["
+                                    + existingName + "] and [" + normalizedName + "]"
+                    );
+                }
+            }
+        }
+        return new PredefinedNameIndex(Map.copyOf(exactNames), Map.copyOf(lowercaseNames));
     }
 
     private CompletableFuture<List<StartupTaskResult>> collectResults(List<CompletableFuture<StartupTaskResult>> futures) {
@@ -181,11 +247,20 @@ public class BloomFilterStartupInitializer implements ApplicationListener<Applic
     }
 
     private List<StartupTaskResult> awaitResults(CompletableFuture<List<StartupTaskResult>> startupFuture) {
+        long timeoutMillis = properties.getInitializationWaitTimeout().toMillis();
         try {
-            return startupFuture.get();
+            return startupFuture.get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new BloomFilterInitException("[cascade-bloom] Bloom filter initialization interrupted", e);
+        } catch (TimeoutException e) {
+            startupFuture.cancel(true);
+            throw new BloomFilterInitException(
+                    "[cascade-bloom] Bloom filter initialization timed out after "
+                            + properties.getInitializationWaitTimeout()
+                            + ". Please check Redis health and tune 'cascade.bloom.initialization-wait-timeout'.",
+                    e
+            );
         } catch (ExecutionException e) {
             Throwable cause = unwrap(e.getCause());
             throw new BloomFilterInitException("[cascade-bloom] Bloom filter initialization failed unexpectedly", cause);
@@ -276,6 +351,25 @@ public class BloomFilterStartupInitializer implements ApplicationListener<Applic
 
         private Throwable cause() {
             return cause;
+        }
+    }
+
+    private static final class PredefinedNameIndex {
+        private final Map<String, String> exactNames;
+        private final Map<String, String> lowercaseNames;
+
+        private PredefinedNameIndex(Map<String, String> exactNames,
+                                    Map<String, String> lowercaseNames) {
+            this.exactNames = exactNames;
+            this.lowercaseNames = lowercaseNames;
+        }
+
+        private Map<String, String> exactNames() {
+            return exactNames;
+        }
+
+        private Map<String, String> lowercaseNames() {
+            return lowercaseNames;
         }
     }
 }

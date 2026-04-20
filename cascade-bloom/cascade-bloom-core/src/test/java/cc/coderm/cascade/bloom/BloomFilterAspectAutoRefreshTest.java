@@ -17,7 +17,9 @@ import org.springframework.context.annotation.EnableAspectJAutoProxy;
 
 import java.util.Collection;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -72,6 +74,46 @@ class BloomFilterAspectAutoRefreshTest {
         assertThat(value).isEqualTo("fallback");
         assertThat(service.getRefreshableCalls()).isEqualTo(1);
         assertThat(manager.getFilter("refresh-bloom").mightContain("missing")).isFalse();
+    }
+
+    @Test
+    @DisplayName("开启 autoRefreshOnAbsent：源返回 Optional.empty 时不应回填")
+    void shouldNotWriteBackWhenRefreshReturnsOptionalEmpty() {
+        Optional<String> value = service.refreshableOptionalGet("missing");
+
+        assertThat(value).isEmpty();
+        assertThat(service.getRefreshableOptionalCalls()).isEqualTo(1);
+        assertThat(manager.getFilter("refresh-optional-bloom").mightContain("missing")).isFalse();
+    }
+
+    @Test
+    @DisplayName("开启 autoRefreshOnAbsent：源返回 Optional.of 时应回填")
+    void shouldWriteBackWhenRefreshReturnsOptionalPresent() {
+        Optional<String> value = service.refreshableOptionalGet("u-opt-1");
+
+        assertThat(value).contains("db-u-opt-1");
+        assertThat(service.getRefreshableOptionalCalls()).isEqualTo(1);
+        assertThat(manager.getFilter("refresh-optional-bloom").mightContain("u-opt-1")).isTrue();
+    }
+
+    @Test
+    @DisplayName("开启 autoRefreshOnAbsent：异步返回命中时应在完成后回填")
+    void shouldWriteBackWhenAsyncRefreshCompletesWithPresentValue() {
+        CompletableFuture<String> value = service.refreshableAsyncGet("u-async-1");
+
+        assertThat(value.join()).isEqualTo("db-u-async-1");
+        assertThat(service.getRefreshableAsyncCalls()).isEqualTo(1);
+        assertThat(manager.getFilter("refresh-async-bloom").mightContain("u-async-1")).isTrue();
+    }
+
+    @Test
+    @DisplayName("开启 autoRefreshOnAbsent：异步返回 null 时不回填并返回异步 fallback")
+    void shouldFallbackWithoutWriteBackWhenAsyncRefreshCompletesWithNull() {
+        CompletableFuture<String> value = service.refreshableAsyncGet("missing-async");
+
+        assertThat(value.join()).isEqualTo("fallback");
+        assertThat(service.getRefreshableAsyncCalls()).isEqualTo(1);
+        assertThat(manager.getFilter("refresh-async-bloom").mightContain("missing-async")).isFalse();
     }
 
     @Test
@@ -211,6 +253,8 @@ class BloomFilterAspectAutoRefreshTest {
         final AtomicInteger refreshableCalls = new AtomicInteger();
         final AtomicInteger noWriteBackCalls = new AtomicInteger();
         final AtomicInteger throwingCalls = new AtomicInteger();
+        final AtomicInteger refreshableOptionalCalls = new AtomicInteger();
+        final AtomicInteger refreshableAsyncCalls = new AtomicInteger();
         final AtomicInteger misboundCalls = new AtomicInteger();
         final AtomicInteger defaultArgsKeyCalls = new AtomicInteger();
         final AtomicInteger beanNamingCalls = new AtomicInteger();
@@ -245,6 +289,34 @@ class BloomFilterAspectAutoRefreshTest {
         public String throwingGet(String id) {
             throwingCalls.incrementAndGet();
             return null;
+        }
+
+        @BloomFilter(
+                name = "refresh-optional-bloom",
+                key = "#id",
+                fallbackValue = "T(java.util.Optional).empty()",
+                autoRefreshOnAbsent = true
+        )
+        public Optional<String> refreshableOptionalGet(String id) {
+            refreshableOptionalCalls.incrementAndGet();
+            if ("missing".equals(id)) {
+                return Optional.empty();
+            }
+            return Optional.of("db-" + id);
+        }
+
+        @BloomFilter(
+                name = "refresh-async-bloom",
+                key = "#id",
+                fallbackValue = "T(java.util.concurrent.CompletableFuture).completedFuture('fallback')",
+                autoRefreshOnAbsent = true
+        )
+        public CompletableFuture<String> refreshableAsyncGet(String id) {
+            refreshableAsyncCalls.incrementAndGet();
+            if ("missing-async".equals(id)) {
+                return CompletableFuture.completedFuture(null);
+            }
+            return CompletableFuture.completedFuture("db-" + id);
         }
 
         @BloomFilter(name = "strict-bloom", key = "#id", fallbackValue = "'fallback'")
@@ -285,6 +357,14 @@ class BloomFilterAspectAutoRefreshTest {
 
         public int getThrowingCalls() {
             return throwingCalls.get();
+        }
+
+        public int getRefreshableOptionalCalls() {
+            return refreshableOptionalCalls.get();
+        }
+
+        public int getRefreshableAsyncCalls() {
+            return refreshableAsyncCalls.get();
         }
 
         public int getMisboundCalls() {
@@ -379,12 +459,22 @@ class BloomFilterAspectAutoRefreshTest {
         }
 
         @Override
+        public boolean existsInRedis(String name) {
+            return exists(name);
+        }
+
+        @Override
         public void remove(String name) {
             filters.remove(name);
         }
 
         @Override
-        public Set<String> listFilterNames() {
+        public Set<String> listCachedFilterNames() {
+            return filters.keySet();
+        }
+
+        @Override
+        public Set<String> listRegisteredFilterNames() {
             return filters.keySet();
         }
     }

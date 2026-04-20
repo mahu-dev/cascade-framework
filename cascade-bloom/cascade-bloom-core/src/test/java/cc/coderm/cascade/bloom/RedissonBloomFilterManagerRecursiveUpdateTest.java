@@ -6,11 +6,15 @@ import cc.coderm.cascade.bloom.impl.RedissonBloomFilterManager;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RBloomFilter;
+import org.redisson.api.RSet;
 import org.redisson.api.RedissonClient;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -66,10 +70,15 @@ class RedissonBloomFilterManagerRecursiveUpdateTest {
     @SuppressWarnings("unchecked")
     private static RedissonClient createRedissonClientProxy(RBloomFilter<Object> bloomFilter,
                                                             AtomicInteger getBloomFilterCalls) {
+        Set<String> registry = ConcurrentHashMap.newKeySet();
+        RSet<String> registrySet = createRegistrySetProxy(registry);
         InvocationHandler handler = (proxy, method, args) -> {
             if ("getBloomFilter".equals(method.getName())) {
                 getBloomFilterCalls.incrementAndGet();
                 return bloomFilter;
+            }
+            if ("getSet".equals(method.getName())) {
+                return registrySet;
             }
             if ("toString".equals(method.getName())) {
                 return "RedissonClientProxy";
@@ -85,6 +94,40 @@ class RedissonBloomFilterManagerRecursiveUpdateTest {
         return (RedissonClient) Proxy.newProxyInstance(
                 RedissonClient.class.getClassLoader(),
                 new Class<?>[]{RedissonClient.class},
+                handler
+        );
+    }
+
+    @SuppressWarnings("unchecked")
+    private static RSet<String> createRegistrySetProxy(Set<String> backingSet) {
+        InvocationHandler handler = (proxy, method, args) -> {
+            String name = method.getName();
+            if ("add".equals(name)) {
+                return backingSet.add((String) args[0]);
+            }
+            if ("remove".equals(name)) {
+                return backingSet.remove((String) args[0]);
+            }
+            if ("contains".equals(name)) {
+                return backingSet.contains((String) args[0]);
+            }
+            if ("readAll".equals(name)) {
+                return new HashSet<>(backingSet);
+            }
+            if ("toString".equals(name)) {
+                return "RSetProxy";
+            }
+            if ("hashCode".equals(name)) {
+                return System.identityHashCode(proxy);
+            }
+            if ("equals".equals(name)) {
+                return proxy == args[0];
+            }
+            return defaultValue(method);
+        };
+        return (RSet<String>) Proxy.newProxyInstance(
+                RSet.class.getClassLoader(),
+                new Class<?>[]{RSet.class},
                 handler
         );
     }

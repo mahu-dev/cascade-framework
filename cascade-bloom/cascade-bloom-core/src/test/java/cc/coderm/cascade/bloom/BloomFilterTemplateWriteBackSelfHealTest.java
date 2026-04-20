@@ -144,12 +144,22 @@ class BloomFilterTemplateWriteBackSelfHealTest {
         }
 
         @Override
+        public boolean existsInRedis(String name) {
+            return exists(name);
+        }
+
+        @Override
         public void remove(String name) {
             filters.remove(name);
         }
 
         @Override
-        public Set<String> listFilterNames() {
+        public Set<String> listCachedFilterNames() {
+            return filters.keySet();
+        }
+
+        @Override
+        public Set<String> listRegisteredFilterNames() {
             return filters.keySet();
         }
     }

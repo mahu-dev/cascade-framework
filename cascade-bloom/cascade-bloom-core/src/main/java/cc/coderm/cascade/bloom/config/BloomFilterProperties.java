@@ -4,6 +4,7 @@ import lombok.Data;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -73,6 +74,14 @@ public class BloomFilterProperties implements InitializingBean {
     private boolean waitForInitialization = true;
 
     /**
+     * 启动阶段等待布隆过滤器初始化完成的超时时间
+     * <p>
+     * 仅在 {@link #waitForInitialization} 为 true 时生效。
+     * 超时后将快速失败并中断启动，避免 Redis 或网络故障导致应用永久卡死在启动阶段。
+     */
+    private Duration initializationWaitTimeout = Duration.ofMinutes(2);
+
+    /**
      * 本地缓存最大容量（过滤器数量）
      * <p>
      * 当缓存中过滤器数量超过此值时，使用 LRU 策略自动淘汰最久未使用的过滤器。
@@ -82,6 +91,24 @@ public class BloomFilterProperties implements InitializingBean {
      * 被淘汰的过滤器再次访问时会重新创建并加入缓存。
      */
     private int maxCacheSize = 1000;
+
+    /**
+     * 本地缓存条目存在性探测间隔（毫秒）
+     * <p>
+     * 用于平衡“本地缓存命中性能”和“外部删除后的失效感知”：
+     * <ul>
+     *   <li>{@code 0}：每次缓存命中都探测 Redis（最强一致，性能最低）</li>
+     *   <li>{@code >0}：仅在间隔到期后探测 Redis（推荐，兼顾一致性与性能）</li>
+     * </ul>
+     */
+    private long cacheExistenceProbeIntervalMillis = 5_000L;
+    /**
+     * 本地缓存条目存在性探测超时时间（毫秒）
+     * <p>
+     * 仅用于“缓存命中后的 Redis 存在性探测”，防止 Redis 高延迟拖慢业务线程。
+     * 超时后本次探测按 UNKNOWN 处理，保留本地缓存并按失败退避窗口重试。
+     */
+    private long cacheExistenceProbeTimeoutMillis = 200L;
 
     /**
      * SpEL 表达式缓存最大容量
@@ -124,8 +151,20 @@ public class BloomFilterProperties implements InitializingBean {
         if (maxCacheSize <= 0) {
             throw new IllegalStateException("[cascade-bloom] maxCacheSize must be positive");
         }
+        if (cacheExistenceProbeIntervalMillis < 0) {
+            throw new IllegalStateException("[cascade-bloom] cacheExistenceProbeIntervalMillis must be >= 0");
+        }
+        if (cacheExistenceProbeTimeoutMillis <= 0) {
+            throw new IllegalStateException("[cascade-bloom] cacheExistenceProbeTimeoutMillis must be > 0");
+        }
         if (maxExpressionCacheSize <= 0) {
             throw new IllegalStateException("[cascade-bloom] maxExpressionCacheSize must be positive");
+        }
+        if (initializationWaitTimeout == null) {
+            throw new IllegalStateException("[cascade-bloom] initializationWaitTimeout must not be null");
+        }
+        if (initializationWaitTimeout.isZero() || initializationWaitTimeout.isNegative()) {
+            throw new IllegalStateException("[cascade-bloom] initializationWaitTimeout must be > 0");
         }
         if (initializerExecutor == null) {
             throw new IllegalStateException("[cascade-bloom] initializerExecutor must not be null");
@@ -235,7 +274,7 @@ public class BloomFilterProperties implements InitializingBean {
         /**
          * 最大线程数
          */
-        private int maxPoolSize = Math.max(corePoolSize, corePoolSize * 2);
+        private int maxPoolSize = corePoolSize * 2;
 
         /**
          * 队列容量（0 表示直接移交策略）

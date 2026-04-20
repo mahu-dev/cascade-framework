@@ -2,6 +2,7 @@ package cc.coderm.cascade.bloom.config;
 
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -74,5 +75,41 @@ class BloomFilterPropertiesValidationTest {
         properties.afterPropertiesSet();
 
         assertEquals("user-bloom", definition.getName());
+    }
+
+    @Test
+    void afterPropertiesSet_ShouldRejectNegativeCacheExistenceProbeIntervalMillis() {
+        BloomFilterProperties properties = new BloomFilterProperties();
+        properties.setCacheExistenceProbeIntervalMillis(-1L);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class, properties::afterPropertiesSet);
+        assertEquals("[cascade-bloom] cacheExistenceProbeIntervalMillis must be >= 0", exception.getMessage());
+    }
+
+    @Test
+    void afterPropertiesSet_ShouldRejectNonPositiveCacheExistenceProbeTimeoutMillis() {
+        BloomFilterProperties properties = new BloomFilterProperties();
+        properties.setCacheExistenceProbeTimeoutMillis(0L);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class, properties::afterPropertiesSet);
+        assertEquals("[cascade-bloom] cacheExistenceProbeTimeoutMillis must be > 0", exception.getMessage());
+    }
+
+    @Test
+    void afterPropertiesSet_ShouldRejectNullInitializationWaitTimeout() {
+        BloomFilterProperties properties = new BloomFilterProperties();
+        properties.setInitializationWaitTimeout(null);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class, properties::afterPropertiesSet);
+        assertEquals("[cascade-bloom] initializationWaitTimeout must not be null", exception.getMessage());
+    }
+
+    @Test
+    void afterPropertiesSet_ShouldRejectNonPositiveInitializationWaitTimeout() {
+        BloomFilterProperties properties = new BloomFilterProperties();
+        properties.setInitializationWaitTimeout(Duration.ZERO);
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class, properties::afterPropertiesSet);
+        assertEquals("[cascade-bloom] initializationWaitTimeout must be > 0", exception.getMessage());
     }
 }

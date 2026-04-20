@@ -74,9 +74,13 @@ public @interface BloomFilter {
     String message() default "The requested resource does not exist";
 
     /**
-     * 查询成功（方法返回非 null）时是否自动回填 key 到布隆过滤器
+     * 查询成功（返回值语义上存在）时是否自动回填 key 到布隆过滤器
      * <p>
      * 默认 {@code true}，建议保持开启，用于弥补预热遗漏或跨节点写入延迟。
+     * <p>
+     * 语义说明：{@code null}、{@code Optional.empty()}（含 OptionalInt/Long/Double 的 empty）都视为“不存在”，不会触发回填。
+     * 若方法返回 {@code CompletionStage}/{@code CompletableFuture}，则会在异步完成后基于真实 payload 判定是否回填；
+     * 异步容器对象本身不会被视为“存在”。
      */
     boolean writeBackOnSuccess() default true;
 
@@ -87,9 +91,11 @@ public @interface BloomFilter {
      * <p>
      * 开启后：
      * <ul>
-     *   <li>若原方法返回非 null，会自动回填 key（受 {@link #writeBackOnSuccess()} 控制）</li>
-     *   <li>若原方法返回 null，则按 {@link #throwOnAbsent()} / {@link #fallbackValue()} 处理</li>
+     *   <li>若原方法返回值语义上存在（非 null 且非 Optional.empty），会自动回填 key（受 {@link #writeBackOnSuccess()} 控制）</li>
+     *   <li>若原方法返回值语义上不存在（null / Optional.empty），则按 {@link #throwOnAbsent()} / {@link #fallbackValue()} 处理</li>
      * </ul>
+     * 若原方法返回 {@code CompletionStage}/{@code CompletableFuture}，上述判定在异步完成后执行，
+     * 不会因异步容器非 null 而提前回填。
      */
     boolean autoRefreshOnAbsent() default false;
 }

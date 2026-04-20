@@ -1,5 +1,7 @@
 package cc.coderm.cascade.bloom.util;
 
+import java.lang.reflect.Array;
+import java.util.IdentityHashMap;
 import java.util.Objects;
 
 /**
@@ -25,7 +27,7 @@ public final class BloomFilterKeyUtil {
      * 规则：
      * <ul>
      *   <li>null → 抛出 {@link NullPointerException}</li>
-     *   <li>String → 直接返回</li>
+     *   <li>数组 → 按内容递归序列化（如 {@code [1,2]} / {@code [u,[1,2],null]}）</li>
      *   <li>其他 → {@code toString()}</li>
      * </ul>
      *
@@ -34,7 +36,62 @@ public final class BloomFilterKeyUtil {
      */
     public static String toKey(Object value) {
         Objects.requireNonNull(value, "BloomFilter key must not be null");
-        return value.toString();
+        return toKeyInternal(value, new IdentityHashMap<>());
+    }
+
+    private static String toKeyInternal(Object value, IdentityHashMap<Object, Boolean> visitingArrays) {
+        if (!value.getClass().isArray()) {
+            return value.toString();
+        }
+        return toArrayKey(value, visitingArrays);
+    }
+
+    private static String toArrayKey(Object arrayValue, IdentityHashMap<Object, Boolean> visitingArrays) {
+        if (visitingArrays.put(arrayValue, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("Cyclic array reference detected while building bloom filter key");
+        }
+        try {
+            Class<?> componentType = arrayValue.getClass().getComponentType();
+            if (componentType != null && componentType.isPrimitive()) {
+                return toPrimitiveArrayKey(arrayValue);
+            }
+            return toObjectArrayKey(arrayValue, visitingArrays);
+        } finally {
+            visitingArrays.remove(arrayValue);
+        }
+    }
+
+    private static String toPrimitiveArrayKey(Object primitiveArrayValue) {
+        int length = Array.getLength(primitiveArrayValue);
+        StringBuilder builder = new StringBuilder(length * 8 + 2);
+        builder.append("[");
+        for (int i = 0; i < length; i++) {
+            if (i > 0) {
+                builder.append(",");
+            }
+            builder.append(Array.get(primitiveArrayValue, i));
+        }
+        builder.append("]");
+        return builder.toString();
+    }
+
+    private static String toObjectArrayKey(Object objectArrayValue, IdentityHashMap<Object, Boolean> visitingArrays) {
+        int length = Array.getLength(objectArrayValue);
+        StringBuilder builder = new StringBuilder(length * 8 + 2);
+        builder.append("[");
+        for (int i = 0; i < length; i++) {
+            if (i > 0) {
+                builder.append(",");
+            }
+            Object element = Array.get(objectArrayValue, i);
+            if (element == null) {
+                builder.append("null");
+                continue;
+            }
+            builder.append(toKeyInternal(element, visitingArrays));
+        }
+        builder.append("]");
+        return builder.toString();
     }
 
     /**
@@ -51,7 +108,7 @@ public final class BloomFilterKeyUtil {
             if (i > 0) {
                 sb.append(":");
             }
-            sb.append(parts[i]);
+            sb.append(toKey(parts[i]));
         }
         return sb.toString();
     }

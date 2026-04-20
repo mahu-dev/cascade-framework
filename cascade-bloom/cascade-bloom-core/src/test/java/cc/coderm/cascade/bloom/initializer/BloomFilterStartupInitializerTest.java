@@ -6,12 +6,15 @@ import cc.coderm.cascade.bloom.core.CascadeBloomFilter;
 import cc.coderm.cascade.bloom.exception.BloomFilterInitException;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -149,7 +152,7 @@ class BloomFilterStartupInitializerTest {
 
         initializer.onApplicationEvent(null);
         assertFalse(initialized.get(), "模块关闭时不应执行任何初始化器");
-        assertTrue(bloomFilterManager.listFilterNames().isEmpty(), "模块关闭时不应访问任何过滤器");
+        assertTrue(bloomFilterManager.listCachedFilterNames().isEmpty(), "模块关闭时不应访问任何过滤器");
     }
 
     @Test
@@ -218,6 +221,137 @@ class BloomFilterStartupInitializerTest {
         assertTrue(bloomFilterManager.getFilter("ok-filter").mightContain("ok"));
     }
 
+    @Test
+    void testInitializerFilterName_ShouldAllowTrimmedMatchForPredefinedFilter() {
+        BloomFilterProperties properties = new BloomFilterProperties();
+        properties.setEnabled(true);
+        properties.setWaitForInitialization(true);
+        BloomFilterProperties.BloomFilterDefinition definition = new BloomFilterProperties.BloomFilterDefinition();
+        definition.setName("ordered-bloom");
+        definition.setExpectedInsertions(1000L);
+        definition.setFalseProbability(0.03D);
+        properties.setFilters(List.of(definition));
+
+        InMemoryBloomFilterManager bloomFilterManager = new InMemoryBloomFilterManager();
+
+        List<BloomFilterInitializer> initializers = List.of(new BloomFilterInitializer() {
+            @Override
+            public String filterName() {
+                return "  ordered-bloom  ";
+            }
+
+            @Override
+            public void initialize(CascadeBloomFilter<String> filter) {
+                filter.add("warmup");
+            }
+        });
+
+        BloomFilterStartupInitializer initializer =
+                new BloomFilterStartupInitializer(
+                        bloomFilterManager,
+                        properties,
+                        initializers,
+                        DAEMON_ASYNC_EXECUTOR
+                );
+
+        assertDoesNotThrow(() -> initializer.onApplicationEvent(null));
+        assertTrue(bloomFilterManager.getFilter("ordered-bloom").mightContain("warmup"));
+    }
+
+    @Test
+    void testInitializerFilterName_ShouldFailFastOnCaseMismatchWithPredefinedFilter() {
+        BloomFilterProperties properties = new BloomFilterProperties();
+        properties.setEnabled(true);
+        properties.setWaitForInitialization(true);
+        BloomFilterProperties.BloomFilterDefinition definition = new BloomFilterProperties.BloomFilterDefinition();
+        definition.setName("user-bloom");
+        definition.setExpectedInsertions(1000L);
+        definition.setFalseProbability(0.03D);
+        properties.setFilters(List.of(definition));
+
+        InMemoryBloomFilterManager bloomFilterManager = new InMemoryBloomFilterManager();
+        AtomicBoolean initializerCalled = new AtomicBoolean(false);
+        List<BloomFilterInitializer> initializers = List.of(new BloomFilterInitializer() {
+            @Override
+            public String filterName() {
+                return "USER-BLOOM";
+            }
+
+            @Override
+            public void initialize(CascadeBloomFilter<String> filter) {
+                initializerCalled.set(true);
+            }
+        });
+
+        BloomFilterStartupInitializer initializer =
+                new BloomFilterStartupInitializer(
+                        bloomFilterManager,
+                        properties,
+                        initializers,
+                        DAEMON_ASYNC_EXECUTOR
+                );
+
+        BloomFilterInitException exception =
+                assertThrows(BloomFilterInitException.class, () -> initializer.onApplicationEvent(null));
+
+        assertFalse(initializerCalled.get(), "大小写不匹配时不应执行初始化逻辑");
+        assertTrue(bloomFilterManager.listCachedFilterNames().contains("user-bloom"),
+                "预定义过滤器应按配置名称创建");
+        assertFalse(bloomFilterManager.listCachedFilterNames().contains("USER-BLOOM"),
+                "大小写不匹配时不应创建错误名称过滤器");
+        assertTrue(exception.getMessage().contains("initializer:USER-BLOOM"));
+        assertTrue(exception.getCause() instanceof IllegalStateException);
+        assertTrue(exception.getCause().getMessage().contains("must exactly match predefined filter name"));
+        assertTrue(exception.getCause().getMessage().contains("initializerName=[USER-BLOOM]"));
+        assertTrue(exception.getCause().getMessage().contains("predefinedName=[user-bloom]"));
+    }
+
+    @Test
+    void testWaitForInitializationEnabled_ShouldTimeoutInsteadOfBlockingForever() throws Exception {
+        BloomFilterProperties properties = new BloomFilterProperties();
+        properties.setEnabled(true);
+        properties.setWaitForInitialization(true);
+        properties.setInitializationWaitTimeout(Duration.ofMillis(120));
+
+        InMemoryBloomFilterManager bloomFilterManager = new InMemoryBloomFilterManager();
+        CountDownLatch initializerStarted = new CountDownLatch(1);
+
+        List<BloomFilterInitializer> initializers = List.of(new BloomFilterInitializer() {
+            @Override
+            public String filterName() {
+                return "timeout-filter";
+            }
+
+            @Override
+            public void initialize(CascadeBloomFilter<String> filter) {
+                initializerStarted.countDown();
+                try {
+                    Thread.sleep(10_000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+
+        BloomFilterStartupInitializer initializer =
+                new BloomFilterStartupInitializer(
+                        bloomFilterManager,
+                        properties,
+                        initializers,
+                        DAEMON_ASYNC_EXECUTOR
+                );
+
+        long startNanos = System.nanoTime();
+        BloomFilterInitException exception =
+                assertThrows(BloomFilterInitException.class, () -> initializer.onApplicationEvent(null));
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+
+        assertTrue(initializerStarted.await(200, TimeUnit.MILLISECONDS), "初始化任务应该被提交执行");
+        assertTrue(elapsedMillis < 2_000, "应在超时后快速失败，避免永久阻塞");
+        assertTrue(exception.getMessage().contains("timed out after"));
+        assertTrue(exception.getMessage().contains("initialization-wait-timeout"));
+    }
+
     private static final class InMemoryBloomFilterManager implements BloomFilterManager {
         private final ConcurrentHashMap<String, CascadeBloomFilter<Object>> filters = new ConcurrentHashMap<>();
 
@@ -238,12 +372,22 @@ class BloomFilterStartupInitializerTest {
         }
 
         @Override
+        public boolean existsInRedis(String name) {
+            return exists(name);
+        }
+
+        @Override
         public void remove(String name) {
             filters.remove(name);
         }
 
         @Override
-        public Set<String> listFilterNames() {
+        public Set<String> listCachedFilterNames() {
+            return filters.keySet();
+        }
+
+        @Override
+        public Set<String> listRegisteredFilterNames() {
             return filters.keySet();
         }
     }

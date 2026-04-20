@@ -8,6 +8,7 @@ import cc.coderm.cascade.bloom.core.CascadeBloomFilter;
 import cc.coderm.cascade.bloom.exception.BloomFilterException;
 import cc.coderm.cascade.bloom.util.BloomFilterArgumentValidator;
 import cc.coderm.cascade.bloom.util.BloomFilterKeyUtil;
+import cc.coderm.cascade.bloom.util.BloomFilterResultPresenceUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
@@ -23,12 +24,17 @@ import org.springframework.expression.spel.support.StandardEvaluationContext;
 
 import java.beans.Introspector;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -50,6 +56,7 @@ public class BloomFilterAspect {
     private static final float LOAD_FACTOR = 0.75F;
     private static final String ARGUMENT_ARRAY_VARIABLE = "args";
     private static final Set<String> RESERVED_VARIABLE_NAMES = Set.of(ARGUMENT_ARRAY_VARIABLE);
+    private static final DtoPropertyBinding[] EMPTY_DTO_PROPERTY_BINDINGS = new DtoPropertyBinding[0];
 
     private final BloomFilterManager bloomFilterManager;
     private final BloomFilterProperties properties;
@@ -81,6 +88,23 @@ public class BloomFilterAspect {
      * 缓存淘汰次数统计
      */
     private final AtomicLong evictions = new AtomicLong(0);
+    /**
+     * 正在解析中的表达式（按表达式字符串去重），用于并发 miss 下的 single-flight。
+     */
+    private final ConcurrentHashMap<String, CompletableFuture<Expression>> inFlightExpressionParses = new ConcurrentHashMap<>();
+    /**
+     * DTO 属性绑定元数据缓存（按 Class 维度）。
+     * <p>
+     * 目标：
+     * 1. 避免每次切面触发都执行 {@code dto.getClass().getMethods()} 的全量反射扫描；
+     * 2. 使用 {@link ClassValue} 在类卸载场景下更安全，避免手工 Class-Key Map 的潜在泄漏。
+     */
+    private final ClassValue<DtoPropertyBinding[]> dtoPropertyBindingCache = new ClassValue<>() {
+        @Override
+        protected DtoPropertyBinding[] computeValue(Class<?> type) {
+            return buildDtoPropertyBindings(type);
+        }
+    };
 
     /**
      * 构造布隆过滤器 AOP 切面实例
@@ -125,7 +149,17 @@ public class BloomFilterAspect {
             // 可选：在 miss 场景执行一次真实探测（自动刷新）
             if (bloomFilter.autoRefreshOnAbsent()) {
                 Object refreshed = joinPoint.proceed();
-                if (refreshed != null) {
+                if (BloomFilterResultPresenceUtil.isAsyncResult(refreshed)) {
+                    return handleAutoRefreshAsyncResult(
+                            filter,
+                            filterName,
+                            key,
+                            (CompletionStage<?>) refreshed,
+                            joinPoint,
+                            bloomFilter
+                    );
+                }
+                if (BloomFilterResultPresenceUtil.shouldWriteBack(refreshed)) {
                     writeBackIfNecessary(filter, filterName, key, refreshed, bloomFilter);
                     return refreshed;
                 }
@@ -136,6 +170,15 @@ public class BloomFilterAspect {
 
         // 4. 可能存在，执行原方法；成功时可自动回填
         Object result = joinPoint.proceed();
+        if (BloomFilterResultPresenceUtil.isAsyncResult(result)) {
+            return decorateAsyncWriteBackIfNecessary(
+                    filter,
+                    filterName,
+                    key,
+                    (CompletionStage<?>) result,
+                    bloomFilter
+            );
+        }
         writeBackIfNecessary(filter, filterName, key, result, bloomFilter);
         return result;
     }
@@ -323,11 +366,18 @@ public class BloomFilterAspect {
             return;
         }
 
-        log.debug("[cascade-bloom] Starting DTO property binding for: {}", dto.getClass().getSimpleName());
-        Method[] methods = dto.getClass().getMethods();
+        DtoPropertyBinding[] propertyBindings = dtoPropertyBindingCache.get(dto.getClass());
+        if (propertyBindings.length == 0) {
+            log.debug("[cascade-bloom] DTO property binding skipped: no bindable getter found for {}",
+                    dto.getClass().getSimpleName());
+            return;
+        }
+
+        log.debug("[cascade-bloom] Starting DTO property binding for: {}, bindableGetters={}",
+                dto.getClass().getSimpleName(), propertyBindings.length);
         int boundCount = 0;
-        for (Method method : methods) {
-            if (tryBindDtoProperty(context, dto, method, occupiedVariableNames)) {
+        for (DtoPropertyBinding propertyBinding : propertyBindings) {
+            if (tryBindDtoProperty(context, dto, propertyBinding, occupiedVariableNames)) {
                 boundCount++;
             }
         }
@@ -355,22 +405,15 @@ public class BloomFilterAspect {
      */
     private boolean tryBindDtoProperty(StandardEvaluationContext context,
                                        Object dto,
-                                       Method method,
+                                       DtoPropertyBinding propertyBinding,
                                        Set<String> occupiedVariableNames) {
-        if (!isBindableGetter(method)) {
-            return false;
-        }
-
-        String propertyName = extractPropertyName(method.getName());
-        if (propertyName == null || propertyName.isEmpty()) {
-            return false;
-        }
+        String propertyName = propertyBinding.propertyName();
         if (occupiedVariableNames.contains(propertyName)) {
             log.debug("[cascade-bloom] Skip DTO property [{}] binding: variable already occupied", propertyName);
             return false;
         }
 
-        Object value = invokeGetterSafely(dto, method);
+        Object value = invokeGetterSafely(dto, propertyBinding.getter());
         if (shouldBindProperty(value)) {
             bindVariable(context, occupiedVariableNames, propertyName, value);
             log.debug("[cascade-bloom] Bound DTO property: {}={}", propertyName, value);
@@ -379,14 +422,44 @@ public class BloomFilterAspect {
         return false;
     }
 
-    /**
-     * 判断方法是否是可绑定的getter方法
-     *
-     * @param method 方法对象
-     * @return 如果是可绑定的getter方法返回true，否则返回false
-     */
-    private boolean isBindableGetter(Method method) {
-        return isGetterMethod(method) && method.getParameterCount() == 0;
+    private DtoPropertyBinding[] buildDtoPropertyBindings(Class<?> dtoType) {
+        Method[] methods = dtoType.getMethods();
+        if (methods.length == 0) {
+            return EMPTY_DTO_PROPERTY_BINDINGS;
+        }
+
+        Map<String, Method> getterByProperty = new LinkedHashMap<>(methods.length);
+        for (Method method : methods) {
+            if (!isBindableDtoGetterForCache(method)) {
+                continue;
+            }
+            String propertyName = extractPropertyName(method.getName());
+            if (propertyName == null || propertyName.isEmpty()) {
+                continue;
+            }
+            getterByProperty.putIfAbsent(propertyName, method);
+        }
+
+        if (getterByProperty.isEmpty()) {
+            return EMPTY_DTO_PROPERTY_BINDINGS;
+        }
+
+        DtoPropertyBinding[] bindings = new DtoPropertyBinding[getterByProperty.size()];
+        int index = 0;
+        for (Map.Entry<String, Method> entry : getterByProperty.entrySet()) {
+            bindings[index++] = new DtoPropertyBinding(entry.getKey(), entry.getValue());
+        }
+        log.debug("[cascade-bloom] Initialized DTO property binding metadata for [{}], bindableGetters={}",
+                dtoType.getName(), bindings.length);
+        return bindings;
+    }
+
+    private boolean isBindableDtoGetterForCache(Method method) {
+        return isGetterMethod(method)
+                && method.getParameterCount() == 0
+                && !Modifier.isStatic(method.getModifiers())
+                && !method.isSynthetic()
+                && !method.isBridge();
     }
 
     /**
@@ -612,17 +685,63 @@ public class BloomFilterAspect {
         return resolveFallback(bloomFilter.fallbackValue(), joinPoint);
     }
 
+    private Object handleAutoRefreshAsyncResult(CascadeBloomFilter<Object> filter,
+                                                String filterName,
+                                                String key,
+                                                CompletionStage<?> refreshedStage,
+                                                ProceedingJoinPoint joinPoint,
+                                                BloomFilter bloomFilter) {
+        return refreshedStage.toCompletableFuture()
+                .thenCompose(refreshed -> {
+                    if (BloomFilterResultPresenceUtil.shouldWriteBack(refreshed)) {
+                        writeBackIfNecessary(filter, filterName, key, refreshed, bloomFilter);
+                        return CompletableFuture.completedFuture(refreshed);
+                    }
+                    return resolveAbsentAsFuture(joinPoint, bloomFilter);
+                });
+    }
+
+    private Object decorateAsyncWriteBackIfNecessary(CascadeBloomFilter<Object> filter,
+                                                     String filterName,
+                                                     String key,
+                                                     CompletionStage<?> resultStage,
+                                                     BloomFilter bloomFilter) {
+        if (!bloomFilter.writeBackOnSuccess()) {
+            return resultStage;
+        }
+        return resultStage.toCompletableFuture().thenApply(result -> {
+            writeBackIfNecessary(filter, filterName, key, result, bloomFilter);
+            return result;
+        });
+    }
+
+    private CompletableFuture<Object> resolveAbsentAsFuture(ProceedingJoinPoint joinPoint, BloomFilter bloomFilter) {
+        try {
+            Object absentResult = onAbsent(joinPoint, bloomFilter);
+            return BloomFilterResultPresenceUtil.toCompletionFuture(absentResult);
+        } catch (Throwable throwable) {
+            return CompletableFuture.failedFuture(unwrapCompletionThrowable(throwable));
+        }
+    }
+
+    private static Throwable unwrapCompletionThrowable(Throwable throwable) {
+        if (throwable instanceof CompletionException completionException && completionException.getCause() != null) {
+            return completionException.getCause();
+        }
+        return throwable;
+    }
+
     /**
      * 在方法执行成功后将 key 回填到布隆过滤器
      * <p>
-     * 当配置了 writeBackOnSuccess=true 且方法返回值不为 null 时，
+     * 当配置了 writeBackOnSuccess=true 且方法返回值语义上“存在”时，
      * 将 key 添加到布隆过滤器中，实现自动刷新功能。
      * 回填失败时仅记录警告日志，不影响主流程的正常执行。
      *
      * @param filter       布隆过滤器实例，用于执行 add 操作
      * @param filterName   过滤器名称，用于日志输出
      * @param key          需要回填的 key 字符串
-     * @param result       方法执行结果，为 null 时不执行回填
+     * @param result       方法执行结果（null 与 Optional.empty() 等语义“空值”均不回填）
      * @param bloomFilter  布隆过滤器注解对象，包含 writeBackOnSuccess 配置
      */
     private void writeBackIfNecessary(CascadeBloomFilter<Object> filter,
@@ -630,8 +749,8 @@ public class BloomFilterAspect {
                                       String key,
                                       Object result,
                                       BloomFilter bloomFilter) {
-        // 检查是否需要回填：未开启或结果为 null 则跳过
-        if (!bloomFilter.writeBackOnSuccess() || result == null) {
+        // 检查是否需要回填：未开启或结果语义为空则跳过
+        if (!bloomFilter.writeBackOnSuccess() || !BloomFilterResultPresenceUtil.shouldWriteBack(result)) {
             return;
         }
         try {
@@ -663,9 +782,48 @@ public class BloomFilterAspect {
             return expression;
         }
 
+        CompletableFuture<Expression> candidate = new CompletableFuture<>();
+        CompletableFuture<Expression> inFlight = inFlightExpressionParses.putIfAbsent(expressionString, candidate);
+        if (inFlight != null) {
+            Expression parsedByPeer = awaitInFlightExpressionParse(expressionString, inFlight);
+            cacheHits.incrementAndGet();
+            return parsedByPeer;
+        }
+
         cacheMisses.incrementAndGet();
-        Expression parsedExpression = expressionParser.parseExpression(expressionString);
-        return expressionCache.putIfAbsent(expressionString, parsedExpression);
+        try {
+            Expression parsedExpression = expressionParser.parseExpression(expressionString);
+            Expression cachedExpression = expressionCache.putIfAbsent(expressionString, parsedExpression);
+            candidate.complete(cachedExpression);
+            return cachedExpression;
+        } catch (Throwable throwable) {
+            candidate.completeExceptionally(throwable);
+            if (throwable instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            if (throwable instanceof Error error) {
+                throw error;
+            }
+            throw new BloomFilterException("Failed to parse SpEL expression [" + expressionString + "]", throwable);
+        } finally {
+            inFlightExpressionParses.remove(expressionString, candidate);
+        }
+    }
+
+    private static Expression awaitInFlightExpressionParse(String expressionString,
+                                                           CompletableFuture<Expression> inFlight) {
+        try {
+            return inFlight.join();
+        } catch (CompletionException completionException) {
+            Throwable cause = completionException.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            throw new BloomFilterException("Failed to parse SpEL expression [" + expressionString + "]", cause);
+        }
     }
 
     private void onExpressionEvicted(String expression, int sizeAfterPut, int maxSize) {
@@ -682,6 +840,7 @@ public class BloomFilterAspect {
     public void clearExpressionCache() {
         int previousSize = expressionCache.size();
         expressionCache.clear();
+        inFlightExpressionParses.clear();
         cacheHits.set(0);
         cacheMisses.set(0);
         evictions.set(0);
@@ -737,6 +896,24 @@ public class BloomFilterAspect {
             return 0;
         }
         return (double) hits / total;
+    }
+
+    private static final class DtoPropertyBinding {
+        private final String propertyName;
+        private final Method getter;
+
+        private DtoPropertyBinding(String propertyName, Method getter) {
+            this.propertyName = propertyName;
+            this.getter = getter;
+        }
+
+        private String propertyName() {
+            return propertyName;
+        }
+
+        private Method getter() {
+            return getter;
+        }
     }
 
     @FunctionalInterface

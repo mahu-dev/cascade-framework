@@ -134,8 +134,8 @@ class BloomFilterAspectCacheTest {
             CompletableFuture.allOf(futures).join();
 
             assertThat(aspect.getExpressionCacheSize()).isEqualTo(1);
-            assertThat(aspect.getCacheMisses()).isGreaterThanOrEqualTo(1);
-            assertThat(aspect.getCacheHits()).isGreaterThan(0);
+            assertThat(aspect.getCacheMisses()).isEqualTo(1);
+            assertThat(aspect.getCacheHits()).isEqualTo((long) threadCount * callsPerThread - 1);
         } finally {
             executor.shutdownNow();
             executor.awaitTermination(1, TimeUnit.SECONDS);
@@ -218,12 +218,22 @@ class BloomFilterAspectCacheTest {
         }
 
         @Override
+        public boolean existsInRedis(String name) {
+            return exists(name);
+        }
+
+        @Override
         public void remove(String name) {
             filters.remove(name);
         }
 
         @Override
-        public Set<String> listFilterNames() {
+        public Set<String> listCachedFilterNames() {
+            return filters.keySet();
+        }
+
+        @Override
+        public Set<String> listRegisteredFilterNames() {
             return filters.keySet();
         }
     }

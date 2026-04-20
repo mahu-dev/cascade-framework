@@ -44,6 +44,13 @@ public interface BloomFilterInitializer {
      * <p>
      * 对应 {@code cascade.bloom.filters[].name} 中配置的名称，
      * 或通过 {@link BloomFilterManager#getOrCreate} 创建的名称。
+     * <p>
+     * 约束说明：
+     * <ul>
+     *   <li>名称会先执行 trim 规范化（前后空白会被移除）</li>
+     *   <li>若命中预定义过滤器（{@code cascade.bloom.filters[]}），必须与配置名精确匹配（大小写敏感）</li>
+     *   <li>若仅大小写不同，启动阶段会快速失败，避免误用默认参数创建错误过滤器</li>
+     * </ul>
      *
      * @return 过滤器名称
      */

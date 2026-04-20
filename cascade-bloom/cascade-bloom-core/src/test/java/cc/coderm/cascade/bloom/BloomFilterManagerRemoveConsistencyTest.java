@@ -5,10 +5,17 @@ import cc.coderm.cascade.bloom.core.BloomFilterManager;
 import cc.coderm.cascade.bloom.exception.BloomFilterException;
 import cc.coderm.cascade.bloom.exception.BloomFilterNotFoundException;
 import cc.coderm.cascade.bloom.impl.RedissonBloomFilterManager;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RBloomFilter;
+import org.redisson.api.RSet;
 import org.redisson.api.RedissonClient;
+import org.slf4j.LoggerFactory;
+
+import java.util.HashSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -34,6 +41,7 @@ class BloomFilterManagerRemoveConsistencyTest {
     void shouldRemoveFromBothCacheAndRedis() {
         RedissonClient redissonClient = mock(RedissonClient.class);
         RBloomFilter<String> stringBloomFilter = mock(RBloomFilter.class);
+        mockRegistry(redissonClient);
 
         BloomFilterProperties properties = new BloomFilterProperties();
         RedissonBloomFilterManager manager = new RedissonBloomFilterManager(redissonClient, properties);
@@ -57,6 +65,7 @@ class BloomFilterManagerRemoveConsistencyTest {
     void shouldKeepCacheWhenRedisDeleteFails() {
         RedissonClient redissonClient = mock(RedissonClient.class);
         RBloomFilter<String> stringBloomFilter = mock(RBloomFilter.class);
+        mockRegistry(redissonClient);
 
         BloomFilterProperties properties = new BloomFilterProperties();
         RedissonBloomFilterManager manager = new RedissonBloomFilterManager(redissonClient, properties);
@@ -75,7 +84,7 @@ class BloomFilterManagerRemoveConsistencyTest {
                 .hasMessageContaining("Failed to remove bloom filter");
 
         // 验证：缓存仍存在
-        assertThat(manager.listFilterNames()).contains("test-filter");
+        assertThat(manager.listCachedFilterNames()).contains("test-filter");
     }
 
     @Test
@@ -83,6 +92,7 @@ class BloomFilterManagerRemoveConsistencyTest {
     void shouldThrowExceptionWhenRemovingNonExistentFilter() {
         RedissonClient redissonClient = mock(RedissonClient.class);
         RBloomFilter<String> stringBloomFilter = mock(RBloomFilter.class);
+        mockRegistry(redissonClient);
 
         BloomFilterProperties properties = new BloomFilterProperties();
         RedissonBloomFilterManager manager = new RedissonBloomFilterManager(redissonClient, properties);
@@ -99,6 +109,7 @@ class BloomFilterManagerRemoveConsistencyTest {
     void shouldRemoveFilterFromRedisWhenNotCached() {
         RedissonClient redissonClient = mock(RedissonClient.class);
         RBloomFilter<String> stringBloomFilter = mock(RBloomFilter.class);
+        mockRegistry(redissonClient);
 
         BloomFilterProperties properties = new BloomFilterProperties();
         RedissonBloomFilterManager manager = new RedissonBloomFilterManager(redissonClient, properties);
@@ -110,5 +121,75 @@ class BloomFilterManagerRemoveConsistencyTest {
         manager.remove("redis-only-filter");
 
         verify(stringBloomFilter).delete();
+    }
+
+    @Test
+    @DisplayName("remove - 本地 miss 若由 LRU 逐出导致，应输出 LRU 语义日志")
+    void shouldLogLruEvictionSemanticWhenRemovingPreviouslyEvictedFilter() {
+        RedissonClient redissonClient = mock(RedissonClient.class);
+        RBloomFilter<String> stringBloomFilter = mock(RBloomFilter.class);
+        mockRegistry(redissonClient);
+
+        BloomFilterProperties properties = new BloomFilterProperties();
+        properties.setMaxCacheSize(1);
+        RedissonBloomFilterManager manager = new RedissonBloomFilterManager(redissonClient, properties);
+
+        when(redissonClient.<String>getBloomFilter(anyString())).thenReturn(stringBloomFilter);
+        when(stringBloomFilter.tryInit(anyLong(), anyDouble())).thenReturn(true);
+        when(stringBloomFilter.isExists()).thenReturn(true);
+
+        Logger logger = (Logger) LoggerFactory.getLogger(RedissonBloomFilterManager.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            manager.getFilter("filter-a");
+            manager.getFilter("filter-b"); // 触发 LRU 逐出 filter-a
+            manager.remove("filter-a");
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        assertThat(appender.list)
+                .extracting(ILoggingEvent::getFormattedMessage)
+                .anyMatch(message -> message.contains("prior LRU eviction"));
+    }
+
+    @Test
+    @DisplayName("remove - 从未在本地缓存出现的过滤器，应输出 not present 语义日志")
+    void shouldLogNoLocalCacheSemanticWhenRemovingNeverCachedFilter() {
+        RedissonClient redissonClient = mock(RedissonClient.class);
+        RBloomFilter<String> stringBloomFilter = mock(RBloomFilter.class);
+        mockRegistry(redissonClient);
+
+        BloomFilterProperties properties = new BloomFilterProperties();
+        RedissonBloomFilterManager manager = new RedissonBloomFilterManager(redissonClient, properties);
+
+        when(redissonClient.<String>getBloomFilter(anyString())).thenReturn(stringBloomFilter);
+        when(stringBloomFilter.isExists()).thenReturn(true);
+
+        Logger logger = (Logger) LoggerFactory.getLogger(RedissonBloomFilterManager.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            manager.remove("never-seen-filter");
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        assertThat(appender.list)
+                .extracting(ILoggingEvent::getFormattedMessage)
+                .anyMatch(message -> message.contains("not present in local cache"))
+                .noneMatch(message -> message.contains("prior LRU eviction"));
+    }
+
+    private static void mockRegistry(RedissonClient redissonClient) {
+        @SuppressWarnings("unchecked")
+        RSet<String> registrySet = mock(RSet.class);
+        when(redissonClient.<String>getSet(anyString())).thenReturn(registrySet);
+        when(registrySet.add(anyString())).thenReturn(true);
+        when(registrySet.remove(anyString())).thenReturn(true);
+        when(registrySet.readAll()).thenReturn(new HashSet<>());
     }
 }
